@@ -11,32 +11,54 @@ rules_version = '2';
 //
 // User profiles live at the TOP LEVEL:
 //   users/{uid}
-//     { uid, organizationId?, name, email, phone, accountStatus,
-//       platformRole?, workerType?, trade?, siteIds?, supervisorUid?,
-//       createdAt, updatedAt, approvedAt?, approvedBy? }
+//     { uid, name, email, phone, accountStatus, platformRole?,
+//       createdAt, updatedAt }
 //
-// Top-level rather than organization-scoped because a self-registered user
-// has no organization yet — there is no `organizations/{orgId}` path to
-// create the document under at registration time. `organizationId` is
-// therefore a nullable field assigned at review, and operational data
-// remains org-scoped under `organizations/{orgId}/...`.
+// MULTI-ORGANIZATION MEMBERSHIP MODEL. A user's relationship to any given
+// organization — role, workerType, trade, siteIds, supervisorUid, and a
+// per-org status — lives in a subcollection, not on the top-level profile:
 //
-// `accountStatus` is the single authoritative account-state field (there is
-// deliberately no second `active` boolean). Only `active` grants operational
-// access; `pending`, `suspended` and `rejected` grant nothing.
+//   users/{uid}/memberships/{organizationId}
+//     { organizationId, role ('siteManager'|'foreman'|'worker'),
+//       workerType?, trade?, siteIds?, supervisorUid?,
+//       status ('active'|'suspended'), approvedAt, approvedBy,
+//       createdAt, updatedAt }
 //
-// `platformRole` (PROJECT_CONTEXT.md §12/§16 — admin, siteManager, foreman,
-// worker — exactly four values) is assigned during account review alongside
-// `organizationId` and `workerType`. These rules give `platformRole` no
+// This replaces an earlier single nullable `organizationId` field (plus
+// `platformRole`/`workerType`/`siteIds` living directly on the profile),
+// which could only represent one organization per person. In practice: a
+// Site Manager creates/operates several organizations at once; a Foreman is
+// placed into an organization by a Site Manager and can be placed into more
+// than one; a Worker is placed into an organization (scoped to a Foreman's
+// site) by that Foreman. Each of those is a membership document, so a
+// person can hold several simultaneously, each with its own role and its
+// own independent `active`/`suspended` status.
+//
+// The top-level profile stays org-less on purpose: a self-registered user
+// has no organization yet — there is no `organizations/{orgId}` path, let
+// alone a `.../memberships/{orgId}` path, to create anything under at
+// registration time. `accountStatus` (pending/active/suspended/rejected) is
+// the single authoritative ACCOUNT-level state field (there is deliberately
+// no second top-level `active` boolean); it is assigned once, at a person's
+// first-ever approval, and gates sign-in/app access globally regardless of
+// how many organizations they later join. Membership `status` is a
+// SEPARATE, per-organization concept: it lets a reviewer suspend a person's
+// access to one organization without touching `accountStatus` or any other
+// membership they hold.
+//
+// `platformRole` (PROJECT_CONTEXT.md §12/§16 — `admin` or absent; a
+// person's per-organization role now lives on their membership doc instead)
+// is assigned during account review. These rules give `platformRole` no
 // WRITE power of its own for any role, ever — it is consumed exclusively by
 // Cloud Functions callables (`listPendingApprovals` / `approvePendingAccount`
 // / `rejectPendingAccount` / `listOrganizationUsers` / `suspendActiveAccount`
-// / `reinstateSuspendedAccount` / `createOrganization` / `updateOrganization`
-// / `createProject` / `updateProject` / `createSite` / `updateSite`), which
-// run on the Admin SDK and check it server-side. Deliberately there is no
-// second, rules-language implementation of any of those authorization
-// decisions: one authorization path per privileged action is one thing to
-// keep correct.
+// / `reinstateSuspendedAccount` / `suspendMembership` /
+// `reinstateMembership` / `addOrganizationMembership` / `createOrganization`
+// / `updateOrganization` / `createProject` / `updateProject` / `createSite`
+// / `updateSite`), which run on the Admin SDK and check it server-side.
+// Deliberately there is no second, rules-language implementation of any of
+// those authorization decisions: one authorization path per privileged
+// action is one thing to keep correct.
 //
 // The one READ exception: `isAdmin()` below reads the caller's own
 // `platformRole` to grant an Admin a read of every organization, project and
@@ -50,22 +72,25 @@ rules_version = '2';
 // `scripts/approve_account.ts`'s `bootstrap-admin` command, run by an
 // operator holding service-account credentials, can grant it. These rules
 // treat it exactly like every other role value for writes: still absent
-// from every client create/update, still Admin-SDK-only.
+// from every client create/update, still Admin-SDK-only. Admin holds no
+// membership documents at all — it is platform-wide by construction, not by
+// belonging to every organization.
 //
-// `platformRole`, `workerType`, `trade`, `siteIds` and `supervisorUid` are
-// Admin-SDK-writable only — all appear in the creation-blocked and
-// update-blocked field lists below, so a reviewer cannot grant themselves or
-// anyone a role/trade/site/supervisor through a direct write, only through
-// the callables (which independently refuse self-action and
-// role-escalation — see `approval_callable.ts`).
+// `platformRole` is Admin-SDK-writable only — it appears in the
+// creation-blocked and update-blocked field lists below, so a reviewer
+// cannot grant themselves or anyone else Admin through a direct write, only
+// through the operator script. The former per-org fields
+// (`organizationId`/`workerType`/`trade`/`siteIds`/`supervisorUid`) no
+// longer exist on `users/{uid}` at all — new code never writes them there —
+// and the membership subcollection below carries the same deny-by-default
+// posture: `allow write: if false`, Admin-SDK-only via the callables
+// (which independently refuse self-action and role-escalation — see
+// `approval_callable.ts`).
 //
-// `siteIds` on `users/{uid}` — a worker's granted site access — is Admin-SDK-
-// writable only, exactly like `platformRole` and `workerType`: it appears in
-// both `registrationOmitsPrivilegedFields()` and `touchesProtectedFields()`
-// below, so a client can never grant or revoke its own (or anyone's) site
-// access directly. The only path that can write it is
-// `assignWorkerToSite`/`removeWorkerFromSite` in
-// `site_assignment_callable.ts`, which in turn is the prerequisite
+// `siteIds` — a worker's granted site access — now lives on the worker's
+// membership document for that organization, Admin-SDK-writable only via
+// `assignWorkerToSite`/`removeWorkerFromSite`
+// (`site_assignment_callable.ts`), which in turn is the prerequisite
 // `assignWorkerToActivity` (`activity_assignment_callable.ts`) checks before
 // letting a worker be assigned to an activity at that site.
 //
@@ -118,15 +143,28 @@ service cloud.firestore {
       return hasProfile() && currentUserProfile().accountStatus == 'active';
     }
 
-    function callerOrgId() {
-      return currentUserProfile().organizationId;
+    // The caller's own membership document for a given organization, or
+    // null if none exists. Membership is the source of truth for "does this
+    // person belong to this organization, and with what status/role" —
+    // there is no longer a scalar `organizationId` field on the profile to
+    // compare against.
+    function membershipDoc(organizationId) {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)/memberships/$(organizationId)).data;
     }
 
-    // An active user assigned to this organization. An active account with
-    // no organizationId (which approval should never produce) matches no
-    // organization, so it still reaches nothing.
+    function hasMembership(organizationId) {
+      return isAuthenticated()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid)/memberships/$(organizationId));
+    }
+
+    // An active user with an ACTIVE membership in this organization. A
+    // membership can exist but be `suspended` — that no longer counts as
+    // belonging, mirroring how `accountStatus != active` no longer counts
+    // as an active account.
     function belongsToOrganization(organizationId) {
-      return isActiveUser() && callerOrgId() == organizationId;
+      return isActiveUser()
+        && hasMembership(organizationId)
+        && membershipDoc(organizationId).status == 'active';
     }
 
     // The platform-level role, read the same way every other authorization
@@ -149,11 +187,15 @@ service cloud.firestore {
     // "registration grants no privileges" structural: a registering client
     // literally cannot name an organization, an approval, a role, a worker
     // type, or a status other than pending.
+    // `organizationId`, `workerType`, `trade`, `siteIds` and `supervisorUid`
+    // no longer exist on `users/{uid}` under the new model — they moved to
+    // `users/{uid}/memberships/{organizationId}` — so they are removed from
+    // this list. `platformRole` remains: Admin's platformRole is still
+    // Admin-SDK-only, never client-writable, and still lives on the
+    // top-level profile.
     function registrationOmitsPrivilegedFields() {
       return !request.resource.data.keys().hasAny([
-        'organizationId', 'approvedAt', 'approvedBy', 'platformRole',
-        'workerType', 'trade', 'siteIds', 'supervisorUid', 'activityIds',
-        'active'
+        'approvedAt', 'approvedBy', 'platformRole', 'activityIds', 'active'
       ]);
     }
 
@@ -185,17 +227,20 @@ service cloud.firestore {
     // into an organization, change its own role, un-suspend itself, or forge
     // an audit timestamp.
     //
-    // `platformRole`, `workerType`, `trade`, `siteIds` and `supervisorUid`
-    // are in this list for the same reason: they are granted only through
-    // the approval/assignment callables (which independently refuse a
-    // reviewer acting on their own account) or the operator script. A
-    // reviewer therefore cannot escalate their own role, and no user can
-    // assign themselves one, a trade, a site, or a supervisor directly.
+    // `platformRole` remains in this list for the same reason as always: it
+    // is granted only through the operator script, never a client write, so
+    // a reviewer cannot escalate their own account to Admin. The former
+    // per-org fields (`organizationId`/`workerType`/`trade`/`siteIds`/
+    // `supervisorUid`) are removed from this list because they no longer
+    // exist on `users/{uid}` at all under the new model — that authority
+    // now lives entirely on `users/{uid}/memberships/{organizationId}`,
+    // which has its own `allow write: if false` below (Admin-SDK-only via
+    // the approval/assignment callables, which independently refuse a
+    // reviewer acting on their own account).
     function touchesProtectedFields() {
       return request.resource.data.diff(resource.data).affectedKeys()
-        .hasAny(['accountStatus', 'organizationId', 'approvedAt', 'approvedBy',
-                 'uid', 'email', 'createdAt', 'platformRole', 'workerType',
-                 'trade', 'siteIds', 'supervisorUid']);
+        .hasAny(['accountStatus', 'approvedAt', 'approvedBy',
+                 'uid', 'email', 'createdAt', 'platformRole']);
     }
 
     // A user may edit only these fields on their own profile.
@@ -247,6 +292,25 @@ service cloud.firestore {
       // Profiles are retained so historical safety records keep referring to
       // a real user. Rejection is a status, not a deletion.
       allow delete: if false;
+
+      // ---- users/{userId}/memberships/{organizationId} ----
+      // One document per organization a person belongs to — see the header
+      // comment for the full shape. Read: the owner reads their own
+      // memberships (the client needs this to know which organizations to
+      // operate in and to show role/status per org), or Admin, matching
+      // Admin's platform-wide oversight everywhere else in this file. Write
+      // is Admin-SDK-only, exactly like every other privileged field here:
+      // provisioned exclusively through `approvePendingAccount` (first
+      // membership, alongside `accountStatus: active`),
+      // `addOrganizationMembership` (an additional membership for an
+      // already-active user), `createOrganization` (the creating Site
+      // Manager's own membership), and `suspendMembership`/
+      // `reinstateMembership` (toggling `status` only) — see
+      // `approval_callable.ts`/`organization_callable.ts`.
+      match /memberships/{organizationId} {
+        allow read: if isSelf(userId) || isAdmin();
+        allow write: if false;
+      }
     }
 
     // ---- organizations/{organizationId} ----
@@ -517,9 +581,15 @@ service cloud.firestore {
       // not a Foreman one — a Foreman's visibility into their own crew's
       // training is provided elsewhere via the callables, not this rule.
       match /worker_learning_records/{recordId} {
+        // The siteManager carve-out below checks the CALLER's own
+        // membership document for THIS record's organization, not a
+        // top-level profile field: role is per-organization now, so
+        // "is this caller a siteManager" only means something with respect
+        // to a specific organization, and this record's own organizationId
+        // (the path segment) is that organization.
         allow read: if isAdmin()
           || (belongsToOrganization(organizationId) && resource.data.workerUid == request.auth.uid)
-          || (belongsToOrganization(organizationId) && currentUserProfile().platformRole == 'siteManager');
+          || (belongsToOrganization(organizationId) && membershipDoc(organizationId).role == 'siteManager');
         // Provisioned exclusively through `getMyRequiredLearning`/
         // `startLearning`/`completeLearning` (`worker_learning_callable.ts`),
         // none of which accept a workerUid argument — every one derives the
