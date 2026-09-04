@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "585202248724",
+    "project_id": "jva-safety",
+    "storage_bucket": "jva-safety.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:585202248724:android:bfae311af03344f36d8b01",
+        "android_client_info": {
+          "package_name": "com.example.jva_safety"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCJ9gunonIarZ6muycJOlgOcL5fL620LMo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

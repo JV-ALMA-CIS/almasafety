@@ -1,0 +1,395 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:provider/provider.dart';
+import 'package:jva_safety/core/errors/app_exception.dart';
+import 'package:jva_safety/core/services/firestore_service.dart';
+import 'package:jva_safety/core/services/session_controller.dart';
+import 'package:jva_safety/features/authentication/domain/account_status.dart';
+import 'package:jva_safety/features/authentication/domain/app_role.dart';
+import 'package:jva_safety/features/authentication/domain/user_profile.dart';
+import 'package:jva_safety/features/organizations/data/organization_admin_service.dart';
+import 'package:jva_safety/features/organizations/data/organization_repository.dart';
+import 'package:jva_safety/features/organizations/domain/organization_record_status.dart';
+import 'package:jva_safety/features/organizations/presentation/organizations_screen.dart';
+
+/// A fake admin service, subclassing the real one rather than mocking — the
+/// repo's established pattern (see organization_users_screen_test.dart).
+class _FakeAdminService extends OrganizationAdminService {
+  _FakeAdminService({this.createError, this.updateError});
+
+  AppException? createError;
+  AppException? updateError;
+
+  final List<({String name, String code, OrganizationRecordStatus status})>
+      createCalls = [];
+  final List<({String id, String? name, String? code})> updateCalls = [];
+
+  @override
+  Future<String> createOrganization({
+    required String name,
+    required String code,
+    OrganizationRecordStatus status = OrganizationRecordStatus.active,
+  }) async {
+    final error = createError;
+    if (error != null) throw error;
+    createCalls.add((name: name, code: code, status: status));
+    return 'new-org-id';
+  }
+
+  @override
+  Future<void> updateOrganization(
+    String id, {
+    String? name,
+    String? code,
+    OrganizationRecordStatus? status,
+  }) async {
+    final error = updateError;
+    if (error != null) throw error;
+    updateCalls.add((id: id, name: name, code: code));
+  }
+}
+
+class _FakeSession extends SessionController {
+  _FakeSession({required AppRole? role, String? organizationId})
+    : _profile = UserProfile(
+        uid: 'sysadmin-uid',
+        name: 'Sysadmin',
+        email: 'sysadmin@example.com',
+        accountStatus: AccountStatus.active,
+        platformRole: role,
+        organizationId: organizationId,
+      );
+
+  final UserProfile _profile;
+
+  @override
+  UserProfile? get profile => _profile;
+}
+
+void main() {
+  late FakeFirebaseFirestore firestore;
+
+  setUp(() {
+    firestore = FakeFirebaseFirestore();
+  });
+
+  Future<void> seedOrg(String id, {String status = 'active'}) async {
+    await firestore.doc('organizations/$id').set({
+      'name': 'Org $id',
+      'code': 'CODE-$id',
+      'status': status,
+      'createdAt': Timestamp.now(),
+      'updatedAt': Timestamp.now(),
+    });
+  }
+
+  Widget wrap(
+    _FakeAdminService adminService, {
+    AppRole? reviewerRole = AppRole.admin,
+    String? organizationId,
+  }) {
+    return ChangeNotifierProvider<SessionController>(
+      create: (_) =>
+          _FakeSession(role: reviewerRole, organizationId: organizationId),
+      child: MaterialApp(
+        home: Scaffold(
+          body: OrganizationsScreen(
+            repository: OrganizationRepository(
+              firestoreService: FirestoreService(firestore: firestore),
+            ),
+            adminService: adminService,
+          ),
+        ),
+      ),
+    );
+  }
+
+  group('OrganizationsScreen (Admin)', () {
+    testWidgets('lists every organization', (tester) async {
+      await seedOrg('alpha');
+      await seedOrg('beta');
+
+      await tester.pumpWidget(wrap(_FakeAdminService()));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Organizations'), findsOneWidget);
+      expect(find.text('Org alpha'), findsOneWidget);
+      expect(find.text('Org beta'), findsOneWidget);
+    });
+
+    testWidgets('shows an empty state when there are none', (tester) async {
+      await tester.pumpWidget(wrap(_FakeAdminService()));
+      await tester.pumpAndSettle();
+
+      expect(find.text('No organizations yet.'), findsOneWidget);
+    });
+
+    testWidgets('creating calls the admin service with the form values', (
+      tester,
+    ) async {
+      final service = _FakeAdminService();
+
+      await tester.pumpWidget(wrap(service));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('Add organization'));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(
+        find.widgetWithText(TextFormField, 'Name'),
+        'JV Alma CIS',
+      );
+      await tester.enterText(
+        find.widgetWithText(TextFormField, 'Code'),
+        'JV-ALMA-CIS',
+      );
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Create'));
+      await tester.pumpAndSettle();
+
+      expect(service.createCalls, hasLength(1));
+      expect(service.createCalls.single.name, 'JV Alma CIS');
+      expect(service.createCalls.single.code, 'JV-ALMA-CIS');
+      expect(service.createCalls.single.status, OrganizationRecordStatus.active);
+    });
+
+    testWidgets('cannot submit the create form without a name or code', (
+      tester,
+    ) async {
+      final service = _FakeAdminService();
+
+      await tester.pumpWidget(wrap(service));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('Add organization'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Create'));
+      await tester.pumpAndSettle();
+
+      expect(service.createCalls, isEmpty);
+      expect(find.text('A name is required.'), findsOneWidget);
+      expect(find.text('A code is required.'), findsOneWidget);
+    });
+
+    testWidgets('editing pre-fills the form and calls updateOrganization', (
+      tester,
+    ) async {
+      await seedOrg('alpha');
+      final service = _FakeAdminService();
+
+      await tester.pumpWidget(wrap(service));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Edit'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Org alpha'), findsWidgets);
+
+      await tester.enterText(
+        find.widgetWithText(TextFormField, 'Name'),
+        'Renamed Org',
+      );
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Save'));
+      await tester.pumpAndSettle();
+
+      expect(service.updateCalls, hasLength(1));
+      expect(service.updateCalls.single.id, 'alpha');
+      expect(service.updateCalls.single.name, 'Renamed Org');
+    });
+
+    testWidgets('surfaces a refused create', (tester) async {
+      final service = _FakeAdminService(
+        createError: const PermissionDeniedException(
+          'You do not have permission to do that.',
+        ),
+      );
+
+      await tester.pumpWidget(wrap(service));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('Add organization'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.widgetWithText(TextFormField, 'Name'),
+        'JV Alma CIS',
+      );
+      await tester.enterText(
+        find.widgetWithText(TextFormField, 'Code'),
+        'JV-ALMA-CIS',
+      );
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Create'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('You do not have permission to do that.'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('surfaces a refused edit', (tester) async {
+      await seedOrg('alpha');
+      final service = _FakeAdminService(
+        updateError: const PermissionDeniedException(
+          'You do not have permission to do that.',
+        ),
+      );
+
+      await tester.pumpWidget(wrap(service));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Edit'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Save'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('You do not have permission to do that.'),
+        findsOneWidget,
+      );
+    });
+  });
+
+  group('OrganizationsScreen (Site Manager)', () {
+    testWidgets('sees only their own organization, not others', (
+      tester,
+    ) async {
+      await seedOrg('alpha');
+      await seedOrg('beta');
+
+      await tester.pumpWidget(
+        wrap(
+          _FakeAdminService(),
+          reviewerRole: AppRole.siteManager,
+          organizationId: 'alpha',
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Organizations'), findsOneWidget);
+      expect(find.text('Org alpha'), findsOneWidget);
+      expect(find.text('Org beta'), findsNothing);
+    });
+
+    testWidgets('cannot see the Add organization action', (tester) async {
+      await seedOrg('alpha');
+
+      await tester.pumpWidget(
+        wrap(
+          _FakeAdminService(),
+          reviewerRole: AppRole.siteManager,
+          organizationId: 'alpha',
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Add organization'), findsNothing);
+    });
+
+    testWidgets('cannot see the Edit action on their own organization', (
+      tester,
+    ) async {
+      await seedOrg('alpha');
+
+      await tester.pumpWidget(
+        wrap(
+          _FakeAdminService(),
+          reviewerRole: AppRole.siteManager,
+          organizationId: 'alpha',
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.widgetWithText(OutlinedButton, 'Edit'), findsNothing);
+    });
+
+    testWidgets('can still navigate to Projects for their own organization', (
+      tester,
+    ) async {
+      await seedOrg('alpha');
+
+      await tester.pumpWidget(
+        wrap(
+          _FakeAdminService(),
+          reviewerRole: AppRole.siteManager,
+          organizationId: 'alpha',
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.widgetWithText(ElevatedButton, 'Projects'), findsOneWidget);
+    });
+
+    testWidgets('sees the Safety Meeting Points action for their own '
+        'organization', (tester) async {
+      await seedOrg('alpha');
+
+      await tester.pumpWidget(
+        wrap(
+          _FakeAdminService(),
+          reviewerRole: AppRole.siteManager,
+          organizationId: 'alpha',
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.widgetWithText(OutlinedButton, 'Safety Meeting Points'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('sees the Daily Safety Meetings action for their own '
+        'organization', (tester) async {
+      await seedOrg('alpha');
+
+      await tester.pumpWidget(
+        wrap(
+          _FakeAdminService(),
+          reviewerRole: AppRole.siteManager,
+          organizationId: 'alpha',
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.widgetWithText(OutlinedButton, 'Daily Safety Meetings'),
+        findsOneWidget,
+      );
+    });
+  });
+
+  group('OrganizationsScreen (Admin sees the same admin '
+      'actions)', () {
+    testWidgets('the Safety Meeting Points and Daily Safety Meetings '
+        'actions are present alongside Edit/Projects', (tester) async {
+      await seedOrg('alpha');
+
+      await tester.pumpWidget(wrap(_FakeAdminService()));
+      await tester.pumpAndSettle();
+
+      expect(find.widgetWithText(OutlinedButton, 'Edit'), findsOneWidget);
+      expect(find.widgetWithText(ElevatedButton, 'Projects'), findsOneWidget);
+      expect(
+        find.widgetWithText(OutlinedButton, 'Safety Meeting Points'),
+        findsOneWidget,
+      );
+      expect(
+        find.widgetWithText(OutlinedButton, 'Daily Safety Meetings'),
+        findsOneWidget,
+      );
+    });
+  });
+
+  group('OrganizationsScreen (non-administrator)', () {
+    testWidgets('renders no content for a user with no role', (tester) async {
+      await tester.pumpWidget(wrap(_FakeAdminService(), reviewerRole: null));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('You do not have permission to manage organizations.'),
+        findsOneWidget,
+      );
+    });
+  });
+}

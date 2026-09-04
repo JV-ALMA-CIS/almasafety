@@ -1,0 +1,15 @@
+{
+  "projects": {
+    "default": "jva-safety"
+  },
+  "targets": {
+    "jva-safety": {
+      "storage": {
+        "default": [
+          "jva-safety.firebasestorage.app"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

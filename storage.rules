@@ -1,0 +1,46 @@
+rules_version = '2';
+
+// JVA Safety — baseline Cloud Storage security rules.
+//
+// Mirrors the organization-isolation posture in firestore.rules. Storage is
+// expected to hold safety evidence (hazard photos, corrective-action
+// evidence, safety learning media) under paths scoped by organization:
+//   organizations/{organizationId}/{...}
+//
+// This is a starting point ahead of the real evidence-upload data model;
+// per-feature path rules (e.g. restricting who can upload vs. read specific
+// evidence types) should be added as those features are implemented.
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid));
+    }
+
+    function currentOrgId() {
+      return userDoc().data.organizationId;
+    }
+
+    function belongsToOrg(organizationId) {
+      return isSignedIn() && currentOrgId() == organizationId;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    match /organizations/{organizationId}/{allPaths=**} {
+      allow read: if belongsToOrg(organizationId);
+      // Any authenticated org member may upload evidence (hazard photos,
+      // corrective-action proof, etc.) — field workflows depend on this
+      // being low-friction. Size/type constraints and per-feature
+      // restrictions should be added as those upload flows are built.
+      allow write: if belongsToOrg(organizationId)
+        && request.resource.size < 25 * 1024 * 1024;
+    }
+  }
+}

@@ -1,0 +1,564 @@
+rules_version = '2';
+
+// JVA Safety — Firestore security rules.
+//
+// THESE RULES ARE THE AUTHORIZATION BOUNDARY. The Flutter client's
+// SessionController checks are usability only; a modified client must gain
+// nothing by bypassing them.
+//
+// Authentication model: SELF-REGISTRATION -> PENDING -> ADMIN APPROVAL ->
+// ACTIVE.
+//
+// User profiles live at the TOP LEVEL:
+//   users/{uid}
+//     { uid, organizationId?, name, email, phone, accountStatus,
+//       platformRole?, workerType?, trade?, siteIds?, supervisorUid?,
+//       createdAt, updatedAt, approvedAt?, approvedBy? }
+//
+// Top-level rather than organization-scoped because a self-registered user
+// has no organization yet — there is no `organizations/{orgId}` path to
+// create the document under at registration time. `organizationId` is
+// therefore a nullable field assigned at review, and operational data
+// remains org-scoped under `organizations/{orgId}/...`.
+//
+// `accountStatus` is the single authoritative account-state field (there is
+// deliberately no second `active` boolean). Only `active` grants operational
+// access; `pending`, `suspended` and `rejected` grant nothing.
+//
+// `platformRole` (PROJECT_CONTEXT.md §12/§16 — admin, siteManager, foreman,
+// worker — exactly four values) is assigned during account review alongside
+// `organizationId` and `workerType`. These rules give `platformRole` no
+// WRITE power of its own for any role, ever — it is consumed exclusively by
+// Cloud Functions callables (`listPendingApprovals` / `approvePendingAccount`
+// / `rejectPendingAccount` / `listOrganizationUsers` / `suspendActiveAccount`
+// / `reinstateSuspendedAccount` / `createOrganization` / `updateOrganization`
+// / `createProject` / `updateProject` / `createSite` / `updateSite`), which
+// run on the Admin SDK and check it server-side. Deliberately there is no
+// second, rules-language implementation of any of those authorization
+// decisions: one authorization path per privileged action is one thing to
+// keep correct.
+//
+// The one READ exception: `isAdmin()` below reads the caller's own
+// `platformRole` to grant an Admin a read of every organization, project and
+// site rather than only their own (they belong to none — see
+// AppRole.isPlatformLevel in the Flutter source). A read grant cannot be
+// used to escalate anything; it is not a write path, and it changes nothing
+// about the write rules above.
+//
+// Admin is platform-level, not organization-scoped, and is never a reachable
+// outcome of registration or of the review callables — only
+// `scripts/approve_account.ts`'s `bootstrap-admin` command, run by an
+// operator holding service-account credentials, can grant it. These rules
+// treat it exactly like every other role value for writes: still absent
+// from every client create/update, still Admin-SDK-only.
+//
+// `platformRole`, `workerType`, `trade`, `siteIds` and `supervisorUid` are
+// Admin-SDK-writable only — all appear in the creation-blocked and
+// update-blocked field lists below, so a reviewer cannot grant themselves or
+// anyone a role/trade/site/supervisor through a direct write, only through
+// the callables (which independently refuse self-action and
+// role-escalation — see `approval_callable.ts`).
+//
+// `siteIds` on `users/{uid}` — a worker's granted site access — is Admin-SDK-
+// writable only, exactly like `platformRole` and `workerType`: it appears in
+// both `registrationOmitsPrivilegedFields()` and `touchesProtectedFields()`
+// below, so a client can never grant or revoke its own (or anyone's) site
+// access directly. The only path that can write it is
+// `assignWorkerToSite`/`removeWorkerFromSite` in
+// `site_assignment_callable.ts`, which in turn is the prerequisite
+// `assignWorkerToActivity` (`activity_assignment_callable.ts`) checks before
+// letting a worker be assigned to an activity at that site.
+//
+// SITE- AND ACTIVITY-SCOPED AUTHORIZATION IS NOT IMPLEMENTED YET. A
+// siteManager's role grants organization-wide authority only where
+// PROJECT_CONTEXT.md §16 says so without qualification; where it requires
+// site assignment, that authority is withheld until site assignment records
+// exist. Operational collections remain readable by active members of the
+// owning organization and writable by NO client at all in the meantime. It
+// is deliberate that this is more restrictive than the eventual model —
+// under-permitting is recoverable, over-permitting is a breach.
+//
+// `organizations/{orgId}/projects/{projectId}` and
+// `organizations/{orgId}/sites/{siteId}` (FIRESTORE_DATA_MODEL.md §3) are the
+// Organization -> Project -> Site foundation: read requires organization
+// membership (or Admin), write is Admin-SDK-only via
+// `organization_callable.ts`, which enforces the relationship
+// `site.organizationId == project.organizationId` server-side before ever
+// writing a site. Worker assignment to a site and activity records are a
+// later stage, not implemented here.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---- Identity helpers ----
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+
+    // The caller's own profile document. Top-level, so it is addressable by
+    // uid alone without knowing an organization.
+    function currentUserProfile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function hasProfile() {
+      return isAuthenticated()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    // The real enforcement of "only approved users get in". A pending,
+    // suspended or rejected account loses all operational access even though
+    // Firebase Auth still considers it signed in; the client's
+    // AuthStatus.pending/suspended/rejected are UX only.
+    function isActiveUser() {
+      return hasProfile() && currentUserProfile().accountStatus == 'active';
+    }
+
+    function callerOrgId() {
+      return currentUserProfile().organizationId;
+    }
+
+    // An active user assigned to this organization. An active account with
+    // no organizationId (which approval should never produce) matches no
+    // organization, so it still reaches nothing.
+    function belongsToOrganization(organizationId) {
+      return isActiveUser() && callerOrgId() == organizationId;
+    }
+
+    // The platform-level role, read the same way every other authorization
+    // check here reads the caller's own profile. This is a READ grant only:
+    // it is used below to let an Admin read every organization/project/site
+    // rather than just their own (they have none of their own — see
+    // AppRole.isPlatformLevel in the Flutter source), and confers no write
+    // power anywhere in this file. Creating and editing these records
+    // remains Admin-SDK-only via `organization_callable.ts`'s
+    // `requireAdmin`/`requireOrganizationScopedManager`, exactly like
+    // account review — one authorization path, not a second rules-language
+    // implementation that could drift from it.
+    function isAdmin() {
+      return isActiveUser() && currentUserProfile().platformRole == 'admin';
+    }
+
+    // ---- User profile field protection ----
+
+    // Fields no client may ever set at creation. Their absence is what makes
+    // "registration grants no privileges" structural: a registering client
+    // literally cannot name an organization, an approval, a role, a worker
+    // type, or a status other than pending.
+    function registrationOmitsPrivilegedFields() {
+      return !request.resource.data.keys().hasAny([
+        'organizationId', 'approvedAt', 'approvedBy', 'platformRole',
+        'workerType', 'trade', 'siteIds', 'supervisorUid', 'activityIds',
+        'active'
+      ]);
+    }
+
+    // A self-registration document must be exactly this shape, for this uid,
+    // with status forced to pending.
+    function isValidSelfRegistration(uid) {
+      return isSelf(uid)
+        && registrationOmitsPrivilegedFields()
+        && request.resource.data.keys().hasOnly([
+          'uid', 'name', 'email', 'phone', 'accountStatus',
+          'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.uid == uid
+        && request.resource.data.accountStatus == 'pending'
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.email is string
+        // Binding the document's email to the verified token email stops a
+        // user from registering a profile under somebody else's identity.
+        && request.resource.data.email.lower() == request.auth.token.email.lower()
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+    }
+
+    // Fields no client may ever change on an existing profile. Approval,
+    // organization assignment, role assignment, worker-type assignment and
+    // status transitions are Admin SDK operations only (Cloud Functions
+    // bypass these rules), so a client can never approve itself, move itself
+    // into an organization, change its own role, un-suspend itself, or forge
+    // an audit timestamp.
+    //
+    // `platformRole`, `workerType`, `trade`, `siteIds` and `supervisorUid`
+    // are in this list for the same reason: they are granted only through
+    // the approval/assignment callables (which independently refuse a
+    // reviewer acting on their own account) or the operator script. A
+    // reviewer therefore cannot escalate their own role, and no user can
+    // assign themselves one, a trade, a site, or a supervisor directly.
+    function touchesProtectedFields() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasAny(['accountStatus', 'organizationId', 'approvedAt', 'approvedBy',
+                 'uid', 'email', 'createdAt', 'platformRole', 'workerType',
+                 'trade', 'siteIds', 'supervisorUid']);
+    }
+
+    // A user may edit only these fields on their own profile.
+    function onlySelfEditableFields() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasOnly(['name', 'phone', 'updatedAt']);
+    }
+
+    // ---- Deny everything by default ----
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ---- users/{uid} — identity documents ----
+    match /users/{userId} {
+      // Read: your own profile only.
+      //
+      // Note there is still no reviewer read case here, even though `role`
+      // now exists. The in-app approvals screen does NOT read other users'
+      // documents directly: it calls the `listPendingApprovals` callable,
+      // which runs on the Admin SDK (and so bypasses these rules) after
+      // checking the caller's role server-side. Keeping the client's direct
+      // read surface at "your own document, and nothing else" means there is
+      // exactly one place — the callable — where reviewer authorization is
+      // decided, rather than two implementations of the same check that
+      // could drift apart.
+      //
+      // Unauthenticated reads are denied by isSelf().
+      allow read: if isSelf(userId);
+
+      // Create: self-registration, and nothing else. The document id must be
+      // the caller's own uid, so a user cannot create a profile for anyone
+      // else, and the payload is pinned to a pending, org-less shape.
+      allow create: if isValidSelfRegistration(userId);
+
+      // Update: name and phone on your own profile.
+      //
+      // Note this requires only isSelf(), not isActiveUser(): a pending user
+      // must be able to correct a typo in their own name or phone while
+      // waiting for review. That is safe precisely because the field
+      // allow-list excludes everything that carries authority. A suspended
+      // or rejected user can likewise still edit these harmless fields but
+      // gains no access from doing so.
+      allow update: if isSelf(userId)
+        && onlySelfEditableFields()
+        && !touchesProtectedFields()
+        && request.resource.data.updatedAt == request.time;
+
+      // Profiles are retained so historical safety records keep referring to
+      // a real user. Rejection is a status, not a deletion.
+      allow delete: if false;
+    }
+
+    // ---- organizations/{organizationId} ----
+    match /organizations/{organizationId} {
+      // A member of this organization can read it; a Admin
+      // can read every organization, matching their platform-wide review
+      // authority elsewhere (see `requireApprover` in
+      // `approval_callable.ts`, which lets them approve into any
+      // organization).
+      allow read: if belongsToOrganization(organizationId) || isAdmin();
+      // Organizations are provisioned exclusively through
+      // `createOrganization`/`updateOrganization` (Admin SDK) — see
+      // `organization_callable.ts`.
+      allow write: if false;
+
+      // ---- organizations/{organizationId}/projects/{projectId} ----
+      match /projects/{projectId} {
+        allow read: if belongsToOrganization(organizationId) || isAdmin();
+        // Provisioned exclusively through `createProject`/`updateProject`.
+        allow write: if false;
+      }
+
+      // ---- organizations/{organizationId}/sites/{siteId} ----
+      // Flat under the organization rather than nested under `projects`,
+      // matching FIRESTORE_DATA_MODEL.md §3: a site's project is a
+      // `projectId` field, not a path segment.
+      match /sites/{siteId} {
+        allow read: if belongsToOrganization(organizationId) || isAdmin();
+        // Provisioned exclusively through `createSite`/`updateSite`, which
+        // additionally verifies server-side that the named project's own
+        // `organizationId` matches this path's `organizationId` before
+        // writing — see that callable's doc comment.
+        allow write: if false;
+      }
+
+      // ---- organizations/{organizationId}/activities/{activityId} ----
+      // Flat under the organization, matching `sites/{siteId}`: an
+      // activity's project and site are `projectId`/`siteId` fields, not
+      // path segments.
+      match /activities/{activityId} {
+        allow read: if belongsToOrganization(organizationId) || isAdmin();
+        // Provisioned exclusively through `createActivity`/`updateActivity`
+        // (`activity_callable.ts`), which additionally verifies server-side
+        // that the named site's own `organizationId`/`projectId` match this
+        // path's `organizationId` and the given `projectId` before writing.
+        allow write: if false;
+
+        // ---- .../activities/{activityId}/assignments/{uid} ----
+        // One document per worker assigned to this activity, keyed by uid.
+        // Positioned above the operational-collection catch-all below so it
+        // is not shadowed, and so the collection-group query used by the
+        // worker detail screen's "Assigned Activities" section (which reads
+        // across every activity's assignments subcollection at once) is
+        // covered by an explicit rule rather than falling through to deny.
+        match /assignments/{uid} {
+          allow read: if belongsToOrganization(organizationId) || isAdmin();
+          // Provisioned exclusively through `assignWorkerToActivity`/
+          // `removeWorkerFromActivity` (`activity_assignment_callable.ts`),
+          // which re-validates organization membership, site membership and
+          // self-assignment server-side before writing.
+          allow write: if false;
+        }
+      }
+
+      // ---- organizations/{organizationId}/safety_learning/{learningId} ----
+      // Flat under the organization, matching `activities/{activityId}`.
+      match /safety_learning/{learningId} {
+        allow read: if belongsToOrganization(organizationId) || isAdmin();
+        // Provisioned exclusively through `createSafetyLearning`/
+        // `updateSafetyLearning` (`safety_learning_callable.ts`).
+        allow write: if false;
+      }
+
+      // ---- organizations/{organizationId}/safety_requirements/{requirementId} ----
+      match /safety_requirements/{requirementId} {
+        allow read: if belongsToOrganization(organizationId) || isAdmin();
+        // Provisioned exclusively through `createSafetyRequirement`/
+        // `updateSafetyRequirement` (`safety_learning_callable.ts`), which
+        // additionally verifies server-side that every id in
+        // `requiredLearningIds` refers to an existing `safety_learning`
+        // document in the same organization before writing.
+        allow write: if false;
+      }
+
+      // ---- organizations/{organizationId}/safety_meeting_points/{id} ----
+      // Flat under the organization, matching `safety_learning/{learningId}`.
+      match /safety_meeting_points/{meetingPointId} {
+        allow read: if belongsToOrganization(organizationId) || isAdmin();
+        // Provisioned exclusively through `createSafetyMeetingPoint`/
+        // `updateSafetyMeetingPoint`/`activateSafetyMeetingPoint`/
+        // `deactivateSafetyMeetingPoint` (`safety_meeting_point_callable.ts`).
+        allow write: if false;
+      }
+
+      // ---- organizations/{organizationId}/daily_safety_meetings/{id} ----
+      // Flat under the organization, matching `safety_meeting_points/{id}`.
+      // Read follows the same org-member-or-System-Administrator shape as
+      // every other operational collection here — a completed meeting is a
+      // record other org members (e.g. a Safety Manager reviewing it later)
+      // may need to see, not personal data scoped to the foreman alone like
+      // `worker_learning_records` below.
+      match /daily_safety_meetings/{meetingId} {
+        allow read: if belongsToOrganization(organizationId) || isAdmin();
+        // Provisioned exclusively through `createDailySafetyMeeting`/
+        // `updateDailySafetyMeeting`/`completeDailySafetyMeeting`
+        // (`daily_safety_meeting_callable.ts`), which additionally verifies
+        // server-side that the caller is an active `foreman` with the
+        // meeting's own site in their `siteIds`, that the site belongs to
+        // the given organization/project, and that every activity/meeting
+        // point id named belongs to that site/organization respectively.
+        allow write: if false;
+
+        // ---- .../daily_safety_meetings/{meetingId}/attendance/{workerId} ----
+        // Read follows the parent meeting's shape: any org member or a
+        // Admin. Provisioned exclusively through
+        // `recordMeetingAttendance` (`daily_safety_meeting_callable.ts`),
+        // which additionally verifies server-side that the caller is the
+        // meeting's own foreman, that the meeting is still `inProgress`,
+        // that `workerId` belongs to the meeting's own site, and that
+        // `workerId` is never the caller's own uid — a worker cannot mark
+        // themselves present.
+        match /attendance/{workerId} {
+          allow read: if belongsToOrganization(organizationId) || isAdmin();
+          allow write: if false;
+        }
+
+        // ---- .../daily_safety_meetings/{meetingId}/concerns/{concernId} ----
+        // Read follows the parent meeting's shape: any org member or a
+        // Admin — a completed meeting's concerns are part of
+        // the permanent record, same visibility as the meeting itself.
+        // Provisioned exclusively through `addMeetingConcern`/
+        // `updateMeetingConcern`/`removeMeetingConcern`
+        // (`daily_safety_meeting_callable.ts`), which additionally verify
+        // server-side that the caller is the meeting's own foreman and that
+        // the meeting is still `inProgress` — once `completed`, all three
+        // refuse, so a concern can never be silently altered after the
+        // meeting closes.
+        match /concerns/{concernId} {
+          allow read: if belongsToOrganization(organizationId) || isAdmin();
+          allow write: if false;
+        }
+      }
+
+      // ---- organizations/{organizationId}/hazards/{hazardId} ----
+      // Flat under the organization (a sibling of `corrective_actions`), so
+      // an authorized reviewer's Hazards screen can query every hazard
+      // across every site in one collection, and a worker's own "My
+      // Reports" view is a query narrowed to `reportedByUid`, not a
+      // different collection. Read follows the same org-member-or-System-
+      // Administrator shape as `corrective_actions`: a hazard is part of
+      // the permanent safety record, visible to any active org member, not
+      // personal data scoped to the reporter alone.
+      match /hazards/{hazardId} {
+        allow read: if belongsToOrganization(organizationId) || isAdmin();
+        // Provisioned exclusively through `createHazard`/`acknowledgeHazard`/
+        // `linkHazardCorrectiveAction`/`closeHazard` (`hazard_callable.ts`).
+        // `createHazard` additionally verifies server-side that the caller
+        // is an active member of this organization with the hazard's own
+        // `siteId` in their `siteIds`, and derives `projectId` from the
+        // site document rather than trusting it from the request.
+        // `acknowledgeHazard`/`linkHazardCorrectiveAction`/`closeHazard`
+        // additionally verify server-side that the caller holds an
+        // authorized reviewer role (`admin`/`siteManager` — see
+        // `account_approval.ts`'s `canReviewPendingAccounts`) within the
+        // hazard's own organization.
+        // There is no delete callable and this rule denies delete too: a
+        // hazard, like a corrective action, is a permanent part of the
+        // safety record once created.
+        allow write: if false;
+      }
+
+      // ---- organizations/{organizationId}/corrective_actions/{id} ----
+      // Flat under the organization (a sibling of `daily_safety_meetings`,
+      // not a subcollection of one) — a corrective action's meeting/concern
+      // are `meetingId`/`concernId` fields, not path segments, so an
+      // authorized supervisor/manager's Corrective Actions list can query
+      // every action across every site and meeting in one collection. Read
+      // follows the same org-member-or-System-Administrator shape as
+      // `daily_safety_meetings`: a corrective action is part of the
+      // permanent safety record, not personal data scoped to one user.
+      match /corrective_actions/{actionId} {
+        allow read: if belongsToOrganization(organizationId) || isAdmin();
+        // Provisioned exclusively through `createCorrectiveAction`
+        // (`corrective_action_callable.ts`), which accepts EITHER a
+        // `meetingId` (verifying server-side that the caller is that
+        // meeting's own foreman on an `inProgress` meeting, and that any
+        // named `concernId` belongs to that meeting) OR a `hazardId`
+        // (verifying server-side that the caller holds an authorized
+        // reviewer role and that the named hazard is not already closed or
+        // already linked — the same path `hazard_callable.ts`'s
+        // `linkHazardCorrectiveAction` reaches through the shared
+        // `createCorrectiveActionForHazard` implementation) — never both.
+        // In either case, `assignedTo` must be an active member of this
+        // organization, and never the caller's own uid — a worker cannot
+        // assign a corrective action to themselves.
+        // `updateCorrectiveActionStatus` transitions `status` afterward,
+        // restricted to the same reviewer roles (`admin`/`siteManager`, plus
+        // `foreman` for their own site) already trusted to review pending
+        // accounts — see `account_approval.ts`'s `canReviewPendingAccounts`.
+        // There is
+        // no delete callable and this rule denies delete too: a corrective
+        // action, like a completed meeting's concerns, is a permanent part
+        // of the safety record once created.
+        allow write: if false;
+      }
+
+      // ---- organizations/{organizationId}/safety_alerts/{alertId} ----
+      // Flat under the organization (a sibling of `corrective_actions`), so
+      // an authorized user's Safety Alerts screen can query every alert
+      // across every site in one collection, and a worker/foreman's own
+      // site view is a query narrowed to `siteId`, not a different
+      // collection. Read follows the same org-member-or-System-
+      // Administrator shape as `corrective_actions`: a safety alert is part
+      // of the permanent safety record, visible to any active org member —
+      // "Workers/foremen can view alerts applicable to their organization/
+      // site" from this feature's task description.
+      match /safety_alerts/{alertId} {
+        allow read: if belongsToOrganization(organizationId) || isAdmin();
+        // Provisioned exclusively through `createSafetyAlert`/
+        // `acknowledgeSafetyAlert`/`resolveSafetyAlert`
+        // (`safety_alert_callable.ts`), which additionally verify
+        // server-side that the caller holds an authorized reviewer role
+        // (`admin`/`siteManager` — see `account_approval.ts`'s
+        // `canReviewPendingAccounts`) within the alert's own organization,
+        // and that the named site belongs to the given organization/
+        // project. There is no delete callable and this rule denies delete
+        // too: a safety alert, like a corrective action, is a permanent
+        // part of the safety record once created.
+        allow write: if false;
+      }
+
+      // ---- organizations/{organizationId}/notifications/{id} ----
+      // Unlike `safety_alerts`/`corrective_actions`, this one is scoped
+      // narrower than "any org member" — a notification is personal data
+      // addressed to exactly one `recipientUid`, mirroring
+      // `worker_learning_records`'s own "owning worker only" read boundary
+      // below. Read is limited to the notification's OWN `recipientUid` or
+      // an Admin — deliberately NOT any org member, and deliberately NOT
+      // even a siteManager (unlike `worker_learning_records`'s
+      // compliance-viewing carve-out), since this stage's task description
+      // grants nobody but the recipient themself visibility into their own
+      // notifications.
+      match /notifications/{notificationId} {
+        allow read: if isAdmin()
+          || (belongsToOrganization(organizationId) && resource.data.recipientUid == request.auth.uid);
+        // Provisioned exclusively server-side: `createNotification`
+        // (`notification_callable.ts`) is a plain internal function, never
+        // an `onCall` callable and never exported from `index.ts`, so no
+        // client can create a notification under any circumstance.
+        // `markNotificationRead`/`markAllNotificationsRead` transition
+        // `isRead`/`readAt` afterward, both re-deriving the acting user from
+        // `request.auth.uid` alone and refusing unless
+        // `notification.recipientUid` matches — a user can only ever mark
+        // their OWN notifications read. There is no delete callable and
+        // this rule denies delete too.
+        allow write: if false;
+      }
+
+      // ---- organizations/{organizationId}/worker_learning_records/{recordId} ----
+      // Unlike every other operational collection so far, this one is
+      // scoped narrower than "any org member" — a learning record is
+      // personal. Read is limited to the OWNING WORKER
+      // (`resource.data.workerUid == request.auth.uid`), a `siteManager` of
+      // this organization, or an Admin. `foreman` is deliberately NOT
+      // granted broader read access here than an ordinary org member gets
+      // elsewhere: compliance-viewing across the whole organization is a
+      // `siteManager`/`admin` responsibility (PROJECT_CONTEXT.md §12/§16),
+      // not a Foreman one — a Foreman's visibility into their own crew's
+      // training is provided elsewhere via the callables, not this rule.
+      match /worker_learning_records/{recordId} {
+        allow read: if isAdmin()
+          || (belongsToOrganization(organizationId) && resource.data.workerUid == request.auth.uid)
+          || (belongsToOrganization(organizationId) && currentUserProfile().platformRole == 'siteManager');
+        // Provisioned exclusively through `getMyRequiredLearning`/
+        // `startLearning`/`completeLearning` (`worker_learning_callable.ts`),
+        // none of which accept a workerUid argument — every one derives the
+        // acting worker from the caller's own auth token server-side. This
+        // is what makes "a worker can only ever write their own record"
+        // structural rather than a rules-language self-check that could be
+        // bypassed by a modified client; the callables are the only write
+        // path regardless.
+        allow write: if false;
+      }
+
+      // Every other operational collection. Read requires active
+      // membership of this organization; writes await the RBAC stage (see
+      // the header note) and are denied to every client until the role and
+      // site/activity assignment model exists to authorize them properly.
+      //
+      // BUG FIX: Firestore security rules evaluate every `match` block whose
+      // path matches and OR their `allow` conditions together — an earlier,
+      // narrower `match` (e.g. `notifications` or `worker_learning_records`
+      // above) does NOT shadow this later wildcard. Without excluding those
+      // two collection names here explicitly, this catch-all silently
+      // widened their read access back to "any org member," defeating the
+      // narrower recipient-only / owner-or-siteManager-only scoping those
+      // blocks intentionally enforce. `operationalCollection` is therefore
+      // checked against both names and denied here — their own `match`
+      // blocks above remain the sole source of read authorization for them.
+      match /{operationalCollection}/{documentId=**} {
+        allow read: if belongsToOrganization(organizationId)
+          && operationalCollection != 'notifications'
+          && operationalCollection != 'worker_learning_records';
+        allow write: if false;
+      }
+    }
+
+    // ---- Audit logs: append-only, Cloud-Functions-only writes ----
+    // Reads await the RBAC stage: identifying an administrator requires a
+    // role field that does not exist yet.
+    match /audit_logs/{logId} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,84 @@
+import 'package:flutter/material.dart';
+import '../../features/organizations/data/organization_repository.dart';
+import '../../features/organizations/domain/organization.dart';
+import '../services/firestore_service.dart';
+import '../theme/app_spacing.dart';
+import '../theme/app_text_styles.dart';
+
+/// A dropdown letting a System Administrator choose which organization's
+/// data an organization-scoped screen (Corrective Actions, Safety Alerts,
+/// Reports, Analytics, ...) should show.
+///
+/// A System Administrator has no [organizationId] of their own — every
+/// operational repository behind those screens is nonetheless constructed
+/// scoped to exactly one organization. This widget supplies that
+/// organization by explicit choice instead of leaving the screen unable to
+/// pick one at all. It is a viewing convenience only: it grants no new
+/// authority. `firestore.rules`'s `isSystemAdministrator()` already permits
+/// this role to read every organization's data in these collections, so
+/// selecting an organization here only decides which of the reads this role
+/// could already make gets displayed.
+///
+/// Renders nothing (a zero-height [SizedBox]) once an organization is
+/// picked, so callers place it once above their existing content and it
+/// gets out of the way after the first selection.
+class OrganizationScopeSelector extends StatefulWidget {
+  const OrganizationScopeSelector({
+    super.key,
+    required this.selectedOrganizationId,
+    required this.onChanged,
+    this.repository,
+  });
+
+  final String? selectedOrganizationId;
+  final ValueChanged<String?> onChanged;
+
+  /// Injected in tests.
+  final OrganizationRepository? repository;
+
+  @override
+  State<OrganizationScopeSelector> createState() =>
+      _OrganizationScopeSelectorState();
+}
+
+class _OrganizationScopeSelectorState
+    extends State<OrganizationScopeSelector> {
+  late final OrganizationRepository _repository =
+      widget.repository ??
+      OrganizationRepository(firestoreService: FirestoreService());
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<Organization>>(
+      stream: _repository.watchAll(),
+      builder: (context, snapshot) {
+        final organizations = snapshot.data ?? const <Organization>[];
+
+        return Padding(
+          padding: const EdgeInsets.only(bottom: AppSpacing.md),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Organization', style: AppTextStyles.label),
+              const SizedBox(height: AppSpacing.xs),
+              DropdownButtonFormField<String>(
+                initialValue: widget.selectedOrganizationId,
+                decoration: const InputDecoration(
+                  hintText: 'Choose an organization',
+                ),
+                items: [
+                  for (final organization in organizations)
+                    DropdownMenuItem(
+                      value: organization.id,
+                      child: Text(organization.name),
+                    ),
+                ],
+                onChanged: widget.onChanged,
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}

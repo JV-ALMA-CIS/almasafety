@@ -1,0 +1,287 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../../../core/errors/app_exception.dart';
+import '../../../core/services/firestore_service.dart';
+import '../../../core/services/session_controller.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_spacing.dart';
+import '../../../core/theme/app_text_styles.dart';
+import '../../authentication/presentation/auth_error_banner.dart';
+import '../data/notification_repository.dart';
+import '../data/notification_service.dart';
+import '../domain/app_notification.dart';
+import '../domain/notification_type.dart';
+
+/// The signed-in user's own notification list.
+///
+/// **User-specific, not organization-wide.** Every notification shown here
+/// belongs to the caller alone — `firestore.rules` independently confirms
+/// `recipientUid == request.auth.uid` for every document this screen reads,
+/// so there is no client-side filtering step that actually matters for
+/// isolation; [NotificationRepository.watchForRecipient] narrows the query
+/// for efficiency, not for security.
+///
+/// Mobile-friendly by construction: a single scrolling list, large tap
+/// targets on each row (mark-as-read is the whole row, not a small icon),
+/// and one "Mark all read" action rather than a per-row menu.
+class NotificationsScreen extends StatefulWidget {
+  const NotificationsScreen({super.key, this.repository, this.service});
+
+  /// Injected in tests. Production builds pass nothing and the state
+  /// constructs the real dependencies scoped to the signed-in user's
+  /// organization.
+  final NotificationRepository? repository;
+  final NotificationService? service;
+
+  @override
+  State<NotificationsScreen> createState() => _NotificationsScreenState();
+}
+
+class _NotificationsScreenState extends State<NotificationsScreen> {
+  late final NotificationService _service =
+      widget.service ?? NotificationService();
+
+  NotificationRepository? _repository;
+  String? _errorMessage;
+  bool _isSaving = false;
+
+  NotificationRepository _repositoryFor(String organizationId) {
+    final existing = _repository;
+    if (existing != null && existing.organizationId == organizationId) {
+      return existing;
+    }
+    final created = widget.repository ??
+        NotificationRepository(
+          firestoreService: FirestoreService(),
+          organizationId: organizationId,
+        );
+    _repository = created;
+    return created;
+  }
+
+  Future<void> _markRead(String organizationId, AppNotification notification) async {
+    if (notification.isRead) return;
+    setState(() {
+      _isSaving = true;
+      _errorMessage = null;
+    });
+    try {
+      await _service.markNotificationRead(
+        organizationId: organizationId,
+        notificationId: notification.id,
+      );
+    } on AppException catch (e) {
+      if (!mounted) return;
+      setState(() => _errorMessage = e.message);
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  Future<void> _markAllRead(String organizationId) async {
+    setState(() {
+      _isSaving = true;
+      _errorMessage = null;
+    });
+    try {
+      await _service.markAllNotificationsRead(organizationId: organizationId);
+    } on AppException catch (e) {
+      if (!mounted) return;
+      setState(() => _errorMessage = e.message);
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final profile = context.watch<SessionController>().profile;
+    final organizationId = profile?.organizationId;
+    final uid = profile?.uid;
+
+    if (organizationId == null || uid == null) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(AppSpacing.lg),
+          child: Text(
+            'Notifications are available once your account has an '
+            'organization.',
+            style: AppTextStyles.bodyMedium,
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
+
+    return StreamBuilder<List<AppNotification>>(
+      stream: _repositoryFor(organizationId).watchForRecipient(uid),
+      builder: (context, snapshot) {
+        final notifications = snapshot.data ?? const <AppNotification>[];
+        final isLoading = snapshot.connectionState == ConnectionState.waiting;
+        final unreadCount = notifications.where((n) => !n.isRead).length;
+
+        return Scaffold(
+          body: ListView(
+            padding: const EdgeInsets.all(AppSpacing.md),
+            physics: const AlwaysScrollableScrollPhysics(),
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Notifications',
+                      style: AppTextStyles.headlineMedium,
+                    ),
+                  ),
+                  if (unreadCount > 0)
+                    TextButton(
+                      onPressed: _isSaving
+                          ? null
+                          : () => _markAllRead(organizationId),
+                      child: const Text('Mark all read'),
+                    ),
+                ],
+              ),
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                unreadCount > 0 ? '$unreadCount unread' : 'All caught up',
+                style: AppTextStyles.bodyMedium,
+              ),
+              const SizedBox(height: AppSpacing.md),
+              if (_errorMessage != null) ...[
+                AuthErrorBanner(message: _errorMessage!),
+                const SizedBox(height: AppSpacing.md),
+              ],
+              if (isLoading && notifications.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: AppSpacing.xl),
+                  child: Center(child: CircularProgressIndicator()),
+                ),
+              if (!isLoading && notifications.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: AppSpacing.xl),
+                  child: Column(
+                    children: [
+                      Icon(
+                        Icons.notifications_none_outlined,
+                        size: 48,
+                        color: AppColors.textSecondary,
+                      ),
+                      SizedBox(height: AppSpacing.sm),
+                      Text(
+                        'No notifications yet.',
+                        style: AppTextStyles.bodyMedium,
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+              for (final notification in notifications) ...[
+                _NotificationCard(
+                  notification: notification,
+                  isSaving: _isSaving,
+                  onTap: () => _markRead(organizationId, notification),
+                ),
+                const SizedBox(height: AppSpacing.sm),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _NotificationCard extends StatelessWidget {
+  const _NotificationCard({
+    required this.notification,
+    required this.isSaving,
+    required this.onTap,
+  });
+
+  final AppNotification notification;
+  final bool isSaving;
+  final VoidCallback onTap;
+
+  IconData get _typeIcon => switch (notification.type) {
+    AppNotificationType.safetyAlert => Icons.warning_amber_outlined,
+    AppNotificationType.correctiveAction => Icons.build_outlined,
+    AppNotificationType.safetyMeeting => Icons.fact_check_outlined,
+    AppNotificationType.safetyLearning => Icons.school_outlined,
+    AppNotificationType.system => Icons.info_outline,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final isUnread = !notification.isRead;
+
+    return Card(
+      margin: EdgeInsets.zero,
+      color: isUnread ? AppColors.info.withValues(alpha: 0.06) : null,
+      child: InkWell(
+        onTap: isUnread && !isSaving ? onTap : null,
+        borderRadius: BorderRadius.circular(AppSpacing.sm),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(
+            minHeight: AppSpacing.minTouchTarget,
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.md),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (isUnread)
+                  Container(
+                    width: 8,
+                    height: 8,
+                    margin: const EdgeInsets.only(
+                      top: AppSpacing.xs,
+                      right: AppSpacing.sm,
+                    ),
+                    decoration: const BoxDecoration(
+                      color: AppColors.info,
+                      shape: BoxShape.circle,
+                    ),
+                  )
+                else
+                  const SizedBox(width: 8 + AppSpacing.sm),
+                Icon(_typeIcon, size: 20, color: AppColors.textSecondary),
+                const SizedBox(width: AppSpacing.sm),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        notification.title,
+                        style: isUnread
+                            ? AppTextStyles.titleLarge
+                            : AppTextStyles.bodyMedium,
+                      ),
+                      const SizedBox(height: AppSpacing.xs),
+                      Text(
+                        notification.message,
+                        style: AppTextStyles.bodyMedium,
+                      ),
+                      const SizedBox(height: AppSpacing.xs),
+                      Text(
+                        _formatDate(notification.createdAt),
+                        style: AppTextStyles.label,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+String _formatDate(DateTime? date) {
+  if (date == null) return 'recently';
+  final month = date.month.toString().padLeft(2, '0');
+  final day = date.day.toString().padLeft(2, '0');
+  return '${date.year}-$month-$day';
+}
