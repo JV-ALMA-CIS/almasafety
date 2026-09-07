@@ -1,6 +1,6 @@
 # JVA Safety — Firestore Data Model
 
-**Status:** Reflects the implemented data model as of the 4-role platform redesign (see PROJECT_CONTEXT.md §12–19). Where this document describes fields not yet implemented in code, that is called out explicitly.
+**Status:** Reflects the implemented data model as of the 4-role platform redesign (see PROJECT_CONTEXT.md §12–19) and the subsequent multi-organization membership migration, which moved `organizationId`/role/`workerType`/`trade`/`siteIds`/`supervisorUid` off `users/{uid}` onto a `users/{uid}/memberships/{organizationId}` subcollection so a Site Manager or Foreman can belong to more than one organization at once. Where this document describes fields not yet implemented in code, that is called out explicitly.
 
 Collections are nested under `organizations/{organizationId}/...` so organization isolation is enforced by path structure, matching `firestore.rules`. Document IDs are Firestore auto-IDs; entities reference each other via explicit ID fields.
 
@@ -22,14 +22,20 @@ updatedBy: string        // uid
 
 Documents that represent **auditable safety records** (see §9) additionally never allow client-side field mutation after a `status`/`completedAt` transition marks them closed — enforced in security rules, not just convention.
 
-**Platform roles.** JVA Safety uses exactly four platform authorization roles,
-stored as `platformRole` on `users/{uid}`: `admin`, `siteManager`, `foreman`,
-`worker` (PROJECT_CONTEXT.md §12). `platformRole` is distinct from
-`workerType` (`jvaEmployee` | `contractor` | `subcontractor` | `other` —
-employment relationship) and from `trade` (e.g. Electrician, Mason, Plumber —
-job discipline, worker-only). None of these three fields may be written by
-the client at registration time or at any time thereafter except through the
-authorized approval/assignment Cloud Functions — see §2 `users/{uid}` below.
+**Platform roles.** JVA Safety uses exactly four platform authorization
+roles: `admin`, `siteManager`, `foreman`, `worker` (PROJECT_CONTEXT.md §12).
+`admin` is platform-level and stored as `platformRole` on `users/{uid}` — an
+Admin belongs to no organization and holds no membership document. Every
+other role (`siteManager`, `foreman`, `worker`) is **per-organization**,
+stored as `role` on a `users/{uid}/memberships/{organizationId}` document —
+see §2 below — because a Site Manager or Foreman may operate across more
+than one organization at once, each with its own role, worker type, site
+assignment and status. `role` (per membership) is distinct from `workerType`
+(`jvaEmployee` | `contractor` | `subcontractor` | `other` — employment
+relationship) and from `trade` (e.g. Electrician, Mason, Plumber — job
+discipline, worker-only), both also per-membership. None of these fields may
+be written by the client at registration or assignment time — only through
+the authorized approval/assignment Cloud Functions.
 
 ---
 
@@ -37,68 +43,112 @@ authorized approval/assignment Cloud Functions — see §2 `users/{uid}` below.
 
 ### `users/{uid}`  *(implemented — authentication foundation)*
 The bridge between Firebase Auth identity and JVA Safety. Read (and streamed)
-by `SessionController` after sign-in.
+by `SessionController` after sign-in. Holds identity and account-level state
+only — organization membership lives on the subcollection below.
 
 **Top-level, deliberately not `organizations/{orgId}/users/{uid}`.** JVA
 Safety uses self-registration + admin approval (PROJECT_CONTEXT.md §15), so a
 user creates their profile *before* any organization is known — there is no
-organization path to write into at registration time. `organizationId` is
-therefore a nullable field assigned at approval rather than part of the
-document path. Operational collections remain org-scoped, so organization
-isolation for safety *data* is still structural; only the identity document
-sits outside that tree.
+organization path to write into at registration time. Operational
+collections remain org-scoped, so organization isolation for safety *data*
+is still structural; only the identity document sits outside that tree.
 
 ```
 uid: string
-organizationId: string?    // null until an approver assigns one
 name: string
 email: string              // bound to the Firebase Auth token email
 phone: string
 accountStatus: string      // pending | active | suspended | rejected
-platformRole: string?      // admin | siteManager | foreman | worker — null until assigned
-workerType: string?        // jvaEmployee | contractor | subcontractor | other (typically worker-only)
-trade: string?             // e.g. "Electrician", "Mason", "Plumber" (worker-only; never named "role")
-siteIds: string[]          // explicit site assignment; default []
-supervisorUid: string?     // for a worker: their supervising Foreman's uid
-                            // for a foreman: the Site Manager who approved/manages them
+platformRole: string?      // "admin" | null — the ONLY value this field ever
+                            // carries; every other role lives per-membership
+                            // below, never here
 createdAt: Timestamp       // server timestamp
 updatedAt: Timestamp       // server timestamp
-approvedAt: Timestamp?     // set by the approval authority only
-approvedBy: string?        // uid of the approver
 ```
 
 `accountStatus` is the **authoritative account-state field**. There is
 deliberately no second `active` boolean (PROJECT_CONTEXT.md §19) — two
 booleans would eventually disagree. Only `accountStatus == "active"` grants
-operational access.
+operational access at all; it gates sign-in and app access globally,
+independent of which (or how many) organizations the account belongs to.
 
-`platformRole` is the sole authorization-role field and carries exactly four
-values (§12 above). `trade` is a separate, worker-only field describing job
-discipline and must never be conflated with `platformRole` or stored under a
-field literally named `role`.
+`platformRole` is written only for Admin — the sole role with platform-wide
+authority not scoped to any single organization (PROJECT_CONTEXT.md §12).
+Every other person's role, worker type and trade are per-organization
+fields, living on the membership document below, not here.
 
 Client write permissions:
 
 | Operation | Allowed? | Notes |
 |---|---|---|
-| Create own profile | yes | Only with `accountStatus: "pending"`, own uid as doc id, email matching the auth token, and **no** `organizationId`/`approvedAt`/`approvedBy`/`platformRole`/`workerType`/`trade`/`siteIds`/`supervisorUid` keys. |
+| Create own profile | yes | Only with `accountStatus: "pending"`, own uid as doc id, email matching the auth token, and **no** `platformRole` key. |
 | Read own profile | yes | Needed so the pending screen sees approval live. |
-| Read another profile | no client read | Reads of other org members' profiles go through Cloud Functions callables (e.g. `listOrganizationUsers`), which apply the caller's `platformRole` and org/site scope server-side — never a direct Firestore client read. |
+| Read another profile | no client read | Reads of other org members' profiles go through Cloud Functions callables (e.g. `listOrganizationUsers`), which apply the caller's own membership role and org/site scope server-side — never a direct Firestore client read. |
 | Update `name`, `phone` | yes | Plus a server `updatedAt`. |
-| Update `accountStatus`, `organizationId`, `approvedAt`, `approvedBy`, `uid`, `email`, `createdAt`, `platformRole`, `workerType`, `trade`, `siteIds`, `supervisorUid` | **no** | Admin SDK only, via the approval/assignment callables. This is the field set that prevents self-approval and privilege escalation. |
+| Update `accountStatus`, `uid`, `email`, `createdAt`, `platformRole` | **no** | Admin SDK only, via the approval callables. This is the field set that prevents self-approval and privilege escalation. |
 | Delete | no | Rejection is a status, not a deletion — history is preserved. |
 
-Approval, organization assignment, `platformRole` assignment, and status
-transitions run through `functions/src/account_approval.ts` under the Admin
-SDK. Who may approve whom is gated by the approver's own `platformRole`
-against the hierarchy in PROJECT_CONTEXT.md §16: Admin approves Site
-Managers; a Site Manager approves Foremen within the organization(s) they
-manage; a Foreman approves Workers within their own assigned site(s). A
-caller can never approve or promote themselves, and can never grant a
-`platformRole` above their own authority (e.g. a Foreman cannot approve
-another Foreman or grant `siteManager`/`admin`). The very first Admin is
-created outside this flow entirely, via a controlled deployment/operator
-process — see PROJECT_CONTEXT.md §18.
+### `users/{uid}/memberships/{organizationId}`  *(implemented)*
+One document per organization a person belongs to — the source of truth for
+"does this person belong to this organization, and with what role/status."
+Replaces what used to be a single `organizationId`/`platformRole`/
+`workerType`/`trade`/`siteIds`/`supervisorUid` set of fields directly on the
+profile: a Site Manager routinely operates several organizations at once,
+and a contracted Foreman may be placed into more than one — a scalar field
+on the profile cannot represent that.
+
+```
+organizationId: string      // == the document id, denormalized for queries
+role: string                 // siteManager | foreman | worker — never "admin"; Admin holds no memberships
+workerType: string?          // jvaEmployee | contractor | subcontractor | other (typically worker-only)
+trade: string?                // e.g. "Electrician", "Mason", "Plumber" (worker-only; never named "role")
+siteIds: string[]             // explicit site assignment within this organization; default []
+supervisorUid: string?        // for a worker: their supervising Foreman's uid
+                                // for a foreman: the Site Manager who approved/manages them
+status: string                 // active | suspended — PER ORGANIZATION, independent of accountStatus
+approvedAt: Timestamp
+approvedBy: string             // uid of the approver
+createdAt: Timestamp
+updatedAt: Timestamp
+```
+
+**`status` here is independent of `accountStatus` on the parent profile.**
+`accountStatus` answers "can this person use JVA Safety at all"; a
+membership's own `status` answers "can this person currently operate inside
+*this* organization." A manager can suspend a Foreman's access to one
+organization without touching that Foreman's other memberships or their
+account-level status — e.g. Foreman X can be `active` in Organization A,
+`suspended` in Organization B, and still `active` in Organization C, all
+simultaneously.
+
+A first-ever approval for a person sets `accountStatus: active` on the
+profile AND creates their first membership document, in the same operation.
+Placing an already-active person into an additional organization only
+creates another membership document — it never touches `accountStatus` or
+any other membership.
+
+Client write permissions: read is limited to the owning uid or Admin (both
+matching the profile's own read scope); write is Admin SDK only, exactly
+like the fields it replaced — provisioned exclusively through
+`approvePendingAccount` (first membership), `addOrganizationMembership` (an
+additional organization for an already-active person),
+`createOrganization` (the creating Site Manager's own membership), and
+`suspendMembership`/`reinstateMembership` (toggling `status` only) — see
+`functions/src/approval_callable.ts`/`organization_callable.ts`.
+
+Approval, membership creation, and status transitions run through
+`functions/src/account_approval.ts` and `functions/src/approval_callable.ts`
+under the Admin SDK. Who may approve whom is gated by the approver's own
+role against the hierarchy in PROJECT_CONTEXT.md §16: Admin approves Site
+Managers (account activation; organization is usually left unset — the Site
+Manager creates or is later placed into their own organization); a Site
+Manager approves Foremen within an organization they belong to; a Foreman
+approves Workers within their own assigned site(s). A caller can never
+approve or promote themselves, and can never grant a role above their own
+authority (e.g. a Foreman cannot approve another Foreman or grant
+`siteManager`/`admin`). The very first Admin is created outside this flow
+entirely, via a controlled deployment/operator process — see
+PROJECT_CONTEXT.md §18.
 
 ### `organizations/{organizationId}`
 ```
@@ -147,9 +197,11 @@ foremanUids: string[]        // Foremen/Site Supervisors assigned to this site
 createdAt, createdBy, updatedAt, updatedBy
 ```
 
-Site Manager/Site Superintendent authority over a site is derived from their
-`organizationId` match, not from a per-site list — a Site Manager manages
-every site within the organization(s) they manage.
+Site Manager/Site Superintendent authority over a site is derived from
+holding an active `siteManager` membership in that site's organization
+(`users/{uid}/memberships/{organizationId}`), not from a per-site list — a
+Site Manager manages every site within each organization they hold that
+membership in, and may hold it in more than one organization at once.
 
 ### `organizations/{orgId}/activities/{activityId}`
 Activity *types* performed on sites (e.g. Roofing, Electrical Works) — the link between work being done and required Safety Meeting Points / Safety Learning.
@@ -428,7 +480,8 @@ callable enforces server-side — the actual security boundary — using the
 
 | Collection | Read | Write (enforced in Cloud Functions callables) |
 |---|---|---|
-| `users` | self; `siteManager`+ for others in an organization they manage; `admin` for anyone | self: `name`/`phone` only, via direct Firestore write. `organizationId`/`platformRole`/`workerType`/`trade`/`siteIds`/`supervisorUid`/`accountStatus`/`approvedAt`/`approvedBy`/`createdAt`: **no client writes at all** — only via `account_approval.ts` callables, gated by the approval hierarchy (Admin approves Site Managers; Site Manager approves Foremen in their org; Foreman approves Workers on their site). No client create beyond self-registration, no delete. |
+| `users` | self; `admin` for anyone | self: `name`/`phone` only, via direct Firestore write. `accountStatus`/`platformRole`/`createdAt`: **no client writes at all** — only via `account_approval.ts`/`approval_callable.ts` callables. No client create beyond self-registration, no delete. |
+| `users/{uid}/memberships` | self; `admin` for anyone | **no client writes at all** — only via the approval/membership callables (`approvePendingAccount`, `addOrganizationMembership`, `createOrganization`, `suspendMembership`/`reinstateMembership`), gated by the approval hierarchy (Admin approves Site Managers; Site Manager approves Foremen in an org they belong to; Foreman approves Workers on their site). |
 | `organizations` | members; `admin` for any | create: `siteManager` (creating their own organization) or `admin`. update: `siteManager` for the organization(s) they manage; `admin` for any — Admin retains platform-level intervention rights (reassign, suspend, manage) over every organization |
 | `projects`, `sites`, `activities` | org members | `siteManager` for the organization(s) they manage; `admin` for any |
 | `workers` *(not yet implemented)* | org members | create/approve: `foreman` for their own assigned site(s); `siteManager`/`admin` for any worker in an organization they manage/any organization respectively |

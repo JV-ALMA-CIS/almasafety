@@ -546,6 +546,10 @@ Admin
 
 The Admin remains the platform/company authority above all organizations and can audit, reassign, suspend, or otherwise intervene in any organization — but does not perform day-to-day worker approval or run site safety meetings. A Site Manager/Site Superintendent must be able to create an organization because they are the field operational manager; when they do, the organization is associated with that user as its operational manager, and the Admin retains platform-level oversight over it. A Foreman/Site Supervisor manages only the workers they directly interact with, within their assigned organization/site(s).
 
+**A person may belong to more than one organization at once.** In practice a Site Manager/Site Superintendent often operates several organizations simultaneously (they created each one, or were placed into it), and a contracted Foreman/Site Supervisor may be placed into more than one organization by different Site Managers. Each such relationship — role, worker type, trade, site assignment, and its own active/suspended status — is independent per organization: suspending a Foreman's access to one organization has no effect on their standing in another. Admin is the sole exception, holding platform-level authority scoped to no organization at all rather than a membership in every one. See §19 for how this is represented in the data model, and FIRESTORE_DATA_MODEL.md §2 for the `users/{uid}/memberships/{organizationId}` subcollection this is built on.
+
+A user with more than one such membership needs a way to say which organization they are currently working in — a compact organization switcher, shown only when a person has two or more memberships, distinct from the read-only organization picker Admin already uses to inspect any single organization's data. Switching does not require re-authentication; it only changes which organization's data the app's existing screens are scoped to, the same way selecting an organization in Admin's picker already does today.
+
 13. Worker Types and Trade
 
 JVA Safety distinguishes three separate concepts on a worker's profile:
@@ -706,23 +710,21 @@ accountStatus = pending
 
 The user does not select, and the client cannot write:
 
-platformRole
-organizationId
-siteIds
-activityIds
-supervisorUid / foremanUid
+platformRole (Admin only, on the profile)
+organization membership, or any field on one — role, workerType, trade, siteIds, activityIds, supervisorUid / foremanUid, status
+approvedAt / approvedBy
 
-during registration or afterward.
+during registration or afterward — none of this exists to write until an approver creates it.
 
-An authorized existing user (Admin, Site Manager, or Foreman, according to the hierarchy in §16) or a secure backend workflow later assigns:
+An authorized existing user (Admin, Site Manager, or Foreman, according to the hierarchy in §16) or a secure backend workflow later assigns, by creating an organization membership document for the target uid:
 
-platformRole
-organizationId
+role
+Organization
 Site assignment
 Activity assignment
 Supervising Foreman (for workers)
 
-and activates the account. This must be enforced identically whether the request comes from the Flutter UI, a direct Firestore client write, a forged document ID, or a modified request payload — the backend (Cloud Functions + Firestore rules) is the sole authority, never the client.
+and activates the account (for a first approval) or adds an additional organization (for someone already active). This must be enforced identically whether the request comes from the Flutter UI, a direct Firestore client write, a forged document ID, or a modified request payload — the backend (Cloud Functions + Firestore rules) is the sole authority, never the client.
 
 18. First Admin
 
@@ -738,29 +740,34 @@ After the initial Admin exists, normal registration and approval can occur throu
 
 19. User Profile
 
-The user profile should contain at least:
+Because a person may belong to more than one organization (§12), the user profile is split into two parts: identity/account state on the profile document itself, and one organization membership document per organization the person belongs to.
+
+The user profile (`users/{uid}`) should contain at least:
 
 uid
-organizationId
 name
 email
 phone
-platformRole        // admin | siteManager | foreman | worker
-workerType          // jvaEmployee | contractor | subcontractor | other (workers only, typically)
-trade               // e.g. Electrician, Mason, Plumber (workers only; never stored as "role")
 accountStatus
+platformRole        // "admin" or null — the ONLY value this field ever holds; every other role lives per-membership, never here
 createdAt
 updatedAt
+
+Each organization a person belongs to is a separate `users/{uid}/memberships/{organizationId}` document, containing:
+
+organizationId
+role                 // siteManager | foreman | worker — never "admin"; Admin holds no memberships
+workerType           // jvaEmployee | contractor | subcontractor | other (workers only, typically)
+trade                // e.g. Electrician, Mason, Plumber (workers only; never stored as "role")
+siteIds
+supervisorUid / foremanUid  // the worker's or Foreman's assigned supervisor, where applicable
+status               // active | suspended — for THIS organization only, independent of accountStatus and of this person's other memberships
 approvedAt
 approvedBy
 
-Site and activity assignments, and the supervising Foreman relationship, are represented explicitly in the data model as:
+Site and activity assignments, and the supervising Foreman relationship, are therefore also per-organization — see FIRESTORE_DATA_MODEL.md §2 for the full membership shape and activity assignment records.
 
-siteIds
-activityIds (via activity assignment records — see FIRESTORE_DATA_MODEL.md)
-supervisorUid / foremanUid  // the worker's or Foreman's assigned supervisor, where applicable
-
-Do not use a field called `role` to store a worker's trade — `role` (or `platformRole`) is reserved exclusively for the 4-value platform authorization enum.
+Do not use a field called `role` to store a worker's trade — `role` (on a membership) or `platformRole` (Admin only, on the profile) are reserved exclusively for the 4-value platform authorization enum.
 
 Account Status
 
@@ -774,6 +781,8 @@ rejected
 accountStatus should be the authoritative account-state field.
 
 Avoid maintaining a second active boolean unless there is a clear technical requirement for it.
+
+accountStatus is not the same thing as a membership's own status (§12, FIRESTORE_DATA_MODEL.md §2). accountStatus answers "can this person use JVA Safety at all" and is set once, at first approval. A membership's status answers "can this person currently operate inside this one organization" — a suspended membership in one organization coexists with an active accountStatus and active memberships elsewhere.
 
 20. Worker Experience
 
