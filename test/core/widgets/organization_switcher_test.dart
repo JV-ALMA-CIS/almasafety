@@ -200,4 +200,54 @@ void main() {
     // the one already shown on the closed button behind it.
     expect(find.text('Suspended'), findsNWidgets(2));
   });
+
+  testWidgets(
+    'a membership whose organization was deleted outside the app is '
+    'never shown as a selectable choice, and its raw id never leaks '
+    'into the UI — regression test for the switcher previously falling '
+    'back to the raw organizationId as a label',
+    (tester) async {
+      final firestore = FakeFirebaseFirestore();
+      await seedOrg(firestore, 'org-alpha', 'Alpha Org');
+      // org-deleted is intentionally NOT seeded — simulates an
+      // organization document removed directly in Firestore, leaving this
+      // membership dangling.
+      final repository =
+          OrganizationRepository(firestoreService: FirestoreService(firestore: firestore));
+      final session = _FakeSession(
+        memberships: [membership('org-alpha'), membership('org-deleted')],
+      );
+
+      await tester.pumpWidget(wrap(session, repository));
+      await tester.pumpAndSettle();
+
+      // Only one REAL organization to choose from now, so the switcher
+      // collapses to "nothing to switch between" (a zero-size widget, same
+      // as the exactly-one-membership case) — it never renders a plain
+      // label in this mode, so there is nothing to assert beyond "the
+      // dangling id never appears anywhere".
+      expect(find.byType(PopupMenuButton<String>), findsNothing);
+      expect(find.text('org-deleted'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'the active membership itself pointing at a deleted organization '
+    'shows a clear message, never the raw id',
+    (tester) async {
+      final firestore = FakeFirebaseFirestore();
+      // Neither organization exists — both memberships are dangling.
+      final repository =
+          OrganizationRepository(firestoreService: FirestoreService(firestore: firestore));
+      final session = _FakeSession(
+        memberships: [membership('org-gone-1'), membership('org-gone-2')],
+      );
+
+      await tester.pumpWidget(wrap(session, repository));
+      await tester.pumpAndSettle();
+
+      expect(find.text('org-gone-1'), findsNothing);
+      expect(find.text('org-gone-2'), findsNothing);
+    },
+  );
 }

@@ -83,10 +83,17 @@ class _OrganizationSwitcherBody extends StatefulWidget {
 
 class _OrganizationSwitcherBodyState
     extends State<_OrganizationSwitcherBody> {
-  /// organizationId -> resolved name. Populated as each fetch resolves; a
-  /// row shows the raw id as a fallback until then rather than blocking the
-  /// whole control on every organization loading.
-  final Map<String, String> _names = {};
+  /// organizationId -> resolved name, or null once confirmed the
+  /// organization document no longer exists (e.g. deleted directly in
+  /// Firestore, leaving a dangling membership behind — the client has no
+  /// delete-organization path of its own, so this can currently only
+  /// happen from outside the app). Absent from this map entirely means
+  /// "still loading" — present with a null value means "confirmed gone",
+  /// which [_nameFor] and the row/label builders treat differently: a
+  /// still-loading name falls back to the raw id (best available label for
+  /// now); a confirmed-gone one is never shown as if it were a normal,
+  /// selectable organization.
+  final Map<String, String?> _names = {};
 
   @override
   void initState() {
@@ -107,28 +114,49 @@ class _OrganizationSwitcherBodyState
       final organizationId = membership.organizationId;
       if (_names.containsKey(organizationId)) continue;
       widget.repository.getById(organizationId).then((organization) {
-        if (!mounted || organization == null) return;
-        setState(() => _names[organizationId] = organization.name);
+        if (!mounted) return;
+        // organization == null means the document does not exist —
+        // recorded explicitly (not just left absent) so _nameFor can tell
+        // "still loading" apart from "confirmed gone".
+        setState(() => _names[organizationId] = organization?.name);
       });
     }
   }
+
+  /// True once [organizationId] has been confirmed to have no matching
+  /// document — a dangling membership left behind by an organization
+  /// deleted outside the app.
+  bool _isMissing(String organizationId) =>
+      _names.containsKey(organizationId) && _names[organizationId] == null;
 
   String _nameFor(String organizationId) =>
       _names[organizationId] ?? organizationId;
 
   @override
   Widget build(BuildContext context) {
+    // Memberships whose organization is confirmed gone are never offered
+    // as a choice — there is nothing behind them to switch to.
+    final selectableMemberships = widget.memberships
+        .where((m) => !_isMissing(m.organizationId))
+        .toList(growable: false);
+
+    if (selectableMemberships.length <= 1) return const SizedBox.shrink();
+
     final active = widget.activeMembership;
+    final activeIsMissing =
+        active != null && _isMissing(active.organizationId);
     final activeLabel = active == null
         ? 'Choose organization'
-        : _nameFor(active.organizationId);
+        : (activeIsMissing
+            ? 'Organization unavailable'
+            : _nameFor(active.organizationId));
     final activeSuspended = active?.status == MembershipStatus.suspended;
 
     return PopupMenuButton<String>(
       tooltip: 'Switch organization',
       position: PopupMenuPosition.under,
       itemBuilder: (context) => [
-        for (final membership in widget.memberships)
+        for (final membership in selectableMemberships)
           PopupMenuItem<String>(
             value: membership.organizationId,
             child: _MembershipRow(
@@ -149,7 +177,7 @@ class _OrganizationSwitcherBodyState
               size: 18,
               color: activeSuspended
                   ? AppColors.warning
-                  : Theme.of(context).colorScheme.onSurface,
+                  : AppColors.primary,
             ),
             const SizedBox(width: AppSpacing.xs),
             ConstrainedBox(
@@ -158,7 +186,8 @@ class _OrganizationSwitcherBodyState
                 activeLabel,
                 overflow: TextOverflow.ellipsis,
                 style: AppTextStyles.label.copyWith(
-                  color: activeSuspended ? AppColors.warning : null,
+                  color: activeSuspended ? AppColors.warning : AppColors.primary,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
             ),
@@ -166,7 +195,7 @@ class _OrganizationSwitcherBodyState
               const SizedBox(width: AppSpacing.xs),
               const _SuspendedChip(),
             ],
-            const Icon(Icons.arrow_drop_down, size: 18),
+            Icon(Icons.arrow_drop_down, size: 18, color: AppColors.primary),
           ],
         ),
       ),

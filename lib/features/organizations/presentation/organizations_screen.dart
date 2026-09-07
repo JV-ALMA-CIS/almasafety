@@ -278,7 +278,12 @@ class _OrganizationCard extends StatelessWidget {
             Row(
               children: [
                 Expanded(
-                  child: Text(organization.name, style: AppTextStyles.titleLarge),
+                  child: Text(
+                    organization.name,
+                    style: AppTextStyles.titleLarge.copyWith(
+                      color: AppColors.primary,
+                    ),
+                  ),
                 ),
                 _StatusChip(status: organization.status),
               ],
