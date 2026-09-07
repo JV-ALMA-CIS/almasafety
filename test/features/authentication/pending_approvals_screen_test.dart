@@ -11,6 +11,7 @@ import 'package:jva_safety/core/services/session_controller.dart';
 import 'package:jva_safety/features/authentication/data/account_approval_service.dart';
 import 'package:jva_safety/features/authentication/domain/account_status.dart';
 import 'package:jva_safety/features/authentication/domain/app_role.dart';
+import 'package:jva_safety/features/authentication/domain/membership.dart';
 import 'package:jva_safety/features/authentication/domain/pending_account.dart';
 import 'package:jva_safety/features/authentication/domain/user_profile.dart';
 import 'package:jva_safety/features/authentication/domain/worker_type.dart';
@@ -87,8 +88,8 @@ class _FakeApprovalService extends AccountApprovalService {
   }
 }
 
-/// A session controller reporting a fixed profile, so the screen's own
-/// capability check can be exercised without Firebase.
+/// A session controller reporting a fixed profile/membership, so the
+/// screen's own capability check can be exercised without Firebase.
 class _FakeSession extends SessionController {
   _FakeSession({required AppRole? role})
     : _profile = UserProfile(
@@ -96,18 +97,32 @@ class _FakeSession extends SessionController {
         name: 'Approver',
         email: 'approver@example.com',
         accountStatus: AccountStatus.active,
-        // An Admin has no organization of its own — matching the real
-        // bootstrap shape, and exercising that the screen does not assume
-        // every reviewer has one.
-        organizationId:
-            role == AppRole.admin ? null : 'jv-alma-cis',
-        platformRole: role,
-      );
+        // platformRole is admin-only now; every other role lives on the
+        // active Membership instead.
+        platformRole: role == AppRole.admin ? role : null,
+      ),
+      // An Admin has no organization of its own — matching the real
+      // bootstrap shape, and exercising that the screen does not assume
+      // every reviewer has one.
+      _membership = role == null || role == AppRole.admin
+          ? null
+          : Membership(
+              organizationId: 'jv-alma-cis',
+              role: role,
+              status: MembershipStatus.active,
+            );
 
   final UserProfile _profile;
+  final Membership? _membership;
 
   @override
   UserProfile? get profile => _profile;
+
+  @override
+  String? get activeOrganizationId => _membership?.organizationId;
+
+  @override
+  Membership? get activeMembership => _membership;
 }
 
 void main() {

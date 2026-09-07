@@ -5,13 +5,14 @@ import 'package:provider/provider.dart';
 import 'package:jva_safety/core/services/session_controller.dart';
 import 'package:jva_safety/features/authentication/domain/account_status.dart';
 import 'package:jva_safety/features/authentication/domain/app_role.dart';
+import 'package:jva_safety/features/authentication/domain/membership.dart';
 import 'package:jva_safety/features/authentication/domain/user_profile.dart';
 import 'package:jva_safety/features/authentication/presentation/administration_screen.dart';
 import 'package:jva_safety/routing/app_routes.dart';
 
-/// A session controller reporting a fixed profile, so the screen's own
-/// capability check can be exercised without Firebase. Mirrors the fake used
-/// in pending_approvals_screen_test.dart.
+/// A session controller reporting a fixed profile/membership, so the
+/// screen's own capability check can be exercised without Firebase. Mirrors
+/// the fake used in pending_approvals_screen_test.dart.
 class _FakeSession extends SessionController {
   _FakeSession({required AppRole? role})
     : _profile = UserProfile(
@@ -19,16 +20,29 @@ class _FakeSession extends SessionController {
         name: 'Test User',
         email: 'test@example.com',
         accountStatus: AccountStatus.active,
-        organizationId: role == AppRole.admin
-            ? null
-            : 'jv-alma-cis',
-        platformRole: role,
-      );
+        // platformRole is admin-only now; every other role lives on the
+        // active Membership instead.
+        platformRole: role == AppRole.admin ? role : null,
+      ),
+      _membership = role == null || role == AppRole.admin
+          ? null
+          : Membership(
+              organizationId: 'jv-alma-cis',
+              role: role,
+              status: MembershipStatus.active,
+            );
 
   final UserProfile _profile;
+  final Membership? _membership;
 
   @override
   UserProfile? get profile => _profile;
+
+  @override
+  String? get activeOrganizationId => _membership?.organizationId;
+
+  @override
+  Membership? get activeMembership => _membership;
 }
 
 void main() {

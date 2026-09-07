@@ -7,6 +7,7 @@ import 'package:jva_safety/core/errors/app_exception.dart';
 import 'package:jva_safety/core/services/session_controller.dart';
 import 'package:jva_safety/features/authentication/domain/account_status.dart';
 import 'package:jva_safety/features/authentication/domain/app_role.dart';
+import 'package:jva_safety/features/authentication/domain/membership.dart';
 import 'package:jva_safety/features/authentication/domain/user_profile.dart';
 import 'package:jva_safety/features/hazards/data/hazard_service.dart';
 import 'package:jva_safety/features/hazards/presentation/report_hazard_screen.dart';
@@ -18,15 +19,28 @@ class _FakeSession extends SessionController {
         name: 'Test Worker',
         email: 'worker@example.com',
         accountStatus: AccountStatus.active,
-        platformRole: role,
-        organizationId: 'org-alpha',
-        siteIds: siteIds,
-      );
+        platformRole: role == AppRole.admin ? role : null,
+      ),
+      _membership = role == null || role == AppRole.admin
+          ? null
+          : Membership(
+              organizationId: 'org-alpha',
+              role: role,
+              siteIds: siteIds,
+              status: MembershipStatus.active,
+            );
 
   final UserProfile _profile;
+  final Membership? _membership;
 
   @override
   UserProfile? get profile => _profile;
+
+  @override
+  String? get activeOrganizationId => _membership?.organizationId;
+
+  @override
+  Membership? get activeMembership => _membership;
 }
 
 class _NoOrgSession extends SessionController {

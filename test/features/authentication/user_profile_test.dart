@@ -5,7 +5,6 @@ import 'package:jva_safety/core/errors/app_exception.dart';
 import 'package:jva_safety/features/authentication/domain/account_status.dart';
 import 'package:jva_safety/features/authentication/domain/app_role.dart';
 import 'package:jva_safety/features/authentication/domain/user_profile.dart';
-import 'package:jva_safety/features/authentication/domain/worker_type.dart';
 
 void main() {
   late FakeFirebaseFirestore firestore;
@@ -25,15 +24,9 @@ void main() {
     return ref.get();
   }
 
-  Map<String, dynamic> validData({
-    String accountStatus = 'active',
-    String? organizationId = 'org-alpha',
-  }) {
+  Map<String, dynamic> validData({String accountStatus = 'active'}) {
     return {
       'uid': 'seeded',
-      // Null-aware element: a null organizationId omits the key entirely,
-      // which is the shape a freshly registered (pending) profile has.
-      'organizationId': ?organizationId,
       'name': 'Test User',
       'email': 'test@example.com',
       'accountStatus': accountStatus,
@@ -43,7 +36,7 @@ void main() {
   }
 
   group('UserProfile.fromFirestore (valid profile)', () {
-    test('parses status, org and audit timestamps', () async {
+    test('parses status and audit timestamps', () async {
       final doc = await seedUser('uid-a', {
         ...validData(),
         'phone': '+254700000000',
@@ -54,7 +47,6 @@ void main() {
       final profile = UserProfile.fromFirestore(doc);
 
       expect(profile.uid, 'uid-a');
-      expect(profile.organizationId, 'org-alpha');
       expect(profile.accountStatus, AccountStatus.active);
       expect(profile.phone, '+254700000000');
       expect(profile.createdAt, DateTime(2026, 1, 1));
@@ -99,46 +91,25 @@ void main() {
       );
     });
 
-    test('parses a valid workerType', () async {
-      final doc = await seedUser('uid-wt-valid', {
-        ...validData(),
-        'workerType': 'contractor',
-      });
-
-      expect(
-        UserProfile.fromFirestore(doc).workerType,
-        WorkerType.contractor,
-      );
-    });
   });
 
-  group('UserProfile.fromFirestore (pending users have no organization)', () {
-    test('a pending profile with no organizationId parses cleanly', () async {
+  group('UserProfile.fromFirestore (pending users)', () {
+    test('a pending profile parses cleanly', () async {
       final doc = await seedUser(
         'uid-pending',
-        validData(accountStatus: 'pending', organizationId: null),
+        validData(accountStatus: 'pending'),
       );
 
       final profile = UserProfile.fromFirestore(doc);
 
       expect(profile.accountStatus, AccountStatus.pending);
-      expect(profile.organizationId, isNull);
       expect(profile.hasOperationalAccess, isFalse);
-    });
-
-    test('an empty organizationId is read as unassigned, not as ""', () async {
-      final doc = await seedUser(
-        'uid-empty-org',
-        validData(accountStatus: 'pending', organizationId: ''),
-      );
-
-      expect(UserProfile.fromFirestore(doc).organizationId, isNull);
     });
 
     test('approval fields are null before approval', () async {
       final doc = await seedUser(
         'uid-pending-2',
-        validData(accountStatus: 'pending', organizationId: null),
+        validData(accountStatus: 'pending'),
       );
 
       final profile = UserProfile.fromFirestore(doc);
@@ -256,7 +227,10 @@ void main() {
         name: 'Site Manager',
         email: 'site-manager@example.com',
         accountStatus: AccountStatus.active,
-        organizationId: 'org-alpha',
+        // platformRole is normally null for a siteManager under the
+        // multi-org membership model (their role lives on a Membership
+        // instead) — set here only to exercise isPlatformAdministrator's
+        // logic directly.
         platformRole: AppRole.siteManager,
       );
       const noRole = UserProfile(
@@ -272,84 +246,11 @@ void main() {
     });
   });
 
-  group('UserProfile.siteIds', () {
-    test('defaults to empty when the field is absent', () async {
-      final doc = await seedUser('uid-no-sites', validData());
-
-      expect(UserProfile.fromFirestore(doc).siteIds, isEmpty);
-    });
-
-    test('parses a list of site ids', () async {
-      final doc = await seedUser('uid-sites', {
-        ...validData(),
-        'siteIds': ['site-a', 'site-b'],
-      });
-
-      expect(
-        UserProfile.fromFirestore(doc).siteIds,
-        ['site-a', 'site-b'],
-      );
-    });
-
-    test('a non-list value is read as no sites, not a thrown error',
-        () async {
-      final doc = await seedUser('uid-bad-sites', {
-        ...validData(),
-        'siteIds': 'not-a-list',
-      });
-
-      expect(UserProfile.fromFirestore(doc).siteIds, isEmpty);
-    });
-
-    test('is not in registrationPayload — registration cannot grant it', () {
-      final payload = UserProfile.registrationPayload(
-        uid: 'uid-a',
-        name: 'New User',
-        email: 'new@example.com',
-        phone: '+254700000000',
-      );
-
-      expect(payload.containsKey('siteIds'), isFalse);
-    });
-
-    test('is not in selfEditablePayload — nobody can self-grant site access',
-        () {
-      final payload = UserProfile.selfEditablePayload(name: 'New Name');
-
-      expect(payload.containsKey('siteIds'), isFalse);
-    });
-
-    test('survives copyWith, which cannot change it', () {
-      const profile = UserProfile(
-        uid: 'uid-a',
-        name: 'Worker',
-        email: 'worker@example.com',
-        accountStatus: AccountStatus.active,
-        siteIds: ['site-a'],
-      );
-
-      expect(profile.copyWith(name: 'Renamed').siteIds, ['site-a']);
-    });
-  });
-
-  group('UserProfile.workerType', () {
-    test('is not in registrationPayload — registration cannot set it', () {
-      final payload = UserProfile.registrationPayload(
-        uid: 'uid-a',
-        name: 'New User',
-        email: 'new@example.com',
-        phone: '+254700000000',
-      );
-
-      expect(payload.containsKey('workerType'), isFalse);
-    });
-
-    test('is not in selfEditablePayload — a user cannot set their own', () {
-      final payload = UserProfile.selfEditablePayload(name: 'New Name');
-
-      expect(payload.containsKey('workerType'), isFalse);
-    });
-  });
+  // siteIds and workerType no longer live on UserProfile under the
+  // multi-organization membership model — they moved to Membership (see
+  // membership_test.dart). registrationPayload/selfEditablePayload's
+  // "never carries [field]" tests below still cover both field names, since
+  // both remain forbidden on this document regardless of where they live.
 
   group('UserProfile.hasOperationalAccess', () {
     test('only active grants access', () async {
@@ -404,18 +305,6 @@ void main() {
       );
     });
 
-    test('an unrecognised workerType reads as null, not a thrown error',
-        () async {
-      final doc = await seedUser('uid-bad-wt', {
-        ...validData(),
-        'workerType': 'astronaut',
-      });
-
-      final profile = UserProfile.fromFirestore(doc);
-
-      expect(profile.workerType, isNull);
-      expect(profile.accountStatus, AccountStatus.active);
-    });
   });
 
   group('UserProfile.registrationPayload (grants nothing)', () {

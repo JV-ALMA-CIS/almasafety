@@ -21,6 +21,7 @@ class _FakeApprovalService extends AccountApprovalService {
   @override
   Future<List<OrganizationUser>> listUsers({
     AccountStatus status = AccountStatus.active,
+    String? organizationId,
   }) async => users;
 }
 

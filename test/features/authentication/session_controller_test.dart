@@ -7,6 +7,7 @@ import 'package:jva_safety/core/errors/app_exception.dart';
 import 'package:jva_safety/core/services/auth_service.dart';
 import 'package:jva_safety/core/services/firestore_service.dart';
 import 'package:jva_safety/core/services/session_controller.dart';
+import 'package:jva_safety/features/authentication/data/membership_repository.dart';
 import 'package:jva_safety/features/authentication/data/user_profile_repository.dart';
 import 'package:jva_safety/features/authentication/domain/account_status.dart';
 
@@ -118,10 +119,28 @@ Future<void> waitForStatus(
   fail('Session settled on ${session.status}, expected $expected');
 }
 
+/// Waits for the memberships stream (separate from the profile stream) to
+/// settle on [expected], so a test does not depend on how many microtask
+/// turns the memberships snapshot takes to arrive after the profile's own.
+Future<void> _waitForActiveOrganization(
+  SessionController session,
+  String? expected,
+) async {
+  for (var i = 0; i < 50; i++) {
+    if (session.activeOrganizationId == expected) return;
+    await Future<void>.delayed(Duration.zero);
+  }
+  fail(
+    'activeOrganizationId settled on ${session.activeOrganizationId}, '
+    'expected $expected',
+  );
+}
+
 void main() {
   late FakeFirebaseFirestore firestore;
   late FakeAuthService auth;
   late UserProfileRepository repository;
+  late MembershipRepository membershipRepository;
   late SessionController session;
 
   setUp(() {
@@ -130,9 +149,13 @@ void main() {
     repository = UserProfileRepository(
       firestoreService: FirestoreService(firestore: firestore),
     );
+    membershipRepository = MembershipRepository(
+      firestoreService: FirestoreService(firestore: firestore),
+    );
     session = SessionController(
       authService: auth,
       userProfileRepository: repository,
+      membershipRepository: membershipRepository,
     );
   });
 
@@ -144,13 +167,21 @@ void main() {
   Future<void> seedProfile(String uid, AccountStatus status) async {
     await firestore.doc('users/$uid').set({
       'uid': uid,
-      // A pending account has no organization; every other status does.
-      'organizationId': ?(status == AccountStatus.pending ? null : 'org-alpha'),
       'name': 'Test User',
       'email': 'test@example.com',
       'phone': '+254700000000',
       'accountStatus': status.id,
     });
+    // A pending account has no membership yet; every other status does —
+    // under the multi-org membership model this lives on the memberships
+    // subcollection, not a scalar organizationId field.
+    if (status != AccountStatus.pending) {
+      await firestore.doc('users/$uid/memberships/org-alpha').set({
+        'organizationId': 'org-alpha',
+        'role': 'siteManager',
+        'status': 'active',
+      });
+    }
   }
 
   group('initial state', () {
@@ -217,7 +248,7 @@ void main() {
 
       expect(session.isAuthenticated, isFalse);
       expect(session.isDenied, isTrue);
-      expect(session.organizationId, isNull);
+      expect(session.activeOrganizationId, isNull);
       expect(session.accountStatus, AccountStatus.pending);
     });
 
@@ -248,16 +279,21 @@ void main() {
       auth.emitSignedIn('uid-1');
       await waitForStatus(session, AuthStatus.pending);
 
-      // An approver assigns the organization and activates the account.
+      // An approver activates the account and creates its first membership.
       await firestore.doc('users/uid-1').update({
-        'organizationId': 'org-alpha',
         'accountStatus': 'active',
         'approvedBy': 'approver-uid',
       });
+      await firestore.doc('users/uid-1/memberships/org-alpha').set({
+        'organizationId': 'org-alpha',
+        'role': 'siteManager',
+        'status': 'active',
+      });
       await waitForStatus(session, AuthStatus.authenticated);
+      await _waitForActiveOrganization(session, 'org-alpha');
 
       expect(session.isAuthenticated, isTrue);
-      expect(session.organizationId, 'org-alpha');
+      expect(session.activeOrganizationId, 'org-alpha');
     });
 
     test('suspension revokes access on the next snapshot', () async {
@@ -327,7 +363,7 @@ void main() {
       await waitForStatus(session, AuthStatus.authenticated);
 
       expect(session.isAuthenticated, isTrue);
-      expect(session.organizationId, isNull);
+      expect(session.activeOrganizationId, isNull);
       expect(session.profile?.platformRole, isNotNull);
       expect(session.profile?.canReviewPendingAccounts, isTrue);
       expect(session.profile?.isPlatformAdministrator, isTrue);
@@ -361,7 +397,7 @@ void main() {
 
       expect(auth.signOutCalled, isTrue);
       expect(session.profile, isNull);
-      expect(session.organizationId, isNull);
+      expect(session.activeOrganizationId, isNull);
       expect(session.isAuthenticated, isFalse);
     });
 

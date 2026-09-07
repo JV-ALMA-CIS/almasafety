@@ -6,7 +6,6 @@ import 'package:provider/provider.dart';
 import 'package:jva_safety/core/services/firestore_service.dart';
 import 'package:jva_safety/core/services/session_controller.dart';
 import 'package:jva_safety/features/authentication/domain/account_status.dart';
-import 'package:jva_safety/features/authentication/domain/app_role.dart';
 import 'package:jva_safety/features/authentication/domain/user_profile.dart';
 import 'package:jva_safety/features/hazards/data/hazard_repository.dart';
 import 'package:jva_safety/features/hazards/presentation/my_hazards_screen.dart';
@@ -18,15 +17,15 @@ class _FakeSession extends SessionController {
         name: 'Test Worker',
         email: 'worker@example.com',
         accountStatus: AccountStatus.active,
-        platformRole: AppRole.worker,
-        organizationId: 'org-alpha',
-        siteIds: const ['site-1'],
       );
 
   final UserProfile _profile;
 
   @override
   UserProfile? get profile => _profile;
+
+  @override
+  String? get activeOrganizationId => 'org-alpha';
 }
 
 class _NoOrgSession extends SessionController {

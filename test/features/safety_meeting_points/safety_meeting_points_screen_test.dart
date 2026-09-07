@@ -54,13 +54,15 @@ class _FakeSession extends SessionController {
         email: 'admin@example.com',
         accountStatus: AccountStatus.active,
         platformRole: role,
-        organizationId: 'org-alpha',
       );
 
   final UserProfile _profile;
 
   @override
   UserProfile? get profile => _profile;
+
+  @override
+  String? get activeOrganizationId => 'org-alpha';
 }
 
 void main() {

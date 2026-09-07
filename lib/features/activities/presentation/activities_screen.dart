@@ -127,7 +127,8 @@ class _ActivitiesScreenState extends State<ActivitiesScreen> {
     final sessionController = context.watch<SessionController>();
     final profile = sessionController.profile;
     final canManage = profile?.isPlatformAdministrator == true ||
-        (profile?.canManageOrgContent == true &&
+        (sessionController.activeMembership?.role.canManageOrgContent ==
+                true &&
             sessionController.activeOrganizationId == widget.organization.id);
 
     if (!canManage) {

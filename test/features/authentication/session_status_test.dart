@@ -3,14 +3,10 @@ import 'package:jva_safety/core/services/session_controller.dart';
 import 'package:jva_safety/features/authentication/domain/account_status.dart';
 import 'package:jva_safety/features/authentication/domain/user_profile.dart';
 
-UserProfile _profile({
-  AccountStatus accountStatus = AccountStatus.active,
-  String? organizationId = 'org-1',
-}) {
+UserProfile _profile({AccountStatus accountStatus = AccountStatus.active}) {
   final now = DateTime(2026, 1, 1);
   return UserProfile(
     uid: 'uid-1',
-    organizationId: organizationId,
     name: 'Test User',
     email: 'test@example.com',
     phone: '+254700000000',
@@ -44,7 +40,7 @@ void main() {
   group('SessionController.deriveStatus (unapproved users)', () {
     test('pending profile -> pending, not authenticated', () {
       final status = SessionController.deriveStatus(
-        _profile(accountStatus: AccountStatus.pending, organizationId: null),
+        _profile(accountStatus: AccountStatus.pending),
       );
 
       expect(status, AuthStatus.pending);
@@ -62,7 +58,7 @@ void main() {
 
     test('rejected profile -> rejected, not authenticated', () {
       final status = SessionController.deriveStatus(
-        _profile(accountStatus: AccountStatus.rejected, organizationId: null),
+        _profile(accountStatus: AccountStatus.rejected),
       );
 
       expect(status, AuthStatus.rejected);
@@ -87,7 +83,7 @@ void main() {
       // The absence of an organizationId must not be misread as a data
       // error — it is the expected shape of a freshly registered account.
       final status = SessionController.deriveStatus(
-        _profile(accountStatus: AccountStatus.pending, organizationId: null),
+        _profile(accountStatus: AccountStatus.pending),
       );
 
       expect(status, AuthStatus.pending);

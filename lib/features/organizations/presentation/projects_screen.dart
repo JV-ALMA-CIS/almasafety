@@ -116,7 +116,8 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
     final profile = sessionController.profile;
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
     final canManage = isPlatformAdministrator ||
-        (profile?.canManageOrgContent == true &&
+        (sessionController.activeMembership?.role.canManageOrgContent ==
+                true &&
             sessionController.activeOrganizationId == widget.organization.id);
 
     if (!canManage) {

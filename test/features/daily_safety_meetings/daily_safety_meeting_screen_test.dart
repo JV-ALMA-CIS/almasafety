@@ -10,6 +10,7 @@ import 'package:jva_safety/features/activities/data/activity_assignment_reposito
 import 'package:jva_safety/features/activities/data/activity_repository.dart';
 import 'package:jva_safety/features/authentication/domain/account_status.dart';
 import 'package:jva_safety/features/authentication/domain/app_role.dart';
+import 'package:jva_safety/features/authentication/domain/membership.dart';
 import 'package:jva_safety/features/authentication/domain/user_profile.dart';
 import 'package:jva_safety/features/corrective_actions/data/corrective_action_repository.dart';
 import 'package:jva_safety/features/corrective_actions/data/corrective_action_service.dart';
@@ -30,15 +31,31 @@ class _FakeSession extends SessionController {
         name: 'Tomas',
         email: 'tom@example.com',
         accountStatus: AccountStatus.active,
-        platformRole: role,
-        organizationId: 'org-alpha',
-        siteIds: siteIds,
-      );
+        // platformRole is admin-only now; every other role (including
+        // foreman, which this screen requires) lives on the active
+        // Membership instead.
+        platformRole: role == AppRole.admin ? role : null,
+      ),
+      _membership = role == null || role == AppRole.admin
+          ? null
+          : Membership(
+              organizationId: 'org-alpha',
+              role: role,
+              siteIds: siteIds,
+              status: MembershipStatus.active,
+            );
 
   final UserProfile _profile;
+  final Membership? _membership;
 
   @override
   UserProfile? get profile => _profile;
+
+  @override
+  String? get activeOrganizationId => _membership?.organizationId ?? 'org-alpha';
+
+  @override
+  Membership? get activeMembership => _membership;
 }
 
 class _FakeMeetingService extends DailySafetyMeetingService {

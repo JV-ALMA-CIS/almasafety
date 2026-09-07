@@ -8,6 +8,7 @@ import 'package:jva_safety/core/services/session_controller.dart';
 import 'package:jva_safety/features/authentication/data/account_approval_service.dart';
 import 'package:jva_safety/features/authentication/domain/account_status.dart';
 import 'package:jva_safety/features/authentication/domain/app_role.dart';
+import 'package:jva_safety/features/authentication/domain/membership.dart';
 import 'package:jva_safety/features/authentication/domain/organization_user.dart';
 import 'package:jva_safety/features/authentication/domain/user_profile.dart';
 import 'package:jva_safety/features/authentication/domain/worker_type.dart';
@@ -40,6 +41,7 @@ class _FakeApprovalService extends AccountApprovalService {
   @override
   Future<List<OrganizationUser>> listUsers({
     AccountStatus status = AccountStatus.active,
+    String? organizationId,
   }) async => users;
 }
 
@@ -50,14 +52,29 @@ class _FakeSession extends SessionController {
         name: 'Admin',
         email: 'admin@example.com',
         accountStatus: AccountStatus.active,
-        platformRole: role,
-        organizationId: organizationId,
-      );
+        // platformRole is admin-only now; every other role lives on the
+        // active Membership instead.
+        platformRole: role == AppRole.admin ? role : null,
+      ),
+      _membership = role == null || role == AppRole.admin || organizationId == null
+          ? null
+          : Membership(
+              organizationId: organizationId,
+              role: role,
+              status: MembershipStatus.active,
+            );
 
   final UserProfile _profile;
+  final Membership? _membership;
 
   @override
   UserProfile? get profile => _profile;
+
+  @override
+  String? get activeOrganizationId => _membership?.organizationId;
+
+  @override
+  Membership? get activeMembership => _membership;
 }
 
 void main() {
