@@ -32,10 +32,23 @@ class FirestorePaths {
   ///
   /// Top-level rather than organization-scoped: under the self-registration
   /// model a user registers before any organization is known, so at creation
-  /// time there is no `organizations/{orgId}` path to write into. The
-  /// organization is a nullable *field* on this document, assigned by an
-  /// approver. Operational collections remain org-scoped.
+  /// time there is no `organizations/{orgId}` path to write into. Per-org
+  /// role/workerType/siteIds live on `users/{uid}/memberships/{organizationId}`
+  /// instead — see [membershipsCollection]. Operational collections remain
+  /// org-scoped.
   static String userProfile(String uid) => '$users/$uid';
+
+  /// `users/{uid}/memberships` — a collection, not a single document.
+  ///
+  /// One document per organization the user belongs to, since a Site
+  /// Manager/Foreman may hold more than one membership at once. See
+  /// `MembershipRepository`'s doc comment for why this collection has no
+  /// client write method.
+  static String membershipsCollection(String uid) => '${userProfile(uid)}/memberships';
+
+  /// `users/{uid}/memberships/{organizationId}`.
+  static String membership(String uid, String organizationId) =>
+      '${membershipsCollection(uid)}/$organizationId';
 
   /// `organizations/{organizationId}/projects` — a collection, not a single
   /// document, for building collection references and queries.
