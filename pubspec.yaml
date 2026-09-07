@@ -59,6 +59,12 @@ dependencies:
   # dart:io File, matching this app's responsive web-first design.
   image_picker: ^1.1.2
 
+  # Persists SessionController's activeOrganizationId selection locally
+  # (per-uid), so a multi-membership user's chosen organization survives an
+  # app restart. UI convenience only — see SessionController's SECURITY
+  # WARNING doc comment.
+  shared_preferences: ^2.3.3
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

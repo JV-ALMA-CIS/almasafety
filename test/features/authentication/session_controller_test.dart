@@ -10,6 +10,7 @@ import 'package:jva_safety/core/services/session_controller.dart';
 import 'package:jva_safety/features/authentication/data/membership_repository.dart';
 import 'package:jva_safety/features/authentication/data/user_profile_repository.dart';
 import 'package:jva_safety/features/authentication/domain/account_status.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// A scriptable stand-in for [AuthService].
 ///
@@ -137,6 +138,8 @@ Future<void> _waitForActiveOrganization(
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   late FakeFirebaseFirestore firestore;
   late FakeAuthService auth;
   late UserProfileRepository repository;
@@ -144,6 +147,11 @@ void main() {
   late SessionController session;
 
   setUp(() {
+    // Every SessionController now resolves SharedPreferences.getInstance()
+    // internally (for activeOrganizationId persistence); the mock channel
+    // handler must be installed before any construction, even for tests
+    // that don't otherwise care about persistence.
+    SharedPreferences.setMockInitialValues({});
     firestore = FakeFirebaseFirestore();
     auth = FakeAuthService();
     repository = UserProfileRepository(
@@ -424,6 +432,100 @@ void main() {
 
       expect(auth.signInCalled, isFalse);
       expect(session.isAuthenticated, isTrue);
+    });
+  });
+
+  group('activeOrganizationId persistence', () {
+    Future<void> seedTwoMemberships(String uid) async {
+      await firestore.doc('users/$uid').set({
+        'uid': uid,
+        'name': 'Test User',
+        'email': 'test@example.com',
+        'phone': '+254700000000',
+        'accountStatus': 'active',
+      });
+      await firestore.doc('users/$uid/memberships/org-alpha').set({
+        'organizationId': 'org-alpha',
+        'role': 'siteManager',
+        'status': 'active',
+      });
+      await firestore.doc('users/$uid/memberships/org-beta').set({
+        'organizationId': 'org-beta',
+        'role': 'siteManager',
+        'status': 'active',
+      });
+    }
+
+    test(
+      'a selection survives a simulated app restart (fresh SessionController '
+      'reading the same SharedPreferences-backed store)',
+      () async {
+        SharedPreferences.setMockInitialValues({});
+        await seedTwoMemberships('uid-multi');
+
+        auth.emitSignedIn('uid-multi');
+        await waitForStatus(session, AuthStatus.authenticated);
+        // Two memberships and nothing selected yet: falls back to the first
+        // by organization id.
+        await _waitForActiveOrganization(session, 'org-alpha');
+
+        session.setActiveOrganization('org-beta');
+        await _waitForActiveOrganization(session, 'org-beta');
+
+        // "Restart": dispose this session and build a brand-new one reading
+        // the SAME (mocked) SharedPreferences-backed store, exactly like a
+        // fresh app launch would.
+        session.dispose();
+        await auth.dispose();
+
+        final restartedAuth = FakeAuthService();
+        final restartedSession = SessionController(
+          authService: restartedAuth,
+          userProfileRepository: repository,
+          membershipRepository: membershipRepository,
+        );
+        addTearDown(restartedSession.dispose);
+        addTearDown(restartedAuth.dispose);
+
+        restartedAuth.emitSignedIn('uid-multi');
+        await waitForStatus(restartedSession, AuthStatus.authenticated);
+        await _waitForActiveOrganization(restartedSession, 'org-beta');
+
+        expect(restartedSession.activeOrganizationId, 'org-beta');
+      },
+    );
+
+    test('a selection for one uid does not leak into another uid\'s session',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      await seedTwoMemberships('uid-a');
+      await seedTwoMemberships('uid-b');
+
+      auth.emitSignedIn('uid-a');
+      await waitForStatus(session, AuthStatus.authenticated);
+      await _waitForActiveOrganization(session, 'org-alpha');
+      session.setActiveOrganization('org-beta');
+      await _waitForActiveOrganization(session, 'org-beta');
+
+      session.dispose();
+      await auth.dispose();
+
+      final auth2 = FakeAuthService();
+      final session2 = SessionController(
+        authService: auth2,
+        userProfileRepository: repository,
+        membershipRepository: membershipRepository,
+      );
+      addTearDown(session2.dispose);
+      addTearDown(auth2.dispose);
+
+      auth2.emitSignedIn('uid-b');
+      await waitForStatus(session2, AuthStatus.authenticated);
+      // uid-b never called setActiveOrganization, so it falls back to the
+      // default (first by organization id), not uid-a's persisted choice.
+      await _waitForActiveOrganization(session2, 'org-alpha');
+
+      expect(session2.activeOrganizationId, 'org-alpha');
     });
   });
 }

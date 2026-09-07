@@ -1,6 +1,7 @@
 import 'dart:async' show StreamSubscription, unawaited;
 import 'package:flutter/foundation.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../features/authentication/data/membership_repository.dart';
 import '../../features/authentication/data/user_profile_repository.dart';
 import '../../features/authentication/domain/account_status.dart';
@@ -76,13 +77,16 @@ class SessionController extends ChangeNotifier {
     AuthService? authService,
     UserProfileRepository? userProfileRepository,
     MembershipRepository? membershipRepository,
+    Future<SharedPreferences>? sharedPreferences,
   }) : _authService = authService ?? AuthService(),
        _userProfileRepository =
            userProfileRepository ??
            UserProfileRepository(firestoreService: FirestoreService()),
        _membershipRepository =
            membershipRepository ??
-           MembershipRepository(firestoreService: FirestoreService()) {
+           MembershipRepository(firestoreService: FirestoreService()),
+       _sharedPreferences =
+           sharedPreferences ?? SharedPreferences.getInstance() {
     _authSubscription = _authService.authStateChanges().listen(
       _onAuthStateChanged,
       onError: (Object error) =>
@@ -93,6 +97,12 @@ class SessionController extends ChangeNotifier {
   final AuthService _authService;
   final UserProfileRepository _userProfileRepository;
   final MembershipRepository _membershipRepository;
+
+  /// Backing store for [_selectedOrganizationId] persistence. Injectable in
+  /// tests (pair with `SharedPreferences.setMockInitialValues`); production
+  /// callers pass nothing and this resolves the real platform-channel-backed
+  /// instance.
+  final Future<SharedPreferences> _sharedPreferences;
   late final StreamSubscription<User?> _authSubscription;
   StreamSubscription<UserProfile?>? _profileSubscription;
   StreamSubscription<List<Membership>>? _membershipSubscription;
@@ -107,15 +117,19 @@ class SessionController extends ChangeNotifier {
   /// The organization explicitly selected via [setActiveOrganization] for
   /// the current uid, when the user holds more than one membership.
   ///
-  /// TODO(stage-5): this selection is session-only (in-memory). The spec for
-  /// this stage called for persisting it locally (e.g. via
-  /// shared_preferences), but that package is not yet a pubspec dependency
-  /// and this stage is explicitly Dart-data-layer-only — adding a new
-  /// dependency was flagged as out of scope. A later stage should add
-  /// shared_preferences (or an equivalent) and persist this keyed by uid, so
-  /// the selection survives an app restart.
+  /// Persisted to [SharedPreferences] under `'activeOrganizationId:$uid'` so
+  /// the choice survives an app restart. [SharedPreferences.getInstance] is
+  /// async, so this field is a synchronous in-memory cache, loaded once
+  /// per-uid by [_loadPersistedSelection] (fired alongside the membership
+  /// subscription, once memberships are known to exist for this uid) and
+  /// kept current thereafter by [setActiveOrganization]'s write-through.
   String? _selectedOrganizationId;
   String? _selectedForUid;
+
+  /// The uid [_loadPersistedSelection] has already read (or is reading) a
+  /// persisted selection for, so a rebuilt membership subscription (e.g. a
+  /// duplicate snapshot) does not re-trigger a redundant read.
+  String? _loadedSelectionForUid;
 
   User? get firebaseUser => _firebaseUser;
   UserProfile? get profile => _profile;
@@ -136,9 +150,11 @@ class SessionController extends ChangeNotifier {
   ///  1. Exactly one membership: that one, always — there is nothing to
   ///     choose.
   ///  2. More than one membership: the last one explicitly selected via
-  ///     [setActiveOrganization] for this uid (session-only — see the
-  ///     [_selectedOrganizationId] TODO), falling back to the first
-  ///     membership by organization id when nothing has been selected yet.
+  ///     [setActiveOrganization] for this uid — persisted locally (see
+  ///     [_selectedOrganizationId]'s doc comment), so this survives an app
+  ///     restart — falling back to the first membership by organization id
+  ///     when nothing has been selected yet (or the persisted value has not
+  ///     finished loading).
   ///  3. Zero memberships: null.
   String? get activeOrganizationId {
     if (_memberships.isEmpty) return null;
@@ -172,12 +188,27 @@ class SessionController extends ChangeNotifier {
   /// [memberships] — this is a UI convenience only (see this class's
   /// SECURITY WARNING); it grants no authority a server call would not
   /// independently re-verify.
+  ///
+  /// Written through to [SharedPreferences] (fire-and-forget — this is a UI
+  /// convenience, not a security boundary, so the write need not be awaited)
+  /// so the selection survives an app restart.
   void setActiveOrganization(String organizationId) {
     if (!_memberships.any((m) => m.organizationId == organizationId)) return;
     _selectedOrganizationId = organizationId;
     _selectedForUid = _firebaseUser?.uid;
     _safeNotify();
+
+    final uid = _firebaseUser?.uid;
+    if (uid != null) {
+      unawaited(
+        _sharedPreferences.then(
+          (prefs) => prefs.setString(_selectionKey(uid), organizationId),
+        ),
+      );
+    }
   }
+
+  static String _selectionKey(String uid) => 'activeOrganizationId:$uid';
 
   /// True only when there is a signed-in Firebase user AND a loaded profile
   /// with [AccountStatus.active]. Router guards and feature code should use
@@ -351,6 +382,8 @@ class SessionController extends ChangeNotifier {
       return;
     }
 
+    _loadPersistedSelection(uid);
+
     // Already streaming for this uid — nothing to restart.
     if (_membershipSubscription != null && _membershipUid == uid) return;
 
@@ -359,6 +392,27 @@ class SessionController extends ChangeNotifier {
     _membershipSubscription = _membershipRepository
         .watchAll(uid)
         .listen(_onMembershipsChanged, onError: _onMembershipsError);
+  }
+
+  /// Loads this uid's persisted [_selectedOrganizationId] once memberships
+  /// are known to be loading for it, so [activeOrganizationId] can honor a
+  /// prior selection as soon as it resolves rather than only after the next
+  /// [setActiveOrganization] call. Runs at most once per uid per session
+  /// (tracked by [_loadedSelectionForUid]) — cheap, but there is no reason to
+  /// repeat it on every membership snapshot.
+  void _loadPersistedSelection(String uid) {
+    if (_loadedSelectionForUid == uid) return;
+    _loadedSelectionForUid = uid;
+    unawaited(
+      _sharedPreferences.then((prefs) {
+        if (_disposed || _firebaseUser?.uid != uid) return;
+        final stored = prefs.getString(_selectionKey(uid));
+        if (stored == null) return;
+        _selectedOrganizationId = stored;
+        _selectedForUid = uid;
+        _safeNotify();
+      }),
+    );
   }
 
   String? _membershipUid;
@@ -435,6 +489,7 @@ class SessionController extends ChangeNotifier {
 
   @override
   void dispose() {
+    if (_disposed) return;
     _disposed = true;
     _authSubscription.cancel();
     _profileSubscription?.cancel();
