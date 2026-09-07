@@ -69,18 +69,23 @@ class AccountApprovalService {
   /// server independently rejects any attempt to hand out more authority
   /// than the caller holds.
   ///
-  /// [organizationId] is for the one reviewer role with no organization of
-  /// its own — [AppRole.admin]. It is OPTIONAL when granting
+  /// [organizationId] is OPTIONAL only for [AppRole.admin] granting
   /// [AppRole.siteManager]: an Admin approving a colleague they know by name
   /// typically has no way to know which organization that person operates
   /// in, so leaving it unset approves the account with no organization yet —
   /// the new Site Manager creates (or is assigned into) one afterward. Admin
   /// may still supply it explicitly (including naming an organization that
   /// does not exist yet, to stand up its first member) when they do know it.
-  /// Every other reviewer role is approving into their own organization,
-  /// which the server reads from their profile; this parameter is ignored
-  /// for them, so a modified client cannot use it to name a different
-  /// organization than its own.
+  ///
+  /// For EVERY OTHER reviewer role, [organizationId] is now REQUIRED: under
+  /// the multi-organization membership model a Site Manager/Foreman may hold
+  /// more than one membership, so there is no longer an implicit "the"
+  /// organization the server can read off their profile — the caller must
+  /// say which of their own memberships they are acting in. Callers should
+  /// pass `SessionController.activeOrganizationId` here. The server
+  /// independently verifies this is an organization the caller actually
+  /// holds an active, authorized-role membership in — a modified client
+  /// cannot use this to name a different organization than one of its own.
   Future<void> approve(
     String uid, {
     required AppRole role,
@@ -100,16 +105,25 @@ class AccountApprovalService {
 
   /// Fetches already-reviewed users at [status] (`active` by default).
   ///
-  /// Scoped to the caller's own organization for every reviewer role except
-  /// [AppRole.admin], which sees every organization — the same
-  /// boundary [approve] and [suspend] enforce, applied here to a list query.
+  /// Scoped to the caller's ONE acting organization ([organizationId]) for
+  /// every reviewer role except [AppRole.admin], which sees every
+  /// organization — the same boundary [approve] and [suspend] enforce,
+  /// applied here to a list query. [organizationId] is required for a
+  /// non-Admin caller, exactly like [approve] — the server's
+  /// `requireApprover` requires it from any non-admin caller, since a
+  /// caller with several memberships must say which one they are listing.
+  /// Callers should pass `SessionController.activeOrganizationId`.
   /// [AccountStatus.pending] is refused server-side: that queue is
-  /// [listPendingApprovals] instead.
+  /// [listPendingApprovals] instead. Returns one row PER PERSON PER
+  /// ORGANIZATION — a person with two memberships in the queried scope
+  /// appears once per organization.
   Future<List<OrganizationUser>> listUsers({
     AccountStatus status = AccountStatus.active,
+    String? organizationId,
   }) async {
     final result = await _call<Map<Object?, Object?>>('listOrganizationUsers', {
       'accountStatus': status.id,
+      'organizationId': ?organizationId,
     });
     final users = result['users'];
     if (users is! List) return const [];
@@ -120,15 +134,63 @@ class AccountApprovalService {
   }
 
   /// Suspends [uid], an active account, withdrawing its operational access
-  /// without deleting it. Confined to the caller's own organization; refuses
-  /// self-action, exactly like [approve] and [reject].
+  /// without deleting it. ACCOUNT-level: touches `accountStatus` alone, not
+  /// any individual membership's own status — see [suspendMembership] for
+  /// the per-organization equivalent. Confined to the caller's own
+  /// organization; refuses self-action, exactly like [approve] and [reject].
   Future<void> suspend(String uid) =>
       _call<Object?>('suspendActiveAccount', {'uid': uid});
 
-  /// Restores a suspended account to active. Confined to the caller's own
-  /// organization; refuses self-action, exactly like [approve] and [reject].
+  /// Restores a suspended account to active. ACCOUNT-level, mirroring
+  /// [suspend] — see [reinstateMembership] for the per-organization
+  /// equivalent. Confined to the caller's own organization; refuses
+  /// self-action, exactly like [approve] and [reject].
   Future<void> reinstate(String uid) =>
       _call<Object?>('reinstateSuspendedAccount', {'uid': uid});
+
+  /// Suspends [uid]'s membership in [organizationId] only, leaving
+  /// `accountStatus` and their other memberships untouched.
+  /// [organizationId] is the caller's own acting organization (typically
+  /// `SessionController.activeOrganizationId`); the server verifies the
+  /// caller holds an authorized membership there.
+  Future<void> suspendMembership(
+    String uid, {
+    required String organizationId,
+  }) => _call<Object?>('suspendMembership', {
+    'uid': uid,
+    'organizationId': organizationId,
+  });
+
+  /// Reinstates [uid]'s membership in [organizationId] only. See
+  /// [suspendMembership].
+  Future<void> reinstateMembership(
+    String uid, {
+    required String organizationId,
+  }) => _call<Object?>('reinstateMembership', {
+    'uid': uid,
+    'organizationId': organizationId,
+  });
+
+  /// Places an already-active [uid] into an additional organization
+  /// ([organizationId]), assigning [role]/[workerType]/[siteIds] there —
+  /// without touching `accountStatus` or any of their other memberships.
+  /// Mirrors [approve]'s authorization shape: the caller must hold an
+  /// active, authorized-role membership in [organizationId]. Throws if a
+  /// membership already exists for [uid] in [organizationId] (server-side
+  /// `already-exists`).
+  Future<void> addOrganizationMembership(
+    String uid, {
+    required AppRole role,
+    WorkerType? workerType,
+    List<String>? siteIds,
+    required String organizationId,
+  }) => _call<Object?>('addOrganizationMembership', {
+    'uid': uid,
+    'role': role.id,
+    if (workerType != null) 'workerType': workerType.id,
+    if (siteIds != null) 'siteIds': siteIds,
+    'organizationId': organizationId,
+  });
 
   Future<T> _call<T>(String name, [Map<String, Object?>? data]) async {
     try {
@@ -161,6 +223,11 @@ class AccountApprovalService {
         );
       case 'not-found':
         return DataException('That account no longer exists.', cause: e);
+      case 'already-exists':
+        return DataException(
+          'That user already belongs to that organization.',
+          cause: e,
+        );
       case 'failed-precondition':
         // Reachable from the UI when another reviewer already acted first:
         // the target was reviewed, suspended or reinstated between the list
