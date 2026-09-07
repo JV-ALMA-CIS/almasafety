@@ -48,10 +48,17 @@ class AdministrationScreen extends StatelessWidget {
     final profile = sessionController.profile;
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
     // A non-Admin's role (including canManageOrgContent) now lives on their
-    // active Membership, not the (now admin-only) profile.platformRole.
+    // active Membership, not the (now admin-only) profile.platformRole —
+    // except for the one transient case of a Site Manager just approved
+    // with no organization yet, who has no membership at all and is
+    // signalled instead by profile.platformRole == siteManager (see
+    // account_approval.ts's approveAccount). Without this fallback, that
+    // Site Manager could never reach the one screen (Organizations, below)
+    // that gives them their first membership.
     final canManage = isPlatformAdministrator ||
         (sessionController.activeMembership?.role.canManageOrgContent ??
-            false);
+            false) ||
+        profile?.platformRole == AppRole.siteManager;
 
     if (!canManage) {
       // Defence in depth: the router should never route an unauthorized

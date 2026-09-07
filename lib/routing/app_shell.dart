@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../core/services/firestore_service.dart';
 import '../core/services/session_controller.dart';
 import '../core/widgets/responsive_scaffold.dart';
+import '../features/authentication/domain/app_role.dart';
 import '../features/notifications/data/notification_repository.dart';
 import '../features/notifications/domain/app_notification.dart';
 import 'app_routes.dart';
@@ -71,11 +72,21 @@ class AppShell extends StatelessWidget {
     final sessionController = context.watch<SessionController>();
     final profile = sessionController.profile;
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
-    // A non-Admin's review authority now lives on their active Membership's
-    // role, not on the profile's (now admin-only) platformRole.
+    // A non-Admin's review/org-management authority now lives on their
+    // active Membership's role, not on the profile's (now admin-only)
+    // platformRole — except for the one transient case of a Site Manager
+    // just approved with no organization yet, who has no membership at all
+    // and is signalled instead by profile.platformRole == siteManager (see
+    // account_approval.ts's approveAccount). Both must be checked or that
+    // Site Manager can never reach the one screen (Organizations) that would
+    // give them their first membership.
     final canReviewPendingAccounts = isPlatformAdministrator ||
         (sessionController.activeMembership?.role.canReviewPendingAccounts ??
             false);
+    final canManageOrgContent = isPlatformAdministrator ||
+        (sessionController.activeMembership?.role.canManageOrgContent ??
+            false) ||
+        profile?.platformRole == AppRole.siteManager;
 
     return ResponsiveScaffold(
       title: 'JVA Safety',
@@ -106,7 +117,7 @@ class AppShell extends StatelessWidget {
             onPressed: () => context.go(AppRoutes.reports),
           ),
         ],
-        if (isPlatformAdministrator)
+        if (canManageOrgContent)
           IconButton(
             tooltip: 'Administration',
             icon: const Icon(Icons.admin_panel_settings_outlined),

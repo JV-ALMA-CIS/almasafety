@@ -14,15 +14,20 @@ import 'package:jva_safety/routing/app_routes.dart';
 /// screen's own capability check can be exercised without Firebase. Mirrors
 /// the fake used in pending_approvals_screen_test.dart.
 class _FakeSession extends SessionController {
-  _FakeSession({required AppRole? role})
+  _FakeSession({required AppRole? role, bool transientSiteManagerMarker = false})
     : _profile = UserProfile(
         uid: 'uid-1',
         name: 'Test User',
         email: 'test@example.com',
         accountStatus: AccountStatus.active,
         // platformRole is admin-only now; every other role lives on the
-        // active Membership instead.
-        platformRole: role == AppRole.admin ? role : null,
+        // active Membership instead — except a Site Manager just approved
+        // with no organization yet, who has no membership at all and is
+        // signalled by this transient marker (account_approval.ts's
+        // approveAccount).
+        platformRole: role == AppRole.admin
+            ? role
+            : (transientSiteManagerMarker ? AppRole.siteManager : null),
       ),
       _membership = role == null || role == AppRole.admin
           ? null
@@ -46,7 +51,10 @@ class _FakeSession extends SessionController {
 }
 
 void main() {
-  Widget wrap({required AppRole? role}) {
+  Widget wrap({
+    required AppRole? role,
+    bool transientSiteManagerMarker = false,
+  }) {
     final router = GoRouter(
       initialLocation: AppRoutes.administration,
       routes: [
@@ -78,7 +86,10 @@ void main() {
     );
 
     return ChangeNotifierProvider<SessionController>(
-      create: (_) => _FakeSession(role: role),
+      create: (_) => _FakeSession(
+        role: role,
+        transientSiteManagerMarker: transientSiteManagerMarker,
+      ),
       child: MaterialApp.router(routerConfig: router),
     );
   }
@@ -161,6 +172,30 @@ void main() {
 
       expect(find.text('Organizations Screen'), findsOneWidget);
     });
+  });
+
+  group('AdministrationScreen (brand-new Site Manager, no membership yet)', () {
+    testWidgets(
+      'can still reach Administration and Organizations — the one path '
+      'that gives them their first membership',
+      (tester) async {
+        await tester.pumpWidget(
+          wrap(role: null, transientSiteManagerMarker: true),
+        );
+        await tester.pumpAndSettle();
+
+        expect(
+          find.text('You do not have permission to view administration.'),
+          findsNothing,
+        );
+        expect(find.text('Organizations'), findsOneWidget);
+
+        await tester.tap(find.text('Organizations'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Organizations Screen'), findsOneWidget);
+      },
+    );
   });
 
   group('AdministrationScreen (non-platform-administrator)', () {
