@@ -125,8 +125,13 @@ class _SafetyRequirementsScreenState extends State<SafetyRequirementsScreen> {
   Widget build(BuildContext context) {
     final sessionController = context.watch<SessionController>();
     final profile = sessionController.profile;
+    // A non-Admin's canManageOrgContent now lives on their active
+    // membership, not on UserProfile.platformRole, which is admin-only
+    // under the multi-org membership model.
+    final canManageOrgContent = profile?.canManageOrgContent == true ||
+        sessionController.activeMembership?.role.canManageOrgContent == true;
     final canManage = profile?.isPlatformAdministrator == true ||
-        (profile?.canManageOrgContent == true &&
+        (canManageOrgContent &&
             sessionController.activeOrganizationId == widget.organization.id);
 
     if (!canManage) {

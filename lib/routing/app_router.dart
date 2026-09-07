@@ -161,11 +161,20 @@ GoRouter buildAppRouter(SessionController session) {
     redirect: (context, state) => authRedirect(
       session.status,
       state.matchedLocation,
-      canReviewPendingAccounts:
-          session.profile?.canReviewPendingAccounts ?? false,
+      // A non-Admin's role — including canReviewPendingAccounts/
+      // canManageOrgContent — now lives on their active membership, not on
+      // UserProfile.platformRole, which is admin-only under the multi-org
+      // membership model. profile?.canX defaults to false rather than null,
+      // so this must be `||`, not `??`, or the membership check would never
+      // be reached.
+      canReviewPendingAccounts: (session.profile?.canReviewPendingAccounts ??
+              false) ||
+          (session.activeMembership?.role.canReviewPendingAccounts ?? false),
       isPlatformAdministrator:
           session.profile?.isPlatformAdministrator ?? false,
-      canManageOrgContent: session.profile?.canManageOrgContent ?? false,
+      canManageOrgContent:
+          (session.profile?.canManageOrgContent ?? false) ||
+              (session.activeMembership?.role.canManageOrgContent ?? false),
     ),
     routes: [
       GoRoute(
