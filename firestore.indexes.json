@@ -95,14 +95,15 @@
         {"fieldPath": "siteId", "order": "ASCENDING"},
         {"fieldPath": "createdAt", "order": "DESCENDING"}
       ]
-    },
-    {
-      "collectionGroup": "memberships",
-      "queryScope": "COLLECTION_GROUP",
-      "fields": [
-        {"fieldPath": "organizationId", "order": "ASCENDING"}
-      ]
     }
   ],
-  "fieldOverrides": []
+  "fieldOverrides": [
+    {
+      "collectionGroup": "memberships",
+      "fieldPath": "organizationId",
+      "indexes": [
+        {"order": "ASCENDING", "queryScope": "COLLECTION_GROUP"}
+      ]
+    }
+  ]
 }
