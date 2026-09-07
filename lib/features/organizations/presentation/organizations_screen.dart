@@ -109,8 +109,19 @@ class _OrganizationsScreenState extends State<OrganizationsScreen> {
     final sessionController = context.watch<SessionController>();
     final profile = sessionController.profile;
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
+    // A Site Manager with a real membership already has one; a Site Manager
+    // just approved with no organization yet (the documented "create your
+    // own org afterward" path — PROJECT_CONTEXT.md §12/§16/§18) has NO
+    // membership at all yet, so `activeMembership` is null. For exactly that
+    // transient window, `approveAccount` writes `platformRole: siteManager`
+    // directly onto the profile as the only signal available — see
+    // `UserProfile`'s own doc comment and `account_approval.ts`'s
+    // `approveAccount`. Without this fallback, a brand-new Site Manager can
+    // never see or reach the one action (create an organization) that would
+    // give them their first membership.
     final isSiteManager =
-        sessionController.activeMembership?.role == AppRole.siteManager;
+        sessionController.activeMembership?.role == AppRole.siteManager ||
+            profile?.platformRole == AppRole.siteManager;
     final canManage = isPlatformAdministrator || isSiteManager;
 
     if (!canManage) {
@@ -157,7 +168,13 @@ class _OrganizationsScreenState extends State<OrganizationsScreen> {
                 Expanded(
                   child: Text('Organizations', style: AppTextStyles.headlineMedium),
                 ),
-                if (isPlatformAdministrator)
+                // A Site Manager may also create an organization —
+                // PROJECT_CONTEXT.md §12: "A Site Manager/Site
+                // Superintendent must be able to create an organization
+                // because they are the field operational manager" — and may
+                // create more than one, so this is not limited to the
+                // zero-membership case above.
+                if (isPlatformAdministrator || isSiteManager)
                   IconButton(
                     tooltip: 'Add organization',
                     onPressed: _isSaving ? null : _openCreateDialog,

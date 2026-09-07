@@ -53,21 +53,30 @@ class _FakeAdminService extends OrganizationAdminService {
 }
 
 class _FakeSession extends SessionController {
-  _FakeSession({required AppRole? role, String? organizationId})
-    : _profile = UserProfile(
-        uid: 'sysadmin-uid',
-        name: 'Sysadmin',
-        email: 'sysadmin@example.com',
-        accountStatus: AccountStatus.active,
-        platformRole: role == AppRole.admin ? role : null,
-      ),
-      _membership = role == null || role == AppRole.admin || organizationId == null
-          ? null
-          : Membership(
-              organizationId: organizationId,
-              role: role,
-              status: MembershipStatus.active,
-            );
+  _FakeSession({
+    required AppRole? role,
+    String? organizationId,
+    bool transientSiteManagerMarker = false,
+  }) : _profile = UserProfile(
+         uid: 'sysadmin-uid',
+         name: 'Sysadmin',
+         email: 'sysadmin@example.com',
+         accountStatus: AccountStatus.active,
+         // A brand-new Site Manager approved with no organization yet (the
+         // documented "create your own org afterward" path) has this
+         // transient marker instead of a membership — see
+         // `account_approval.ts`'s `approveAccount`.
+         platformRole: role == AppRole.admin
+             ? role
+             : (transientSiteManagerMarker ? AppRole.siteManager : null),
+       ),
+       _membership = role == null || role == AppRole.admin || organizationId == null
+           ? null
+           : Membership(
+               organizationId: organizationId,
+               role: role,
+               status: MembershipStatus.active,
+             );
 
   final UserProfile _profile;
   final Membership? _membership;
@@ -103,10 +112,14 @@ void main() {
     _FakeAdminService adminService, {
     AppRole? reviewerRole = AppRole.admin,
     String? organizationId,
+    bool transientSiteManagerMarker = false,
   }) {
     return ChangeNotifierProvider<SessionController>(
-      create: (_) =>
-          _FakeSession(role: reviewerRole, organizationId: organizationId),
+      create: (_) => _FakeSession(
+        role: reviewerRole,
+        organizationId: organizationId,
+        transientSiteManagerMarker: transientSiteManagerMarker,
+      ),
       child: MaterialApp(
         home: Scaffold(
           body: OrganizationsScreen(
@@ -285,20 +298,45 @@ void main() {
       expect(find.text('Org beta'), findsNothing);
     });
 
-    testWidgets('cannot see the Add organization action', (tester) async {
-      await seedOrg('alpha');
+    testWidgets(
+      'can see the Add organization action — PROJECT_CONTEXT.md §12: a '
+      'Site Manager must be able to create an organization because they '
+      'are the field operational manager, including a second/third one',
+      (tester) async {
+        await seedOrg('alpha');
 
-      await tester.pumpWidget(
-        wrap(
-          _FakeAdminService(),
-          reviewerRole: AppRole.siteManager,
-          organizationId: 'alpha',
-        ),
-      );
-      await tester.pumpAndSettle();
+        await tester.pumpWidget(
+          wrap(
+            _FakeAdminService(),
+            reviewerRole: AppRole.siteManager,
+            organizationId: 'alpha',
+          ),
+        );
+        await tester.pumpAndSettle();
 
-      expect(find.byTooltip('Add organization'), findsNothing);
-    });
+        expect(find.byTooltip('Add organization'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'a brand-new Site Manager with no membership yet (approved by Admin '
+      'with no organization) can still reach and see the Add organization '
+      'action — the one path that gives them their first membership',
+      (tester) async {
+        await tester.pumpWidget(
+          wrap(
+            _FakeAdminService(),
+            reviewerRole: null,
+            transientSiteManagerMarker: true,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('You do not have permission to manage organizations.'),
+            findsNothing);
+        expect(find.byTooltip('Add organization'), findsOneWidget);
+      },
+    );
 
     testWidgets('cannot see the Edit action on their own organization', (
       tester,
