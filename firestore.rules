@@ -143,11 +143,20 @@ service cloud.firestore {
       return hasProfile() && currentUserProfile().accountStatus == 'active';
     }
 
-    // The caller's own membership document for a given organization, or
-    // null if none exists. Membership is the source of truth for "does this
-    // person belong to this organization, and with what status/role" —
-    // there is no longer a scalar `organizationId` field on the profile to
-    // compare against.
+    // The caller's own membership document for a given organization.
+    // Membership is the source of truth for "does this person belong to
+    // this organization, and with what status/role" — there is no longer a
+    // scalar `organizationId` field on the profile to compare against.
+    //
+    // Calling this when no such membership document exists is a rules
+    // evaluation ERROR (get().data on an absent document), not simply
+    // `false` — the rules language does not guarantee `&&`/`||` short-circuit
+    // order around `get`/`exists` calls, so callers MUST NOT rely on
+    // `hasMembership(organizationId) && membershipDoc(organizationId)...`
+    // to protect this. Every caller below therefore only ever invokes this
+    // from inside a `belongsToOrganization`/`membershipRole` style helper
+    // that is guaranteed by construction never to be reached for a
+    // nonexistent membership — see those functions.
     function membershipDoc(organizationId) {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)/memberships/$(organizationId)).data;
     }
@@ -161,10 +170,20 @@ service cloud.firestore {
     // membership can exist but be `suspended` — that no longer counts as
     // belonging, mirroring how `accountStatus != active` no longer counts
     // as an active account.
+    //
+    // Written as a single ternary rather than `hasMembership(...) &&
+    // membershipDoc(...).status == 'active'` so that when no membership
+    // document exists, evaluation stops at `false` inside the ternary's own
+    // branch selection rather than ever calling `membershipDoc` (whose
+    // `get(...).data` would error on an absent document) — the rules
+    // language's `&&`/`||` operators do not guarantee that a false first
+    // operand skips evaluating a `get`/`exists`-calling second operand, but
+    // a ternary's untaken branch is never evaluated.
     function belongsToOrganization(organizationId) {
       return isActiveUser()
-        && hasMembership(organizationId)
-        && membershipDoc(organizationId).status == 'active';
+        && (hasMembership(organizationId)
+          ? membershipDoc(organizationId).status == 'active'
+          : false);
     }
 
     // The platform-level role, read the same way every other authorization
@@ -589,7 +608,9 @@ service cloud.firestore {
         // (the path segment) is that organization.
         allow read: if isAdmin()
           || (belongsToOrganization(organizationId) && resource.data.workerUid == request.auth.uid)
-          || (belongsToOrganization(organizationId) && membershipDoc(organizationId).role == 'siteManager');
+          || (belongsToOrganization(organizationId)
+            ? membershipDoc(organizationId).role == 'siteManager'
+            : false);
         // Provisioned exclusively through `getMyRequiredLearning`/
         // `startLearning`/`completeLearning` (`worker_learning_callable.ts`),
         // none of which accept a workerUid argument — every one derives the

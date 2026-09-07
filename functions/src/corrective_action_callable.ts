@@ -207,7 +207,13 @@ async function requireActiveOrganizationMember(
       "That assignee is not an active member of this organization."
     );
   }
-  if (profile.organizationId !== organizationId) {
+
+  // Organization membership lives on the assignee's own membership document
+  // for this organization, not a scalar profile field.
+  const membershipSnapshot = await getFirestore()
+    .doc(`users/${assignedTo}/memberships/${organizationId}`)
+    .get();
+  if (!membershipSnapshot.exists) {
     throw new HttpsError(
       "failed-precondition",
       "That assignee does not belong to the given organization."
@@ -248,12 +254,22 @@ export async function requireOrganizationScopedReviewer(
   if (!snapshot.exists || !profile) throw denied();
   if (profile.accountStatus !== "active") throw denied();
 
-  const role: unknown = profile.platformRole;
+  if (profile.platformRole === "admin") return uid;
+
+  // A non-admin reviewer's role is per-organization, read from their own
+  // membership document for THIS organization rather than a scalar profile
+  // field — a siteManager/foreman may hold more than one membership.
+  const membershipSnapshot = await getFirestore()
+    .doc(`users/${uid}/memberships/${organizationId}`)
+    .get();
+  const membership = membershipSnapshot.data();
+  if (!membershipSnapshot.exists || !membership) throw denied();
+  if (membership.status !== "active") throw denied();
+
+  const role: unknown = membership.role;
   if (!isAppRole(role) || !canReviewPendingAccounts(role as AppRole)) {
     throw denied();
   }
-  if (role === "admin") return uid;
-  if (profile.organizationId !== organizationId) throw denied();
 
   return uid;
 }

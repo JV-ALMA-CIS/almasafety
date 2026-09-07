@@ -20,9 +20,11 @@
  *
  * 1. The activity must exist and belong to `organizationId` — fetched fresh,
  *    never trusted from the request payload.
- * 2. The target worker's own profile must exist and have `organizationId`
- *    equal to the one given — cross-organization assignment is refused.
- * 3. The target worker's `siteIds` (an array, defaulting to empty) must
+ * 2. The target worker must hold a `users/{uid}/memberships/{organizationId}`
+ *    document for the given organization — cross-organization assignment is
+ *    refused. (Role/org relationship lives on the membership subcollection
+ *    under the multi-organization model, not a scalar profile field.)
+ * 3. That membership's own `siteIds` (an array, defaulting to empty) must
  *    already contain the activity's `siteId` — a worker cannot be assigned
  *    to an activity at a site they have no access to. This is the whole
  *    reason `site_assignment_callable.ts` exists as a prerequisite.
@@ -102,14 +104,20 @@ async function requireActivityInOrganization(
 }
 
 /**
- * Loads the target worker's profile, confirms it belongs to
- * [organizationId], and — for assignment only — confirms `siteIds` already
- * contains [siteId].
+ * Loads the target worker's profile and MEMBERSHIP document for
+ * [organizationId], and — for assignment only — confirms the membership's
+ * `siteIds` already contains [siteId].
+ *
+ * `organizationId` and `siteIds` both moved off the top-level profile onto
+ * `users/{uid}/memberships/{organizationId}` under the multi-organization
+ * model — a worker's org membership and per-org site access are no longer
+ * scalar profile fields, so this now checks the membership document's
+ * existence (and its own `siteIds`) instead of a profile field comparison.
  *
  * @param {string} uid the target worker.
  * @param {string} organizationId the organization the action targets.
  * @param {string} siteId the activity's site, required to already be in the
- * worker's `siteIds` when [requireSiteAccess] is true.
+ * worker's membership `siteIds` when [requireSiteAccess] is true.
  * @param {boolean} requireSiteAccess whether to enforce the site-membership
  * check (true for assignment, false for removal — a worker being removed
  * need not still have site access).
@@ -121,19 +129,23 @@ async function requireWorkerEligible(
   siteId: string,
   requireSiteAccess: boolean
 ): Promise<void> {
-  const snapshot = await getFirestore().doc(`users/${uid}`).get();
-  const profile = snapshot.data();
-  if (!snapshot.exists || !profile) {
+  const userSnapshot = await getFirestore().doc(`users/${uid}`).get();
+  if (!userSnapshot.exists) {
     throw new HttpsError("not-found", "That worker no longer exists.");
   }
-  if (profile.organizationId !== organizationId) {
+
+  const membershipSnapshot = await getFirestore()
+    .doc(`users/${uid}/memberships/${organizationId}`)
+    .get();
+  const membership = membershipSnapshot.data();
+  if (!membershipSnapshot.exists || !membership) {
     throw new HttpsError(
       "failed-precondition",
       "That worker does not belong to the given organization."
     );
   }
   if (requireSiteAccess) {
-    const siteIds: unknown = profile.siteIds;
+    const siteIds: unknown = membership.siteIds;
     const hasSiteAccess = Array.isArray(siteIds) && siteIds.includes(siteId);
     if (!hasSiteAccess) {
       throw new HttpsError(

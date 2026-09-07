@@ -54,7 +54,6 @@
 
 import {FieldValue, getFirestore} from "firebase-admin/firestore";
 import {CallableRequest, HttpsError, onCall} from "firebase-functions/v2/https";
-import {isAppRole} from "./account_approval";
 
 /** The two values of the shared organization/project/site status field. */
 export const RECORD_STATUSES = ["active", "inactive"] as const;
@@ -85,11 +84,20 @@ function denied(): HttpsError {
   );
 }
 
-/** The caller's own uid and active profile, loaded once per callable. */
+/**
+ * The caller's own uid and active profile, loaded once per callable.
+ *
+ * `role` here is the platform role (`admin`/`siteManager`/etc read off the
+ * top-level profile when it is `admin`, since Admin holds no memberships at
+ * all — see [requireActiveCaller]). For a non-admin caller, whether they may
+ * act as a `siteManager` for a GIVEN organization is decided per-call by
+ * [requireOrganizationScopedManager] against their membership subcollection,
+ * not by this single cached `role` value — a siteManager caller may hold
+ * that role in one organization and none in another.
+ */
 interface CallerProfile {
   uid: string;
   role: string;
-  organizationId: string | null;
 }
 
 /**
@@ -97,7 +105,10 @@ interface CallerProfile {
  * authorization function in this file builds on this.
  *
  * @param {CallableRequest} request the incoming callable request.
- * @return {Promise<CallerProfile>} the authorized caller's uid/role/org.
+ * @return {Promise<CallerProfile>} the authorized caller's uid and platform
+ * role (`admin`, or their account's nominal role family — see
+ * [requireOrganizationScopedManager] for how a non-admin's actual authority
+ * over one specific organization is verified).
  */
 async function requireActiveCaller(
   request: CallableRequest
@@ -109,15 +120,38 @@ async function requireActiveCaller(
   const profile = snapshot.data();
   if (!snapshot.exists || !profile) throw denied();
   if (profile.accountStatus !== "active") throw denied();
-  if (!isAppRole(profile.platformRole)) throw denied();
 
-  return {
-    uid,
-    role: profile.platformRole,
-    organizationId: typeof profile.organizationId === "string" ?
-      profile.organizationId :
-      null,
-  };
+  if (profile.platformRole === "admin") {
+    return {uid, role: "admin"};
+  }
+
+  // The one narrow non-admin use of platformRole: a siteManager approved
+  // with NO organization yet (see `approveAccount` in
+  // `account_approval.ts`) has no membership document to carry a role at
+  // all. Without this, such an account could never call `createOrganization`
+  // — the very callable it needs to reach next — since it holds zero
+  // memberships. This value is provisional: once a real membership exists
+  // (created by `createOrganization` itself, or by a later approval into an
+  // organization), the membership subcollection becomes authoritative and
+  // this field is cleared — see `createOrganization` below.
+  if (profile.platformRole === "siteManager") {
+    return {uid, role: "siteManager"};
+  }
+
+  // A non-admin caller's "role" for the purposes of this file is otherwise
+  // resolved per-organization from their memberships, not a single profile
+  // field — see requireOrganizationScopedManager. Here we only need to know
+  // they hold SOME siteManager membership somewhere in order to be a
+  // plausible caller of the siteManager-only callables below; the
+  // org-specific check happens later.
+  const membershipSnapshot = await getFirestore()
+    .collection(`users/${uid}/memberships`)
+    .where("role", "==", "siteManager")
+    .limit(1)
+    .get();
+  if (membershipSnapshot.empty) throw denied();
+
+  return {uid, role: "siteManager"};
 }
 
 /**
@@ -155,7 +189,21 @@ export async function requireOrganizationScopedManager(
   if (caller.role === "admin") return caller.uid;
   if (caller.role !== "siteManager") throw denied();
 
-  if (caller.organizationId === organizationId) return caller.uid;
+  // Fast path: an active siteManager membership in THIS organization,
+  // checked against the caller's own membership subcollection rather than a
+  // scalar `organizationId` profile field — a siteManager may hold several
+  // memberships, so "is this one of them" is the real question, not "is
+  // this their one org".
+  const membershipSnapshot = await getFirestore()
+    .doc(`users/${caller.uid}/memberships/${organizationId}`)
+    .get();
+  const membership = membershipSnapshot.data();
+  if (
+    membershipSnapshot.exists && membership &&
+    membership.role === "siteManager" && membership.status === "active"
+  ) {
+    return caller.uid;
+  }
 
   const orgSnapshot = await getFirestore()
     .doc(`organizations/${organizationId}`)
@@ -247,9 +295,14 @@ function optionalDate(request: CallableRequest, field: string): Date | null {
  *
  * Callable by `admin` (any) or `siteManager` (becoming its operational
  * manager — PROJECT_CONTEXT.md §12). The creating `siteManager`'s uid is
- * written into `managedBy`, and if they had no `organizationId` of their own
- * yet, their profile is updated to this new organization's id in the same
- * operation — see this file's header note.
+ * written into `managedBy`, and — UNCONDITIONALLY, every time, not only the
+ * first time — a new `users/{uid}/memberships/{organizationId}` document is
+ * created for them with `role: siteManager`, `status: active`. There is no
+ * longer a reason to skip this for a second/third organization the same
+ * Site Manager creates: each organization they create or are placed into is
+ * its own membership document (see the header note on the multi-org
+ * membership model), unlike the old single-`organizationId`-backfill
+ * behaviour this replaces.
  *
  * `code` is not enforced unique server-side at this stage — cross-
  * organization uniqueness checking is deferred rather than half-built.
@@ -275,9 +328,30 @@ export const createOrganization = onCall(async (request) => {
     updatedBy: caller.uid,
   });
 
-  if (caller.role === "siteManager" && caller.organizationId === null) {
+  if (caller.role === "siteManager") {
+    await getFirestore()
+      .doc(`users/${caller.uid}/memberships/${ref.id}`)
+      .set({
+        organizationId: ref.id,
+        role: "siteManager",
+        workerType: null,
+        trade: null,
+        siteIds: [],
+        supervisorUid: null,
+        status: "active",
+        approvedAt: FieldValue.serverTimestamp(),
+        approvedBy: caller.uid,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+
+    // Clears the provisional platformRole marker `approveAccount` writes for
+    // an org-less siteManager (see `requireActiveCaller` above) now that a
+    // real membership document exists to be authoritative instead. Harmless
+    // no-op (an extra field-delete) for a siteManager who already had a
+    // membership and so never carried this marker in the first place.
     await getFirestore().doc(`users/${caller.uid}`).update({
-      organizationId: ref.id,
+      platformRole: FieldValue.delete(),
       updatedAt: FieldValue.serverTimestamp(),
     });
   }

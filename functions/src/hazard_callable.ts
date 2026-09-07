@@ -229,7 +229,16 @@ async function requireActiveOrganizationCaller(
   const profile = snapshot.data();
   if (!snapshot.exists || !profile) throw denied();
   if (profile.accountStatus !== "active") throw denied();
-  if (profile.organizationId !== organizationId) throw denied();
+
+  // Organization membership lives on the caller's own membership document
+  // for this organization, not a scalar profile field — a caller may hold
+  // more than one membership.
+  const membershipSnapshot = await getFirestore()
+    .doc(`users/${uid}/memberships/${organizationId}`)
+    .get();
+  const membership = membershipSnapshot.data();
+  if (!membershipSnapshot.exists || !membership) throw denied();
+  if (membership.status !== "active") throw denied();
 
   return uid;
 }

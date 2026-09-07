@@ -203,10 +203,20 @@ async function requireActiveForeman(
   const profile = snapshot.data();
   if (!snapshot.exists || !profile) throw denied();
   if (profile.accountStatus !== "active") throw denied();
-  if (profile.platformRole !== "foreman") throw denied();
-  if (profile.organizationId !== organizationId) throw denied();
 
-  const siteIds: unknown = profile.siteIds;
+  // Role, organization membership and siteIds all live on the caller's own
+  // membership document for THIS organization under the multi-organization
+  // model, not on scalar profile fields — a Foreman may hold more than one
+  // membership, so their role/site-access is necessarily per-organization.
+  const membershipSnapshot = await getFirestore()
+    .doc(`users/${uid}/memberships/${organizationId}`)
+    .get();
+  const membership = membershipSnapshot.data();
+  if (!membershipSnapshot.exists || !membership) throw denied();
+  if (membership.status !== "active") throw denied();
+  if (membership.role !== "foreman") throw denied();
+
+  const siteIds: unknown = membership.siteIds;
   const hasSiteAccess = Array.isArray(siteIds) && siteIds.includes(siteId);
   if (!hasSiteAccess) throw denied();
 
@@ -538,13 +548,24 @@ export async function requireWorkerAtSite(
       "That worker is not an active member of this organization."
     );
   }
-  if (profile.organizationId !== organizationId) {
+
+  // Organization membership and siteIds live on the worker's own membership
+  // document for this organization under the multi-organization model, not
+  // scalar profile fields.
+  const membershipSnapshot = await getFirestore()
+    .doc(`users/${workerId}/memberships/${organizationId}`)
+    .get();
+  const membership = membershipSnapshot.data();
+  if (
+    !membershipSnapshot.exists || !membership ||
+    membership.status !== "active"
+  ) {
     throw new HttpsError(
       "failed-precondition",
       "That worker does not belong to the given organization."
     );
   }
-  const siteIds: unknown = profile.siteIds;
+  const siteIds: unknown = membership.siteIds;
   const hasSiteAccess = Array.isArray(siteIds) && siteIds.includes(siteId);
   if (!hasSiteAccess) {
     throw new HttpsError(

@@ -40,6 +40,7 @@ initializeApp();
 
 export {
   approveAccount,
+  addMembership,
   denyAccount,
   reinstateAccount,
   isAccountStatus,
@@ -57,6 +58,9 @@ export {
   listOrganizationUsers,
   suspendActiveAccount,
   reinstateSuspendedAccount,
+  suspendMembership,
+  reinstateMembership,
+  addOrganizationMembership,
 } from "./approval_callable";
 
 export {

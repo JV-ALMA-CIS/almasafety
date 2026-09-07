@@ -5,8 +5,22 @@
  * moving an account out of `pending`. This module is the only trusted path
  * for it. It runs with the Admin SDK (which bypasses Firestore security
  * rules), so it is also the only code that can write `accountStatus`,
- * `organizationId`, `approvedAt`, `approvedBy`, `platformRole` or
- * `workerType` at all — the rules deny those fields to every client.
+ * `approvedAt`, `approvedBy`, `platformRole`, or a
+ * `users/{uid}/memberships/{organizationId}` document at all — the rules
+ * deny all of those to every client.
+ *
+ * MULTI-ORGANIZATION MEMBERSHIP MODEL. A person's relationship to a specific
+ * organization — role, workerType, trade, siteIds, supervisorUid, and a
+ * per-org `active`/`suspended` status — lives on
+ * `users/{uid}/memberships/{organizationId}`, not on the top-level profile,
+ * because a Site Manager/Foreman may belong to more than one organization.
+ * `accountStatus` on the top-level profile stays a single, ACCOUNT-level
+ * field: it is set once, at a person's first-ever approval, and gates
+ * sign-in/app access globally regardless of how many organizations they
+ * later join. [approveAccount] therefore does two things atomically on first
+ * approval: activates the account AND creates its first membership document.
+ * A later placement into a second organization is [addMembership] instead —
+ * it creates one more membership document and touches nothing else.
  *
  * These are plain functions with NO caller authorization of their own — they
  * assume the caller has already been authorized. There are exactly two
@@ -191,20 +205,37 @@ async function writeAuditLog(entry: {
 }
 
 /**
- * Approves a pending account: assigns its organization and role, sets its
- * worker type, and activates it.
+ * Approves a pending account: activates it (account-level, once, forever)
+ * and — except for an `admin` approving a `siteManager` with no organization
+ * yet — creates its first `users/{uid}/memberships/{organizationId}`
+ * document with the given role/workerType/trade/siteIds/supervisorUid.
+ * `platformRole` is set on the profile only for `admin`-family grants that
+ * carry no per-org role (in practice this module never writes `admin` here —
+ * see the header note — but the field is retained on the profile for the
+ * `admin` bootstrap script's own use of `approveAccount`-adjacent logic;
+ * ordinary role grants live entirely on the membership document instead).
+ *
+ * Both writes happen in the same batch, so a reader can never observe an
+ * account that is `active` but has no membership yet (other than the
+ * org-less Admin/siteManager-with-no-org-yet cases, which are the documented
+ * exceptions).
  *
  * Refuses any account that is not currently `pending`, so this cannot be
  * used to silently re-home an already-active user into another organization
  * or change their role — that would be a separate, explicitly-audited
- * operation.
+ * operation ([addMembership]).
  *
  * @param {object} params the approval parameters.
  * @param {string} params.uid the account being approved.
- * @param {string} params.organizationId the organization to assign.
+ * @param {string | null} params.organizationId the organization to place
+ * them into, or null (only valid for an admin approving a siteManager).
  * @param {AppRole} params.role the role to assign.
  * @param {WorkerTypeValue | null} params.workerType the worker type to
  * assign, or null when none applies.
+ * @param {string | null} params.trade the trade to assign, or null.
+ * @param {string[]} params.siteIds the site(s) to grant, if any.
+ * @param {string | null} params.supervisorUid the assigned supervisor, or
+ * null.
  * @param {string} params.approvedBy uid of the approving authority.
  * @return {Promise<void>} resolves once the account is active.
  */
@@ -213,16 +244,22 @@ export async function approveAccount(params: {
   organizationId: string | null;
   role: AppRole;
   workerType: WorkerTypeValue | null;
+  trade?: string | null;
+  siteIds?: string[];
+  supervisorUid?: string | null;
   approvedBy: string;
 }): Promise<void> {
-  const {uid, organizationId, role, workerType, approvedBy} = params;
+  const {
+    uid, organizationId, role, workerType, approvedBy,
+    trade = null, siteIds = [], supervisorUid = null,
+  } = params;
   // organizationId is required for every grant EXCEPT admin approving
   // siteManager: an Admin in the office approving a colleague they know by
   // name has no way to know which of possibly several organizations that
   // Site Manager operates in — see PROJECT_CONTEXT.md §12/§16/§18. The new
   // Site Manager instead creates (or is later assigned into) their own
-  // organization via `createOrganization`, which backfills `organizationId`
-  // onto their profile at that point. Every other grant (siteManager
+  // organization via `createOrganization`, which creates their first
+  // membership document at that point. Every other grant (siteManager
   // approving foreman, foreman approving worker) still requires one, since
   // those reviewers are already scoped to a real organization themselves.
   if (!organizationId && role !== "siteManager") {
@@ -241,15 +278,46 @@ export async function approveAccount(params: {
     );
   }
 
-  await ref.update({
-    ...(organizationId ? {organizationId} : {}),
-    platformRole: role,
-    ...(workerType ? {workerType} : {}),
+  const batch = getFirestore().batch();
+  batch.update(ref, {
     accountStatus: "active",
     approvedAt: FieldValue.serverTimestamp(),
     approvedBy,
     updatedAt: FieldValue.serverTimestamp(),
+    // The one case with no membership document to carry a role at all: an
+    // admin approving a siteManager with no organization yet (see this
+    // function's own org-required check above). Without SOME marker, this
+    // account would be active but authorization-invisible — able to reach
+    // no organization-scoped callable, including createOrganization itself,
+    // which is exactly what it needs to call next. platformRole (otherwise
+    // reserved for `admin`) carries that one narrow signal here; it is
+    // overwritten/ignored the moment a real membership exists — see
+    // `createOrganization` and `requireActiveCaller` in
+    // `organization_callable.ts`, the only readers of this value for a
+    // non-admin account.
+    ...(!organizationId && role === "siteManager" ?
+      {platformRole: "siteManager"} :
+      {}),
   });
+
+  if (organizationId) {
+    const membershipRef = ref.collection("memberships").doc(organizationId);
+    batch.set(membershipRef, {
+      organizationId,
+      role,
+      workerType: workerType ?? null,
+      trade: trade ?? null,
+      siteIds: siteIds ?? [],
+      supervisorUid: supervisorUid ?? null,
+      status: "active",
+      approvedAt: FieldValue.serverTimestamp(),
+      approvedBy,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  }
+
+  await batch.commit();
 
   await writeAuditLog({
     organizationId: organizationId ?? null,
@@ -257,6 +325,90 @@ export async function approveAccount(params: {
     action: "account.approved",
     targetDocId: uid,
     metadata: {organizationId: organizationId ?? null, role, workerType},
+  });
+}
+
+/**
+ * Places an already-ACTIVE account into an additional organization: creates
+ * one more `users/{uid}/memberships/{organizationId}` document without
+ * touching `accountStatus` or any of the person's other memberships.
+ *
+ * This is the multi-organization counterpart to the membership half of
+ * [approveAccount] — used once a person already has an account (and, for a
+ * Site Manager/Foreman, likely already at least one membership) and is being
+ * placed into one more organization.
+ *
+ * Refuses if a membership already exists for this uid+organizationId, so a
+ * reviewer cannot silently overwrite an existing membership's role/status
+ * through this path — see `approval_callable.ts`'s `addOrganizationMembership`
+ * for the caller-facing `already-exists` refusal built on this check.
+ *
+ * @param {object} params the placement parameters.
+ * @param {string} params.uid the account being placed.
+ * @param {string} params.organizationId the organization to place them into.
+ * @param {AppRole} params.role the role to assign within that organization.
+ * @param {WorkerTypeValue | null} params.workerType the worker type, or
+ * null.
+ * @param {string | null} params.trade the trade, or null.
+ * @param {string[]} params.siteIds the site(s) to grant, if any.
+ * @param {string | null} params.supervisorUid the assigned supervisor, or
+ * null.
+ * @param {string} params.approvedBy uid of the approving authority.
+ * @return {Promise<void>} resolves once the membership exists.
+ */
+export async function addMembership(params: {
+  uid: string;
+  organizationId: string;
+  role: AppRole;
+  workerType: WorkerTypeValue | null;
+  trade?: string | null;
+  siteIds?: string[];
+  supervisorUid?: string | null;
+  approvedBy: string;
+}): Promise<void> {
+  const {
+    uid, organizationId, role, workerType, approvedBy,
+    trade = null, siteIds = [], supervisorUid = null,
+  } = params;
+
+  const userRef = getFirestore().doc(`users/${uid}`);
+  const userSnapshot = await userRef.get();
+  const profile = userSnapshot.data();
+  if (!userSnapshot.exists || !profile) {
+    throw new Error(`No profile found for uid ${uid}.`);
+  }
+  if (profile.accountStatus !== "active") {
+    throw new Error(`Account ${uid} is not active.`);
+  }
+
+  const membershipRef = userRef.collection("memberships").doc(organizationId);
+  const membershipSnapshot = await membershipRef.get();
+  if (membershipSnapshot.exists) {
+    throw new Error(
+      `Account ${uid} already has a membership in ${organizationId}.`
+    );
+  }
+
+  await membershipRef.set({
+    organizationId,
+    role,
+    workerType: workerType ?? null,
+    trade: trade ?? null,
+    siteIds: siteIds ?? [],
+    supervisorUid: supervisorUid ?? null,
+    status: "active",
+    approvedAt: FieldValue.serverTimestamp(),
+    approvedBy,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  await writeAuditLog({
+    organizationId,
+    actorUid: approvedBy,
+    action: "membership.added",
+    targetDocId: uid,
+    metadata: {organizationId, role, workerType},
   });
 }
 
@@ -297,8 +449,13 @@ export async function denyAccount(params: {
     updatedAt: FieldValue.serverTimestamp(),
   });
 
+  // organizationId is no longer a single scalar on the profile — this is an
+  // ACCOUNT-level action (accountStatus), not scoped to one organization, so
+  // the audit entry carries no organizationId. A person's memberships are
+  // untouched by account-level suspension/rejection; see `suspendMembership`
+  // in `approval_callable.ts` for the per-membership equivalent.
   await writeAuditLog({
-    organizationId: profile.organizationId ?? null,
+    organizationId: null,
     actorUid,
     action: `account.${status}`,
     targetDocId: uid,
@@ -329,11 +486,6 @@ export async function reinstateAccount(params: {
   if (profile.accountStatus !== "suspended") {
     throw new Error(`Account ${uid} is not suspended.`);
   }
-  if (!profile.organizationId) {
-    throw new Error(
-      `Account ${uid} has no organization; approve it instead.`
-    );
-  }
 
   await getAuth().updateUser(uid, {disabled: false});
   await ref.update({
@@ -341,8 +493,11 @@ export async function reinstateAccount(params: {
     updatedAt: FieldValue.serverTimestamp(),
   });
 
+  // Account-level, like denyAccount above: no single organizationId to
+  // attribute this to any more. Reinstating the account does not touch any
+  // individual membership's own `status` — see `reinstateMembership`.
   await writeAuditLog({
-    organizationId: profile.organizationId,
+    organizationId: null,
     actorUid,
     action: "account.reinstated",
     targetDocId: uid,

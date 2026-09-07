@@ -73,15 +73,49 @@ function assignmentPath(organizationId, activityId, uid) {
     `/assignments/${uid}`;
 }
 
-/** A seeded (already-reviewed) profile, as the Admin SDK would write it. */
+/**
+ * A seeded (already-reviewed) profile, as the Admin SDK would write it.
+ *
+ * Under the multi-organization membership model, `organizationId` is no
+ * longer read by the rules from this document at all — a user's
+ * organization relationship lives on `users/{uid}/memberships/{orgId}`
+ * instead (see [membership]/[seedMembership] below). It is harmless to keep
+ * accepting/setting it here for backward compatibility with tests that
+ * still pass it through `overrides` (the rules simply ignore it), but new
+ * tests should rely on a real seeded membership document for any
+ * `belongsToOrganization` behavior.
+ */
 function profile(uid, accountStatus, overrides = {}) {
   return {
     uid,
-    organizationId: ORG_A,
     name: "Test User",
     email: `${uid}@example.com`,
     phone: "+254700000000",
     accountStatus,
+    createdAt: new Date("2026-01-01"),
+    updatedAt: new Date("2026-01-01"),
+    ...overrides,
+  };
+}
+
+/**
+ * A seeded `users/{uid}/memberships/{organizationId}` document, as the
+ * Admin SDK would write it (`approveAccount`/`addMembership`/
+ * `createOrganization`). Defaults to `status: "active"` — the common case —
+ * and a `worker` role, since most read-boundary tests only care about
+ * organization membership, not the specific role.
+ */
+function membership(uid, organizationId, overrides = {}) {
+  return {
+    organizationId,
+    role: "worker",
+    workerType: null,
+    trade: null,
+    siteIds: [],
+    supervisorUid: null,
+    status: "active",
+    approvedAt: new Date("2026-01-01"),
+    approvedBy: "approver-a",
     createdAt: new Date("2026-01-01"),
     updatedAt: new Date("2026-01-01"),
     ...overrides,
@@ -140,18 +174,27 @@ beforeEach(async () => {
   // One account in each lifecycle state, plus an organization to reach for.
   await seed(async (db) => {
     await db.doc(userPath("active-a")).set(profile("active-a", "active"));
+    await db
+      .doc(`users/active-a/memberships/${ORG_A}`)
+      .set(membership("active-a", ORG_A));
     await db.doc(userPath("pending-a")).set(
       profile("pending-a", "pending", {organizationId: null})
     );
     await db.doc(userPath("suspended-a")).set(
       profile("suspended-a", "suspended")
     );
+    await db
+      .doc(`users/suspended-a/memberships/${ORG_A}`)
+      .set(membership("suspended-a", ORG_A));
     await db.doc(userPath("rejected-a")).set(
       profile("rejected-a", "rejected", {organizationId: null})
     );
     await db.doc(userPath("active-b")).set(
       profile("active-b", "active", {organizationId: ORG_B})
     );
+    await db
+      .doc(`users/active-b/memberships/${ORG_B}`)
+      .set(membership("active-b", ORG_B));
     // A reviewer — the role the app's approvals screen requires. Written
     // here with rules disabled because that is the only way it can ever be
     // written: the operator script and approval callables use the Admin SDK
@@ -159,6 +202,9 @@ beforeEach(async () => {
     await db.doc(userPath("approver-a")).set(
       profile("approver-a", "active", {platformRole: "siteManager"})
     );
+    await db
+      .doc(`users/approver-a/memberships/${ORG_A}`)
+      .set(membership("approver-a", ORG_A, {role: "siteManager"}));
     // The bootstrap Admin: platform-level, so no organizationId —
     // mirroring exactly what scripts/approve_account.ts's bootstrap-admin
     // command writes.
@@ -1441,8 +1487,11 @@ describe("the Safety Requirement / Safety Learning foundation", () => {
     // ORG_B and so cannot exercise this same-organization case.
     await seed(async (db) => {
       await db.doc(userPath("worker-same-org")).set(
-        profile("worker-same-org", "active", {platformRole: "worker"})
+        profile("worker-same-org", "active")
       );
+      await db
+        .doc(`users/worker-same-org/memberships/${ORG_A}`)
+        .set(membership("worker-same-org", ORG_A, {role: "worker"}));
     });
     const db = actor("worker-same-org", "worker-same-org@example.com");
 
@@ -1651,12 +1700,13 @@ describe("the Daily Safety Meeting foundation", () => {
     await seed(async (db) => {
       // A foreman assigned to ORG_A's site-1, the shape
       // `assignWorkerToSite` would produce.
-      await db.doc(userPath("foreman-a")).set(
-        profile("foreman-a", "active", {
-          platformRole: "foreman",
+      await db.doc(userPath("foreman-a")).set(profile("foreman-a", "active"));
+      await db
+        .doc(`users/foreman-a/memberships/${ORG_A}`)
+        .set(membership("foreman-a", ORG_A, {
+          role: "foreman",
           siteIds: ["site-1"],
-        })
-      );
+        }));
       await db.doc(meetingPath(ORG_A, "meeting-1")).set({
         organizationId: ORG_A,
         projectId: "project-1",
@@ -1781,12 +1831,13 @@ describe("the Daily Safety Meeting foundation", () => {
 
     beforeEach(async () => {
       await seed(async (db) => {
-        await db.doc(userPath("worker-a")).set(
-          profile("worker-a", "active", {
-            platformRole: "worker",
+        await db.doc(userPath("worker-a")).set(profile("worker-a", "active"));
+        await db
+          .doc(`users/worker-a/memberships/${ORG_A}`)
+          .set(membership("worker-a", ORG_A, {
+            role: "worker",
             siteIds: ["site-1"],
-          })
-        );
+          }));
         await db
           .doc(attendancePath(ORG_A, "meeting-1", "worker-a"))
           .set({
@@ -2039,12 +2090,13 @@ describe("the Hazards foundation", () => {
 
   beforeEach(async () => {
     await seed(async (db) => {
-      await db.doc(userPath("worker-a")).set(
-        profile("worker-a", "active", {
-          platformRole: "worker",
+      await db.doc(userPath("worker-a")).set(profile("worker-a", "active"));
+      await db
+        .doc(`users/worker-a/memberships/${ORG_A}`)
+        .set(membership("worker-a", ORG_A, {
+          role: "worker",
           siteIds: ["site-1"],
-        })
-      );
+        }));
       await db.doc(hazardPath(ORG_A, "hazard-1")).set({
         organizationId: ORG_A,
         projectId: "project-1",
@@ -2178,18 +2230,20 @@ describe("the Corrective Actions foundation", () => {
 
   beforeEach(async () => {
     await seed(async (db) => {
-      await db.doc(userPath("foreman-a")).set(
-        profile("foreman-a", "active", {
-          platformRole: "foreman",
+      await db.doc(userPath("foreman-a")).set(profile("foreman-a", "active"));
+      await db
+        .doc(`users/foreman-a/memberships/${ORG_A}`)
+        .set(membership("foreman-a", ORG_A, {
+          role: "foreman",
           siteIds: ["site-1"],
-        })
-      );
-      await db.doc(userPath("worker-a")).set(
-        profile("worker-a", "active", {
-          platformRole: "worker",
+        }));
+      await db.doc(userPath("worker-a")).set(profile("worker-a", "active"));
+      await db
+        .doc(`users/worker-a/memberships/${ORG_A}`)
+        .set(membership("worker-a", ORG_A, {
+          role: "worker",
           siteIds: ["site-1"],
-        })
-      );
+        }));
       await db.doc(actionPath(ORG_A, "action-1")).set({
         organizationId: ORG_A,
         projectId: "project-1",
@@ -2695,5 +2749,193 @@ describe("audit logs", () => {
     const db = actor("active-a", "active-a@example.com");
 
     await assertFails(db.doc("audit_logs/log-1").get());
+  });
+});
+
+describe("the multi-organization membership model", () => {
+  // DESIGN NOTE. A user's relationship to a specific organization now lives
+  // on users/{uid}/memberships/{organizationId} rather than a scalar
+  // organizationId field on the profile — see firestore.rules's header
+  // note. `belongsToOrganization(organizationId)` requires an ACTIVE
+  // membership document for that exact organization; a suspended membership
+  // no longer counts as belonging, and a person can hold more than one
+  // membership simultaneously, each independently active or suspended.
+
+  test("a user with two active memberships in different organizations " +
+    "can read both organizations' data", async () => {
+    await seed(async (db) => {
+      await db.doc(userPath("multi-org-user")).set(
+        profile("multi-org-user", "active")
+      );
+      await db
+        .doc(`users/multi-org-user/memberships/${ORG_A}`)
+        .set(membership("multi-org-user", ORG_A, {role: "siteManager"}));
+      await db
+        .doc(`users/multi-org-user/memberships/${ORG_B}`)
+        .set(membership("multi-org-user", ORG_B, {role: "siteManager"}));
+    });
+    const db = actor("multi-org-user", "multi-org-user@example.com");
+
+    await assertSucceeds(db.doc(`organizations/${ORG_A}`).get());
+    await assertSucceeds(db.doc(`organizations/${ORG_B}`).get());
+  });
+
+  test("a user with one active and one suspended membership can read " +
+    "only the active organization's data, and suspending one membership " +
+    "does not affect the other", async () => {
+    await seed(async (db) => {
+      await db.doc(userPath("mixed-status-user")).set(
+        profile("mixed-status-user", "active")
+      );
+      await db
+        .doc(`users/mixed-status-user/memberships/${ORG_A}`)
+        .set(membership("mixed-status-user", ORG_A, {status: "active"}));
+      await db
+        .doc(`users/mixed-status-user/memberships/${ORG_B}`)
+        .set(membership("mixed-status-user", ORG_B, {status: "suspended"}));
+    });
+    const db = actor("mixed-status-user", "mixed-status-user@example.com");
+
+    await assertSucceeds(db.doc(`organizations/${ORG_A}`).get());
+    await assertFails(db.doc(`organizations/${ORG_B}`).get());
+  });
+
+  test("a membership suspended in one organization does not touch " +
+    "another organization's membership document", async () => {
+    // Simulates suspendMembership having already run for ORG_B only —
+    // proves the ORG_A membership document itself is untouched (still
+    // active, still readable), not merely that the read succeeds.
+    await seed(async (db) => {
+      await db.doc(userPath("multi-org-user-2")).set(
+        profile("multi-org-user-2", "active")
+      );
+      await db
+        .doc(`users/multi-org-user-2/memberships/${ORG_A}`)
+        .set(membership("multi-org-user-2", ORG_A, {status: "active"}));
+      await db
+        .doc(`users/multi-org-user-2/memberships/${ORG_B}`)
+        .set(membership("multi-org-user-2", ORG_B, {status: "active"}));
+    });
+
+    // Admin-SDK write, exactly like suspendMembership would perform.
+    await seed(async (db) => {
+      await db
+        .doc(`users/multi-org-user-2/memberships/${ORG_B}`)
+        .update({status: "suspended"});
+    });
+
+    // withSecurityRulesDisabled awaits its callback but discards the
+    // result, so the snapshot must be captured into an outer variable
+    // rather than returned.
+    let orgAMembership;
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      orgAMembership = await context
+        .firestore()
+        .doc(`users/multi-org-user-2/memberships/${ORG_A}`)
+        .get();
+    });
+    expect(orgAMembership.data().status).toBe("active");
+
+    const db = actor("multi-org-user-2", "multi-org-user-2@example.com");
+    await assertSucceeds(db.doc(`organizations/${ORG_A}`).get());
+    await assertFails(db.doc(`organizations/${ORG_B}`).get());
+  });
+
+  describe("users/{uid}/memberships/{organizationId} rules", () => {
+    test("a user can read their own membership documents", async () => {
+      const db = actor("active-a", "active-a@example.com");
+
+      await assertSucceeds(
+        db.doc(`users/active-a/memberships/${ORG_A}`).get()
+      );
+    });
+
+    test("a user cannot read another user's membership documents",
+      async () => {
+        const db = actor("active-a", "active-a@example.com");
+
+        await assertFails(
+          db.doc(`users/active-b/memberships/${ORG_B}`).get()
+        );
+      });
+
+    test("an Admin can read anyone's membership documents", async () => {
+      const db = actor("sysadmin-a", "sysadmin-a@example.com");
+
+      await assertSucceeds(
+        db.doc(`users/active-a/memberships/${ORG_A}`).get()
+      );
+      await assertSucceeds(
+        db.doc(`users/active-b/memberships/${ORG_B}`).get()
+      );
+    });
+
+    test("no client, Admin included, can create a membership document " +
+      "by direct write", async () => {
+      await assertFails(
+        actor("active-a", "active-a@example.com")
+          .doc(`users/active-a/memberships/${ORG_B}`)
+          .set(membership("active-a", ORG_B))
+      );
+      await assertFails(
+        actor("sysadmin-a", "sysadmin-a@example.com")
+          .doc(`users/active-a/memberships/${ORG_B}`)
+          .set(membership("active-a", ORG_B))
+      );
+    });
+
+    test("no client, Admin included, can update a membership document " +
+      "by direct write", async () => {
+      await assertFails(
+        actor("active-a", "active-a@example.com")
+          .doc(`users/active-a/memberships/${ORG_A}`)
+          .update({role: "siteManager"})
+      );
+      await assertFails(
+        actor("sysadmin-a", "sysadmin-a@example.com")
+          .doc(`users/active-a/memberships/${ORG_A}`)
+          .update({status: "suspended"})
+      );
+    });
+
+    test("a user cannot grant themselves a second organization's " +
+      "membership by direct write", async () => {
+      const db = actor("active-a", "active-a@example.com");
+
+      await assertFails(
+        db
+          .doc(`users/active-a/memberships/${ORG_B}`)
+          .set(membership("active-a", ORG_B, {role: "siteManager"}))
+      );
+    });
+
+    test("no client can delete a membership document", async () => {
+      await assertFails(
+        actor("active-a", "active-a@example.com")
+          .doc(`users/active-a/memberships/${ORG_A}`)
+          .delete()
+      );
+      await assertFails(
+        actor("sysadmin-a", "sysadmin-a@example.com")
+          .doc(`users/active-a/memberships/${ORG_A}`)
+          .delete()
+      );
+    });
+
+    test("a pending user has no membership documents to read", async () => {
+      const db = actor("pending-a", "pending-a@example.com");
+
+      // isSelf(userId) permits pending-a to READ this path; the rule is not
+      // what makes this doc absent. There is simply no membership document
+      // here to find (a pending user has never been approved into one), so
+      // the read itself succeeds and resolves to a non-existent snapshot,
+      // exactly like reading any other absent document you're allowed to
+      // read — assertFails would wrongly demand a permission error where
+      // none occurs.
+      const snapshot = await assertSucceeds(
+        db.doc(`users/pending-a/memberships/${ORG_A}`).get()
+      );
+      expect(snapshot.exists).toBe(false);
+    });
   });
 });

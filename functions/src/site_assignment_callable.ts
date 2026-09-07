@@ -1,18 +1,22 @@
 /**
  * Worker-to-site assignment callables for JVA Safety.
  *
- * `firestore.rules` blocks every client write to `siteIds` on `users/{uid}`
- * (it is in both `registrationOmitsPrivilegedFields()` and
- * `touchesProtectedFields()`), exactly like `platformRole`, `workerType` and
- * `organizationId` — so these two callables are the only path that can grant
- * or withdraw a worker's site access.
+ * `siteIds` lives on `users/{uid}/memberships/{organizationId}` under the
+ * multi-organization membership model — a worker's site access is inherently
+ * per-organization, since the same worker may belong to more than one
+ * organization with a different site grant in each. `firestore.rules` denies
+ * every client write to the `memberships` subcollection outright (mirroring
+ * how it denied `siteIds` directly on `users/{uid}` under the old model), so
+ * these two callables are the only path that can grant or withdraw a
+ * worker's site access.
  *
  * WHAT AUTHORIZES A CALLER
  *
  * `requireOrganizationScopedManager` (imported from
  * `organization_callable.ts`): `admin` (any organization), or `siteManager`
  * of the organization (read from `organizations/{orgId}.managedBy` or their
- * own profile's `organizationId` — never trusted from the request).
+ * own active `siteManager` membership in it — never trusted from the
+ * request).
  *
  * WHAT A CALLER CANNOT DO
  *
@@ -58,8 +62,14 @@ function requireString(request: CallableRequest, field: string): string {
 }
 
 /**
- * Loads the target worker's profile and confirms it belongs to
- * [organizationId].
+ * Confirms the target worker holds a membership in [organizationId].
+ *
+ * Looks up `users/{uid}/memberships/{organizationId}` rather than a scalar
+ * `organizationId` field on the profile — a worker's org relationship now
+ * lives entirely on their membership document, and a worker may belong to
+ * more than one organization, so "does this worker belong to THIS
+ * organization" is answered by that one membership doc's existence, not by
+ * comparing a single profile field.
  *
  * @param {string} uid the target worker's uid.
  * @param {string} organizationId the organization the action targets.
@@ -69,12 +79,14 @@ async function requireWorkerInOrganization(
   uid: string,
   organizationId: string
 ): Promise<void> {
-  const snapshot = await getFirestore().doc(`users/${uid}`).get();
-  const profile = snapshot.data();
-  if (!snapshot.exists || !profile) {
+  const userSnapshot = await getFirestore().doc(`users/${uid}`).get();
+  if (!userSnapshot.exists) {
     throw new HttpsError("not-found", "That user no longer exists.");
   }
-  if (profile.organizationId !== organizationId) {
+  const membershipSnapshot = await getFirestore()
+    .doc(`users/${uid}/memberships/${organizationId}`)
+    .get();
+  if (!membershipSnapshot.exists) {
     throw new HttpsError(
       "failed-precondition",
       "That user does not belong to the given organization."
@@ -116,7 +128,13 @@ export const assignWorkerToSite = onCall(async (request) => {
   await requireWorkerInOrganization(uid, organizationId);
   await requireSiteInOrganization(organizationId, siteId);
 
-  await getFirestore().doc(`users/${uid}`).update({
+  // siteIds lives on the worker's MEMBERSHIP document for this organization
+  // under the new model, not on the top-level profile — a worker's site
+  // access is inherently per-organization, matching every other per-org
+  // field (role, workerType, trade, supervisorUid).
+  const membershipRef = getFirestore()
+    .doc(`users/${uid}/memberships/${organizationId}`);
+  await membershipRef.update({
     siteIds: FieldValue.arrayUnion(siteId),
     updatedAt: FieldValue.serverTimestamp(),
     updatedBy: actorUid,
@@ -140,7 +158,9 @@ export const removeWorkerFromSite = onCall(async (request) => {
 
   await requireWorkerInOrganization(uid, organizationId);
 
-  await getFirestore().doc(`users/${uid}`).update({
+  const membershipRef = getFirestore()
+    .doc(`users/${uid}/memberships/${organizationId}`);
+  await membershipRef.update({
     siteIds: FieldValue.arrayRemove(siteId),
     updatedAt: FieldValue.serverTimestamp(),
     updatedBy: actorUid,

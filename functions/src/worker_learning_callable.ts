@@ -114,11 +114,18 @@ async function requireActiveWorker(
   const profile = snapshot.data();
   if (!snapshot.exists || !profile) throw denied();
   if (profile.accountStatus !== "active") throw denied();
-  // Cross-organization isolation: a worker acts only within the
-  // organization their own stored profile names, never one supplied by the
-  // request. A System Administrator belongs to no organization and has no
-  // learning obligations of their own, so they are not special-cased in.
-  if (profile.organizationId !== organizationId) throw denied();
+  // Cross-organization isolation: a worker acts only within an organization
+  // they hold an ACTIVE membership in, checked against their own membership
+  // subcollection rather than a scalar profile field — a worker may belong
+  // to more than one organization. A System Administrator belongs to no
+  // organization and has no learning obligations of their own, so they are
+  // not special-cased in.
+  const membershipSnapshot = await getFirestore()
+    .doc(`users/${uid}/memberships/${organizationId}`)
+    .get();
+  const membership = membershipSnapshot.data();
+  if (!membershipSnapshot.exists || !membership) throw denied();
+  if (membership.status !== "active") throw denied();
 
   return uid;
 }
