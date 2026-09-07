@@ -1,8 +1,10 @@
-import 'dart:async';
+import 'dart:async' show StreamSubscription, unawaited;
 import 'package:flutter/foundation.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import '../../features/authentication/data/membership_repository.dart';
 import '../../features/authentication/data/user_profile_repository.dart';
 import '../../features/authentication/domain/account_status.dart';
+import '../../features/authentication/domain/membership.dart';
 import '../../features/authentication/domain/user_profile.dart';
 import '../errors/app_exception.dart';
 import 'auth_service.dart';
@@ -58,20 +60,29 @@ const Set<AuthStatus> _deniedStatuses = {
 /// Represents the authenticated user's session context: identity, account
 /// status and (once approved) organization scope.
 ///
-/// SECURITY WARNING: [status], [accountStatus], [organizationId] and
-/// [UserProfile.platformRole] (read from [profile]) drive UI behavior only (what
-/// screens/actions are shown). They are never a substitute for Firestore
-/// security rules or the Cloud Functions callables' own server-side checks —
-/// a compromised or modified client must not be able to gain access by
-/// manipulating this class.
+/// SECURITY WARNING: [status], [accountStatus], [memberships],
+/// [activeOrganizationId], [activeMembership] and [UserProfile.platformRole]
+/// (read from [profile]) drive UI behavior only (what screens/actions are
+/// shown). They are never a substitute for Firestore security rules or the
+/// Cloud Functions callables' own server-side checks — a compromised or
+/// modified client must not be able to gain access by manipulating this
+/// class. In particular, [setActiveOrganization] only changes which of the
+/// caller's OWN memberships the UI currently displays; every privileged
+/// callable independently re-verifies the caller's membership in whichever
+/// organization it is asked to act within, and never trusts this class's
+/// notion of "active" organization.
 class SessionController extends ChangeNotifier {
   SessionController({
     AuthService? authService,
     UserProfileRepository? userProfileRepository,
+    MembershipRepository? membershipRepository,
   }) : _authService = authService ?? AuthService(),
        _userProfileRepository =
            userProfileRepository ??
-           UserProfileRepository(firestoreService: FirestoreService()) {
+           UserProfileRepository(firestoreService: FirestoreService()),
+       _membershipRepository =
+           membershipRepository ??
+           MembershipRepository(firestoreService: FirestoreService()) {
     _authSubscription = _authService.authStateChanges().listen(
       _onAuthStateChanged,
       onError: (Object error) =>
@@ -81,14 +92,30 @@ class SessionController extends ChangeNotifier {
 
   final AuthService _authService;
   final UserProfileRepository _userProfileRepository;
+  final MembershipRepository _membershipRepository;
   late final StreamSubscription<User?> _authSubscription;
   StreamSubscription<UserProfile?>? _profileSubscription;
+  StreamSubscription<List<Membership>>? _membershipSubscription;
   bool _disposed = false;
 
   User? _firebaseUser;
   UserProfile? _profile;
   AuthStatus _status = AuthStatus.loading;
   AppException? _lastError;
+  List<Membership> _memberships = const [];
+
+  /// The organization explicitly selected via [setActiveOrganization] for
+  /// the current uid, when the user holds more than one membership.
+  ///
+  /// TODO(stage-5): this selection is session-only (in-memory). The spec for
+  /// this stage called for persisting it locally (e.g. via
+  /// shared_preferences), but that package is not yet a pubspec dependency
+  /// and this stage is explicitly Dart-data-layer-only — adding a new
+  /// dependency was flagged as out of scope. A later stage should add
+  /// shared_preferences (or an equivalent) and persist this keyed by uid, so
+  /// the selection survives an app restart.
+  String? _selectedOrganizationId;
+  String? _selectedForUid;
 
   User? get firebaseUser => _firebaseUser;
   UserProfile? get profile => _profile;
@@ -98,10 +125,59 @@ class SessionController extends ChangeNotifier {
   /// The authoritative account state, or null when no profile is loaded.
   AccountStatus? get accountStatus => _profile?.accountStatus;
 
-  /// The organization this session is scoped to, or null when the user has
-  /// not been approved into one yet. Never inferred from the email address
-  /// and never hardcoded in the app.
-  String? get organizationId => _profile?.organizationId;
+  /// Every organization the signed-in user belongs to. Empty before the
+  /// profile/memberships have loaded, and empty for an [AppRole.admin], who
+  /// holds no memberships (platform-level, org-less by construction).
+  List<Membership> get memberships => _memberships;
+
+  /// The organization the signed-in user is currently acting within, or null.
+  ///
+  /// Resolution order:
+  ///  1. Exactly one membership: that one, always — there is nothing to
+  ///     choose.
+  ///  2. More than one membership: the last one explicitly selected via
+  ///     [setActiveOrganization] for this uid (session-only — see the
+  ///     [_selectedOrganizationId] TODO), falling back to the first
+  ///     membership by organization id when nothing has been selected yet.
+  ///  3. Zero memberships: null.
+  String? get activeOrganizationId {
+    if (_memberships.isEmpty) return null;
+    if (_memberships.length == 1) return _memberships.single.organizationId;
+
+    final uid = _firebaseUser?.uid;
+    if (uid != null &&
+        _selectedForUid == uid &&
+        _selectedOrganizationId != null &&
+        _memberships.any((m) => m.organizationId == _selectedOrganizationId)) {
+      return _selectedOrganizationId;
+    }
+
+    final sorted = [..._memberships]
+      ..sort((a, b) => a.organizationId.compareTo(b.organizationId));
+    return sorted.first.organizationId;
+  }
+
+  /// The [Membership] matching [activeOrganizationId], or null.
+  Membership? get activeMembership {
+    final organizationId = activeOrganizationId;
+    if (organizationId == null) return null;
+    for (final membership in _memberships) {
+      if (membership.organizationId == organizationId) return membership;
+    }
+    return null;
+  }
+
+  /// Selects which of the caller's own memberships the UI should treat as
+  /// "active" going forward. Validated defensively against the caller's own
+  /// [memberships] — this is a UI convenience only (see this class's
+  /// SECURITY WARNING); it grants no authority a server call would not
+  /// independently re-verify.
+  void setActiveOrganization(String organizationId) {
+    if (!_memberships.any((m) => m.organizationId == organizationId)) return;
+    _selectedOrganizationId = organizationId;
+    _selectedForUid = _firebaseUser?.uid;
+    _safeNotify();
+  }
 
   /// True only when there is a signed-in Firebase user AND a loaded profile
   /// with [AccountStatus.active]. Router guards and feature code should use
@@ -224,7 +300,9 @@ class SessionController extends ChangeNotifier {
   Future<void> _onAuthStateChanged(User? user) async {
     _firebaseUser = user;
     await _cancelProfileSubscription();
+    await _cancelMembershipSubscription();
     _profile = null;
+    _memberships = const [];
     _lastError = null;
 
     if (user == null) {
@@ -254,6 +332,50 @@ class SessionController extends ChangeNotifier {
     _profile = profile;
     _lastError = null;
     _status = deriveStatus(profile);
+    _updateMembershipSubscription(profile);
+    _safeNotify();
+  }
+
+  /// Starts (or stops) streaming the signed-in user's memberships once the
+  /// profile is loaded and active. Mirrors [_loadProfileFor]/
+  /// [_onProfileChanged]'s subscription lifecycle. Memberships are read
+  /// self-or-Admin-only (see [MembershipRepository]'s doc comment), so this
+  /// is only meaningful once a profile has resolved to a real, signed-in uid.
+  void _updateMembershipSubscription(UserProfile? profile) {
+    final uid = _firebaseUser?.uid;
+    if (profile == null || uid == null || !profile.hasOperationalAccess) {
+      unawaited(_cancelMembershipSubscription());
+      if (_memberships.isNotEmpty) {
+        _memberships = const [];
+      }
+      return;
+    }
+
+    // Already streaming for this uid — nothing to restart.
+    if (_membershipSubscription != null && _membershipUid == uid) return;
+
+    unawaited(_cancelMembershipSubscription());
+    _membershipUid = uid;
+    _membershipSubscription = _membershipRepository
+        .watchAll(uid)
+        .listen(_onMembershipsChanged, onError: _onMembershipsError);
+  }
+
+  String? _membershipUid;
+
+  void _onMembershipsChanged(List<Membership> memberships) {
+    if (_disposed) return;
+    _memberships = memberships;
+    _safeNotify();
+  }
+
+  void _onMembershipsError(Object error) {
+    if (_disposed) return;
+    // A membership-load failure should not deny access to an already-active
+    // account (the profile stream is the access gate) — it just means
+    // activeOrganizationId/activeMembership fall back to empty until the
+    // stream recovers, which the UI can treat like "no organizations yet".
+    _memberships = const [];
     _safeNotify();
   }
 
@@ -299,6 +421,13 @@ class SessionController extends ChangeNotifier {
     await subscription?.cancel();
   }
 
+  Future<void> _cancelMembershipSubscription() async {
+    final subscription = _membershipSubscription;
+    _membershipSubscription = null;
+    _membershipUid = null;
+    await subscription?.cancel();
+  }
+
   void _safeNotify() {
     if (_disposed) return;
     notifyListeners();
@@ -310,6 +439,8 @@ class SessionController extends ChangeNotifier {
     _authSubscription.cancel();
     _profileSubscription?.cancel();
     _profileSubscription = null;
+    _membershipSubscription?.cancel();
+    _membershipSubscription = null;
     super.dispose();
   }
 }

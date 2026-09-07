@@ -1,5 +1,6 @@
 import 'account_status.dart';
 import 'app_role.dart';
+import 'membership.dart';
 import 'worker_type.dart';
 
 /// One already-reviewed user, as returned by the `listOrganizationUsers`
@@ -18,6 +19,7 @@ class OrganizationUser {
     this.role,
     this.workerType,
     this.organizationId,
+    this.membershipStatus,
     this.registeredAt,
     this.siteIds = const [],
   });
@@ -29,7 +31,17 @@ class OrganizationUser {
   final AccountStatus accountStatus;
   final AppRole? role;
   final WorkerType? workerType;
+
+  /// The organization this row belongs to. Now present on every row: one row
+  /// exists PER PERSON PER ORGANIZATION under the multi-organization
+  /// membership model, so a person with two memberships shows up twice, once
+  /// per organization.
   final String? organizationId;
+
+  /// This row's own membership status (`active`/`suspended`), distinct from
+  /// [accountStatus] — see `functions/src/approval_callable.ts`'s
+  /// `listOrganizationUsers`, which returns both independently.
+  final MembershipStatus? membershipStatus;
 
   /// The sites this user has been granted access to. Included in the
   /// `listOrganizationUsers` projection so the Activities worker picker can
@@ -66,6 +78,9 @@ class OrganizationUser {
               rawOrganizationId.isNotEmpty)
           ? rawOrganizationId
           : null,
+      membershipStatus: MembershipStatus.tryFromId(
+        data['membershipStatus'] as String?,
+      ),
       registeredAt: rawCreatedAt is String
           ? DateTime.tryParse(rawCreatedAt)
           : null,
