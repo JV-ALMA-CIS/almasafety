@@ -93,11 +93,24 @@ class AppRoutes {
 
   static const String dashboard = '/dashboard';
   static const String workers = '/workers';
+
+  /// The sidebar's own "Projects" destination — resolves the signed-in
+  /// user's active organization directly and shows [ProjectsScreen] for it
+  /// (see [ProjectsRouterScreen]), reachable without first navigating
+  /// through Organizations. Distinct from [manageProjects], which requires
+  /// an [Organization] passed via route `extra` from
+  /// [OrganizationsScreen]'s own drill-down (still the only path to Sites
+  /// and Activities, which need a project/site chosen first).
   static const String projects = '/projects';
   static const String sites = '/sites';
   static const String activities = '/activities';
   static const String safetyLearning = '/safety-learning';
   static const String safetyMeetingPoints = '/safety-meeting-points';
+
+  /// Placeholder — no screen exists yet. Included in the sidebar per the
+  /// navigation redesign's "Meetings & Learning" group so the information
+  /// architecture is visible ahead of the feature shipping.
+  static const String safetyVideos = '/safety-videos';
   /// The bottom-nav "Meetings" destination — dispatches by role via
   /// [DailySafetyMeetingsRouterScreen]: the foreman's own operational
   /// workspace, or the read-only organization-wide review screen for any

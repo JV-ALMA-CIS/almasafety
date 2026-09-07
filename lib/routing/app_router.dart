@@ -19,6 +19,7 @@ import '../features/organizations/domain/organization.dart';
 import '../features/organizations/domain/project.dart';
 import '../features/organizations/domain/site.dart';
 import '../features/organizations/presentation/organizations_screen.dart';
+import '../features/organizations/presentation/projects_router_screen.dart';
 import '../features/organizations/presentation/projects_screen.dart';
 import '../features/organizations/presentation/site_workers_screen.dart';
 import '../features/organizations/presentation/sites_screen.dart';
@@ -234,10 +235,7 @@ GoRouter buildAppRouter(SessionController session) {
           ),
           GoRoute(
             path: AppRoutes.projects,
-            builder: (context, state) => const PlaceholderScreen(
-              featureName: 'Projects',
-              icon: Icons.apartment_outlined,
-            ),
+            builder: (context, state) => const ProjectsRouterScreen(),
           ),
           GoRoute(
             path: AppRoutes.sites,
@@ -256,6 +254,13 @@ GoRouter buildAppRouter(SessionController session) {
           GoRoute(
             path: AppRoutes.safetyLearning,
             builder: (context, state) => const MySafetyLearningScreen(),
+          ),
+          GoRoute(
+            path: AppRoutes.safetyVideos,
+            builder: (context, state) => const PlaceholderScreen(
+              featureName: 'Safety Videos',
+              icon: Icons.play_circle_outline,
+            ),
           ),
           GoRoute(
             path: AppRoutes.safetyMeetingPoints,
