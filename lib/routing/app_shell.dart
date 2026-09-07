@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../core/services/firestore_service.dart';
 import '../core/services/session_controller.dart';
+import '../core/widgets/organization_switcher.dart';
 import '../core/widgets/responsive_scaffold.dart';
 import '../features/authentication/domain/app_role.dart';
 import '../features/notifications/data/notification_repository.dart';
@@ -94,6 +95,12 @@ class AppShell extends StatelessWidget {
       selectedIndex: selectedIndex < 0 ? 0 : selectedIndex,
       onDestinationSelected: (index) => context.go(_shellRoutes[index]),
       actions: [
+        // Positioned first (leftmost of the actions, closest to the title)
+        // since it names the scope every other action operates within.
+        // Renders nothing itself for a single-membership user (see
+        // OrganizationSwitcher's doc comment), so it adds no clutter for the
+        // common case.
+        const OrganizationSwitcher(),
         if (sessionController.activeOrganizationId != null &&
             profile?.uid != null)
           _NotificationBellAction(
