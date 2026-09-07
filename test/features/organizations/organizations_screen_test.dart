@@ -57,6 +57,7 @@ class _FakeSession extends SessionController {
     required AppRole? role,
     String? organizationId,
     bool transientSiteManagerMarker = false,
+    List<Membership>? memberships,
   }) : _profile = UserProfile(
          uid: 'sysadmin-uid',
          name: 'Sysadmin',
@@ -76,19 +77,37 @@ class _FakeSession extends SessionController {
                organizationId: organizationId,
                role: role,
                status: MembershipStatus.active,
-             );
+             ),
+       _memberships = memberships;
 
   final UserProfile _profile;
   final Membership? _membership;
+
+  /// Overrides the single-membership derivation below when a test needs a
+  /// Site Manager holding MULTIPLE memberships at once — see the
+  /// "sees every organization they manage" regression test.
+  final List<Membership>? _memberships;
 
   @override
   UserProfile? get profile => _profile;
 
   @override
-  String? get activeOrganizationId => _membership?.organizationId;
+  List<Membership> get memberships =>
+      _memberships ?? (_membership == null ? const [] : [_membership]);
 
   @override
-  Membership? get activeMembership => _membership;
+  String? get activeOrganizationId =>
+      _membership?.organizationId ?? memberships.firstOrNull?.organizationId;
+
+  @override
+  Membership? get activeMembership {
+    final id = activeOrganizationId;
+    if (id == null) return null;
+    for (final membership in memberships) {
+      if (membership.organizationId == id) return membership;
+    }
+    return null;
+  }
 }
 
 void main() {
@@ -113,12 +132,14 @@ void main() {
     AppRole? reviewerRole = AppRole.admin,
     String? organizationId,
     bool transientSiteManagerMarker = false,
+    List<Membership>? memberships,
   }) {
     return ChangeNotifierProvider<SessionController>(
       create: (_) => _FakeSession(
         role: reviewerRole,
         organizationId: organizationId,
         transientSiteManagerMarker: transientSiteManagerMarker,
+        memberships: memberships,
       ),
       child: MaterialApp(
         home: Scaffold(
@@ -297,6 +318,48 @@ void main() {
       expect(find.text('Org alpha'), findsOneWidget);
       expect(find.text('Org beta'), findsNothing);
     });
+
+    testWidgets(
+      'a Site Manager holding memberships in TWO organizations sees BOTH '
+      '— regression test: OrganizationsScreen used to call an unscoped '
+      'collectionGroup list (organizations.watchAll()), which '
+      'firestore.rules denies outright for any non-Admin (a collection '
+      'LIST cannot be proven to satisfy belongsToOrganization for every '
+      'possible document), producing "Couldn\'t load organizations" for '
+      'every Site Manager regardless of how many orgs they belong to. '
+      'Fixed by resolving the list from the caller\'s own memberships '
+      '(self-scoped, always readable) instead',
+      (tester) async {
+        await seedOrg('alpha');
+        await seedOrg('beta');
+        await seedOrg('gamma');
+
+        await tester.pumpWidget(
+          wrap(
+            _FakeAdminService(),
+            reviewerRole: AppRole.siteManager,
+            memberships: const [
+              Membership(
+                organizationId: 'alpha',
+                role: AppRole.siteManager,
+                status: MembershipStatus.active,
+              ),
+              Membership(
+                organizationId: 'beta',
+                role: AppRole.siteManager,
+                status: MembershipStatus.active,
+              ),
+            ],
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('Org alpha'), findsOneWidget);
+        expect(find.text('Org beta'), findsOneWidget);
+        // Not a member of gamma — must not leak in.
+        expect(find.text('Org gamma'), findsNothing);
+      },
+    );
 
     testWidgets(
       'can see the Add organization action — PROJECT_CONTEXT.md §12: a '

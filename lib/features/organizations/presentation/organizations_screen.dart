@@ -139,21 +139,28 @@ class _OrganizationsScreenState extends State<OrganizationsScreen> {
       );
     }
 
+    // An Admin's read of `organizations/*` is an unconstrained collection
+    // LIST — permitted only for Admin, via `isAdmin()`. A non-Admin
+    // (Site Manager, ...) can only ever read the SPECIFIC organizations
+    // their own memberships name (`belongsToOrganization`, a per-document
+    // grant) — `watchAll()` is denied outright for them, not merely
+    // filtered down. See [OrganizationRepository.watchAll]'s doc comment.
+    // Scoping to every one of the caller's own membership organization ids
+    // (not just `activeOrganizationId`) so a Site Manager who manages
+    // several organizations sees all of them here, matching this screen's
+    // "manage the organizations you're authorized to manage" purpose.
+    final organizationIds = sessionController.memberships
+        .map((m) => m.organizationId)
+        .toSet()
+        .toList(growable: false);
+    final orgStream = isPlatformAdministrator
+        ? _repository.watchAll()
+        : _repository.watchByIds(organizationIds);
+
     return StreamBuilder<List<Organization>>(
-      stream: _repository.watchAll(),
+      stream: orgStream,
       builder: (context, snapshot) {
-        // A System Administrator sees every organization; an Organization
-        // Administrator's own read of `organizations/*` is already narrowed
-        // to their own document by `firestore.rules`' `belongsToOrganization`
-        // grant, so this filter is a display-order convenience, not the
-        // isolation boundary — it just keeps the list from silently
-        // depending on how many documents the rules happened to return.
-        final allOrganizations = snapshot.data ?? const [];
-        final organizations = isPlatformAdministrator
-            ? allOrganizations
-            : allOrganizations
-                .where((o) => o.id == sessionController.activeOrganizationId)
-                .toList(growable: false);
+        final organizations = snapshot.data ?? const [];
         final isLoading = snapshot.connectionState == ConnectionState.waiting;
         final streamError = snapshot.hasError
             ? 'Could not load organizations. Please try again.'
