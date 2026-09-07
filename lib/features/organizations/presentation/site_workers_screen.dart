@@ -95,8 +95,13 @@ class _SiteWorkersScreenState extends State<SiteWorkersScreen> {
   Future<void> _loadMembers() async {
     setState(() => _isLoadingMembers = true);
     try {
+      // Explicitly scoped to this screen's own organization: an Admin may be
+      // viewing any organization, while a Site Manager reviewer's own
+      // acting organization must equal it too (see `canManage` in build()),
+      // so passing widget.organization.id directly is correct for both.
       final users = await _approvalService.listUsers(
         status: AccountStatus.active,
+        organizationId: widget.organization.id,
       );
       if (!mounted) return;
       setState(() {
@@ -164,11 +169,12 @@ class _SiteWorkersScreenState extends State<SiteWorkersScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final profile = context.watch<SessionController>().profile;
+    final sessionController = context.watch<SessionController>();
+    final profile = sessionController.profile;
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
     final canManage = isPlatformAdministrator ||
         (profile?.canManageOrgContent == true &&
-            profile?.organizationId == widget.organization.id);
+            sessionController.activeOrganizationId == widget.organization.id);
 
     if (!canManage) {
       return const Center(

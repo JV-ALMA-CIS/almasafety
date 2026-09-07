@@ -124,10 +124,11 @@ class _ActivitiesScreenState extends State<ActivitiesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final profile = context.watch<SessionController>().profile;
+    final sessionController = context.watch<SessionController>();
+    final profile = sessionController.profile;
     final canManage = profile?.isPlatformAdministrator == true ||
         (profile?.canManageOrgContent == true &&
-            profile?.organizationId == widget.organization.id);
+            sessionController.activeOrganizationId == widget.organization.id);
 
     if (!canManage) {
       return const Center(

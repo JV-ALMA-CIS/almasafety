@@ -177,8 +177,10 @@ class _SafetyMeetingPointsScreenState extends State<SafetyMeetingPointsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final profile = context.watch<SessionController>().profile;
-    final organizationId = widget.organizationId ?? profile?.organizationId;
+    final sessionController = context.watch<SessionController>();
+    final profile = sessionController.profile;
+    final organizationId =
+        widget.organizationId ?? sessionController.activeOrganizationId;
     // Admin-only: the Safety Meeting Point library is a platform-level,
     // company-wide responsibility deliberately not delegated to Site
     // Managers (PROJECT_CONTEXT.md §4, §12).

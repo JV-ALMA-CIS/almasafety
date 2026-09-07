@@ -188,7 +188,7 @@ class AccountApprovalService {
     'uid': uid,
     'role': role.id,
     if (workerType != null) 'workerType': workerType.id,
-    if (siteIds != null) 'siteIds': siteIds,
+    'siteIds': ?siteIds,
     'organizationId': organizationId,
   });
 

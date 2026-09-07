@@ -16,8 +16,7 @@ import '../domain/membership.dart';
 /// client write to this collection regardless (self or Admin may read; no
 /// one may write from a client).
 class MembershipRepository {
-  MembershipRepository({required FirestoreService firestoreService})
-    : _firestoreService = firestoreService;
+  MembershipRepository({required this._firestoreService});
 
   final FirestoreService _firestoreService;
 

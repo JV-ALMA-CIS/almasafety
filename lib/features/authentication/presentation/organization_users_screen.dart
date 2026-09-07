@@ -85,8 +85,25 @@ class _OrganizationUsersScreenState extends State<OrganizationUsersScreen> {
       _errorMessage = null;
     });
     try {
+      // Required (not merely accepted) for a non-Admin caller under the
+      // multi-organization membership model — see
+      // AccountApprovalService.listUsers's doc comment. Read once via
+      // `context.read` rather than `watch`: this is a one-shot action, not
+      // something that should re-run every time the active organization
+      // notifies.
+      final sessionController = context.read<SessionController>();
+      final isPlatformAdministrator =
+          sessionController.profile?.isPlatformAdministrator ?? false;
+      final organizationId = isPlatformAdministrator
+          ? null
+          : sessionController.activeOrganizationId;
       final results = await Future.wait(
-        widget.statuses.map((status) => _service.listUsers(status: status)),
+        widget.statuses.map(
+          (status) => _service.listUsers(
+            status: status,
+            organizationId: organizationId,
+          ),
+        ),
       );
       if (!mounted) return;
       setState(() => _users = results.expand((users) => users).toList());
@@ -146,11 +163,11 @@ class _OrganizationUsersScreenState extends State<OrganizationUsersScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final canReview = context
-            .watch<SessionController>()
-            .profile
-            ?.canReviewPendingAccounts ??
-        false;
+    final sessionController = context.watch<SessionController>();
+    final profile = sessionController.profile;
+    final canReview = profile?.isPlatformAdministrator == true ||
+        (sessionController.activeMembership?.role.canReviewPendingAccounts ??
+            false);
 
     if (!canReview) {
       // Defence in depth: the router should never route an unauthorized

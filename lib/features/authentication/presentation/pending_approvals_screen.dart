@@ -102,8 +102,12 @@ class _PendingApprovalsScreenState extends State<PendingApprovalsScreen> {
   /// and worker type if the reviewer confirms. Cancelling the dialog leaves
   /// the account in the queue untouched.
   Future<void> _approve(PendingAccount account) async {
+    final sessionController = context.read<SessionController>();
+    final profile = sessionController.profile;
+    // A non-Admin reviewer's own role now lives on their active Membership,
+    // not on the profile's (now admin-only) platformRole.
     final reviewerRole =
-        context.read<SessionController>().profile?.platformRole;
+        profile?.platformRole ?? sessionController.activeMembership?.role;
     if (reviewerRole == null) return;
 
     final selection = await showDialog<_RoleAssignmentSelection>(
@@ -116,13 +120,22 @@ class _PendingApprovalsScreenState extends State<PendingApprovalsScreen> {
     );
     if (selection == null || !mounted) return;
 
+    // For a non-Admin reviewer, the server now REQUIRES organizationId
+    // (the acting organization) rather than resolving it implicitly — see
+    // AccountApprovalService.approve's doc comment. Resolved automatically
+    // from the reviewer's own active membership, never a picker: a reviewer
+    // acts in one organization at a time.
+    final organizationId = reviewerRole == AppRole.admin
+        ? selection.organizationId
+        : sessionController.activeOrganizationId;
+
     await _decide(
       account,
       action: () => _service.approve(
         account.uid,
         role: selection.role,
         workerType: selection.workerType,
-        organizationId: selection.organizationId,
+        organizationId: organizationId,
       ),
       successMessage: '${account.name} approved as ${selection.role.label}.',
     );
@@ -170,11 +183,11 @@ class _PendingApprovalsScreenState extends State<PendingApprovalsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final canReview = context
-            .watch<SessionController>()
-            .profile
-            ?.canReviewPendingAccounts ??
-        false;
+    final sessionController = context.watch<SessionController>();
+    final profile = sessionController.profile;
+    final canReview = profile?.isPlatformAdministrator == true ||
+        (sessionController.activeMembership?.role.canReviewPendingAccounts ??
+            false);
 
     if (!canReview) {
       // Defence in depth: the router should never route an unauthorized

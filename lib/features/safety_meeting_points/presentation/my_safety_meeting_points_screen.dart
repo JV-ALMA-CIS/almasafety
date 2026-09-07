@@ -49,8 +49,8 @@ class _MySafetyMeetingPointsScreenState
 
   @override
   Widget build(BuildContext context) {
-    final profile = context.watch<SessionController>().profile;
-    final organizationId = profile?.organizationId;
+    final sessionController = context.watch<SessionController>();
+    final organizationId = sessionController.activeOrganizationId;
 
     if (organizationId == null) {
       return const Center(

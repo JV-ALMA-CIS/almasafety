@@ -29,8 +29,9 @@ class MyHazardsScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final profile = context.watch<SessionController>().profile;
-    final organizationId = profile?.organizationId;
+    final sessionController = context.watch<SessionController>();
+    final profile = sessionController.profile;
+    final organizationId = sessionController.activeOrganizationId;
     final workerUid = profile?.uid;
 
     if (organizationId == null || workerUid == null) {

@@ -124,6 +124,7 @@ class _AdminDailySafetyMeetingsScreenState
     try {
       final users = await _approvalService.listUsers(
         status: AccountStatus.active,
+        organizationId: widget.organization.id,
       );
       if (!mounted) return;
       setState(() => _members = users);
@@ -143,11 +144,13 @@ class _AdminDailySafetyMeetingsScreenState
 
   @override
   Widget build(BuildContext context) {
-    final profile = context.watch<SessionController>().profile;
+    final sessionController = context.watch<SessionController>();
+    final profile = sessionController.profile;
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
+    final membershipRole = sessionController.activeMembership?.role;
     final canManage = isPlatformAdministrator ||
-        ((profile?.platformRole?.canReviewDailySafetyMeetings ?? false) &&
-            profile?.organizationId == widget.organization.id);
+        ((membershipRole?.canReviewDailySafetyMeetings ?? false) &&
+            sessionController.activeOrganizationId == widget.organization.id);
 
     if (!canManage) {
       return const Center(

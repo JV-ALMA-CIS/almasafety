@@ -68,10 +68,14 @@ class AppShell extends StatelessWidget {
     // fixed list. Hiding them is UX only — the router redirects unauthorized
     // users away, and the callables/rules behind each screen check the same
     // role server-side.
-    final profile = context.watch<SessionController>().profile;
-    final canReviewPendingAccounts = profile?.canReviewPendingAccounts ??
-        false;
+    final sessionController = context.watch<SessionController>();
+    final profile = sessionController.profile;
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
+    // A non-Admin's review authority now lives on their active Membership's
+    // role, not on the profile's (now admin-only) platformRole.
+    final canReviewPendingAccounts = isPlatformAdministrator ||
+        (sessionController.activeMembership?.role.canReviewPendingAccounts ??
+            false);
 
     return ResponsiveScaffold(
       title: 'JVA Safety',
@@ -79,10 +83,11 @@ class AppShell extends StatelessWidget {
       selectedIndex: selectedIndex < 0 ? 0 : selectedIndex,
       onDestinationSelected: (index) => context.go(_shellRoutes[index]),
       actions: [
-        if (profile?.organizationId != null && profile?.uid != null)
+        if (sessionController.activeOrganizationId != null &&
+            profile?.uid != null)
           _NotificationBellAction(
-            organizationId: profile!.organizationId!,
-            uid: profile.uid,
+            organizationId: sessionController.activeOrganizationId!,
+            uid: profile!.uid,
           ),
         if (canReviewPendingAccounts) ...[
           IconButton(

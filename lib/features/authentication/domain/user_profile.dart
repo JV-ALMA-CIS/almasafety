@@ -2,7 +2,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/errors/app_exception.dart';
 import 'account_status.dart';
 import 'app_role.dart';
-import 'worker_type.dart';
 
 /// The authenticated user's profile, stored at `users/{uid}`.
 ///

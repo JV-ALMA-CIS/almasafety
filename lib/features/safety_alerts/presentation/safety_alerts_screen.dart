@@ -155,12 +155,16 @@ class _SafetyAlertsScreenState extends State<SafetyAlertsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final profile = context.watch<SessionController>().profile;
-    final canManage = profile?.canReviewPendingAccounts ?? false;
+    final sessionController = context.watch<SessionController>();
+    final profile = sessionController.profile;
+    final membership = sessionController.activeMembership;
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
-    final siteIds = profile?.siteIds ?? const <String>[];
-    final organizationId =
-        isPlatformAdministrator ? _selectedOrganizationId : profile?.organizationId;
+    final canManage = isPlatformAdministrator ||
+        (membership?.role.canReviewPendingAccounts ?? false);
+    final siteIds = membership?.siteIds ?? const <String>[];
+    final organizationId = isPlatformAdministrator
+        ? _selectedOrganizationId
+        : sessionController.activeOrganizationId;
 
     if (organizationId == null) {
       if (isPlatformAdministrator) {

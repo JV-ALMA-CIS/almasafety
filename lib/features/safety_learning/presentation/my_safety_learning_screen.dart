@@ -53,7 +53,7 @@ class _MySafetyLearningScreenState extends State<MySafetyLearningScreen> {
   Widget build(BuildContext context) {
     final session = context.watch<SessionController>();
     final profile = session.profile;
-    final organizationId = profile?.organizationId;
+    final organizationId = session.activeOrganizationId;
     final workerUid = profile?.uid;
 
     if (organizationId == null || workerUid == null) {

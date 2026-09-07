@@ -301,11 +301,13 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final profile = context.watch<SessionController>().profile;
-    final organizationId = profile?.organizationId;
-    final isForeman = profile?.platformRole == AppRole.foreman;
-    final siteId = profile?.siteIds.isNotEmpty == true
-        ? profile!.siteIds.first
+    final sessionController = context.watch<SessionController>();
+    final profile = sessionController.profile;
+    final membership = sessionController.activeMembership;
+    final organizationId = sessionController.activeOrganizationId;
+    final isForeman = membership?.role == AppRole.foreman;
+    final siteId = membership?.siteIds.isNotEmpty == true
+        ? membership!.siteIds.first
         : null;
 
     if (!isForeman || organizationId == null || siteId == null) {

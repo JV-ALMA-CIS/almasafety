@@ -106,9 +106,11 @@ class _OrganizationsScreenState extends State<OrganizationsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final profile = context.watch<SessionController>().profile;
+    final sessionController = context.watch<SessionController>();
+    final profile = sessionController.profile;
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
-    final isSiteManager = profile?.canManageOrgContent == true;
+    final isSiteManager =
+        sessionController.activeMembership?.role == AppRole.siteManager;
     final canManage = isPlatformAdministrator || isSiteManager;
 
     if (!canManage) {
@@ -139,7 +141,7 @@ class _OrganizationsScreenState extends State<OrganizationsScreen> {
         final organizations = isPlatformAdministrator
             ? allOrganizations
             : allOrganizations
-                .where((o) => o.id == profile?.organizationId)
+                .where((o) => o.id == sessionController.activeOrganizationId)
                 .toList(growable: false);
         final isLoading = snapshot.connectionState == ConnectionState.waiting;
         final streamError = snapshot.hasError

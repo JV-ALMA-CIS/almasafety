@@ -117,11 +117,12 @@ class _SitesScreenState extends State<SitesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final profile = context.watch<SessionController>().profile;
+    final sessionController = context.watch<SessionController>();
+    final profile = sessionController.profile;
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
     final canManage = isPlatformAdministrator ||
         (profile?.canManageOrgContent == true &&
-            profile?.organizationId == widget.organization.id);
+            sessionController.activeOrganizationId == widget.organization.id);
 
     if (!canManage) {
       return const Center(

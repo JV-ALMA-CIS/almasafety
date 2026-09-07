@@ -63,9 +63,14 @@ class DailySafetyMeetingsRouterScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final profile = context.watch<SessionController>().profile;
-    final role = profile?.platformRole;
-    final organizationId = profile?.organizationId;
+    final sessionController = context.watch<SessionController>();
+    final profile = sessionController.profile;
+    // A reviewer's role now lives on their active Membership for every role
+    // except admin (whose platformRole carries it, org-less by
+    // construction) — see UserProfile's doc comment on the multi-org model.
+    final role =
+        profile?.platformRole ?? sessionController.activeMembership?.role;
+    final organizationId = sessionController.activeOrganizationId;
 
     if (role == null || !role.canReviewDailySafetyMeetings) {
       return const DailySafetyMeetingScreen();

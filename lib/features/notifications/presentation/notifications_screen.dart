@@ -95,8 +95,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final profile = context.watch<SessionController>().profile;
-    final organizationId = profile?.organizationId;
+    final sessionController = context.watch<SessionController>();
+    final profile = sessionController.profile;
+    final organizationId = sessionController.activeOrganizationId;
     final uid = profile?.uid;
 
     if (organizationId == null || uid == null) {

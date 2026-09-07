@@ -157,10 +157,11 @@ class _ReportHazardScreenState extends State<ReportHazardScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final profile = context.watch<SessionController>().profile;
-    final organizationId = profile?.organizationId;
-    final siteId = profile?.siteIds.isNotEmpty == true
-        ? profile!.siteIds.first
+    final sessionController = context.watch<SessionController>();
+    final membership = sessionController.activeMembership;
+    final organizationId = sessionController.activeOrganizationId;
+    final siteId = membership?.siteIds.isNotEmpty == true
+        ? membership!.siteIds.first
         : null;
 
     if (organizationId == null || siteId == null) {

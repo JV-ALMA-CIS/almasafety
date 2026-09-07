@@ -101,6 +101,7 @@ class _ActivityWorkersScreenState extends State<ActivityWorkersScreen> {
     try {
       final users = await _approvalService.listUsers(
         status: AccountStatus.active,
+        organizationId: widget.organization.id,
       );
       if (!mounted) return;
       setState(() => _members = users);

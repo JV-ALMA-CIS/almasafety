@@ -150,11 +150,15 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final profile = context.watch<SessionController>().profile;
-    final canManage = profile?.canReviewPendingAccounts ?? false;
+    final sessionController = context.watch<SessionController>();
+    final profile = sessionController.profile;
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
-    final organizationId =
-        isPlatformAdministrator ? _selectedOrganizationId : profile?.organizationId;
+    final canManage = isPlatformAdministrator ||
+        (sessionController.activeMembership?.role.canReviewPendingAccounts ??
+            false);
+    final organizationId = isPlatformAdministrator
+        ? _selectedOrganizationId
+        : sessionController.activeOrganizationId;
 
     if (!canManage) {
       return const Center(
