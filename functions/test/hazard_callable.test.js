@@ -56,7 +56,6 @@ async function clearFirestore() {
 function profile(uid, overrides = {}) {
   return {
     uid,
-    organizationId: ORG_A,
     name: "Test User",
     email: `${uid}@example.com`,
     accountStatus: "active",
@@ -64,14 +63,42 @@ function profile(uid, overrides = {}) {
   };
 }
 
-async function seedWorkerAtSite(uid, siteId = "site-1", overrides = {}) {
-  await db.doc(`users/${uid}`).set(
-    profile(uid, {siteIds: [siteId], ...overrides})
-  );
+/**
+ * Seeds a `users/{uid}/memberships/{organizationId}` document — the source
+ * of truth for organization/role/site membership under the multi-org model.
+ */
+async function seedMembership(
+  uid, organizationId, role, siteIds, overrides = {}
+) {
+  await db.doc(`users/${uid}/memberships/${organizationId}`).set({
+    organizationId,
+    role,
+    workerType: null,
+    trade: null,
+    siteIds,
+    supervisorUid: null,
+    status: "active",
+    approvedAt: new Date(),
+    approvedBy: "approver-a",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  });
 }
 
-async function seedReviewer(uid, platformRole = "siteManager") {
-  await db.doc(`users/${uid}`).set(profile(uid, {platformRole}));
+async function seedWorkerAtSite(uid, siteId = "site-1", overrides = {}) {
+  const {
+    organizationId = ORG_A, ...profileOverrides
+  } = overrides;
+  await db.doc(`users/${uid}`).set(profile(uid, profileOverrides));
+  await seedMembership(uid, organizationId, "worker", [siteId]);
+}
+
+async function seedReviewer(
+  uid, platformRole = "siteManager", organizationId = ORG_A
+) {
+  await db.doc(`users/${uid}`).set(profile(uid));
+  await seedMembership(uid, organizationId, platformRole, []);
 }
 
 async function seedSite(id = "site-1", overrides = {}) {
@@ -209,9 +236,7 @@ describe("createHazard", () => {
   });
 
   test("a worker from another organization is refused", async () => {
-    await db.doc("users/worker-b").set(
-      profile("worker-b", {organizationId: ORG_B, siteIds: ["site-1"]})
-    );
+    await seedWorkerAtSite("worker-b", "site-1", {organizationId: ORG_B});
 
     await expect(
       createHazard.run(
@@ -313,12 +338,7 @@ describe("acknowledgeHazard", () => {
   });
 
   test("a reviewer from another organization is refused", async () => {
-    await db.doc("users/reviewer-b").set(
-      profile("reviewer-b", {
-        organizationId: ORG_B,
-        platformRole: "siteManager",
-      })
-    );
+    await seedReviewer("reviewer-b", "siteManager", ORG_B);
     await seedHazard("hazard-1", {status: "reported"});
 
     await expect(
@@ -400,12 +420,7 @@ describe("closeHazard", () => {
   });
 
   test("a reviewer from another organization is refused", async () => {
-    await db.doc("users/reviewer-b").set(
-      profile("reviewer-b", {
-        organizationId: ORG_B,
-        platformRole: "siteManager",
-      })
-    );
+    await seedReviewer("reviewer-b", "siteManager", ORG_B);
     await seedHazard("hazard-1", {status: "reported"});
 
     await expect(
@@ -422,6 +437,7 @@ describe("closeHazard", () => {
 describe("linkHazardCorrectiveAction", () => {
   async function seedAssignee(uid = "assignee-1") {
     await db.doc(`users/${uid}`).set(profile(uid));
+    await seedMembership(uid, ORG_A, "worker", []);
   }
 
   test("an authorized reviewer can link a corrective action to a hazard",
@@ -530,12 +546,7 @@ describe("linkHazardCorrectiveAction", () => {
   });
 
   test("a reviewer from another organization is refused", async () => {
-    await db.doc("users/reviewer-b").set(
-      profile("reviewer-b", {
-        organizationId: ORG_B,
-        platformRole: "siteManager",
-      })
-    );
+    await seedReviewer("reviewer-b", "siteManager", ORG_B);
     await seedHazard("hazard-1", {status: "reported"});
     await seedAssignee();
 
@@ -560,6 +571,7 @@ describe("linkHazardCorrectiveAction", () => {
 describe("createCorrectiveAction hazard branch (mutual exclusivity)", () => {
   async function seedAssignee(uid = "assignee-1") {
     await db.doc(`users/${uid}`).set(profile(uid));
+    await seedMembership(uid, ORG_A, "worker", []);
   }
 
   test("createCorrectiveAction with hazardId behaves identically to " +
@@ -641,12 +653,7 @@ describe("createCorrectiveAction hazard branch (mutual exclusivity)", () => {
 
   test("an Org B reviewer cannot create/link an action for an Org A hazard",
     async () => {
-      await db.doc("users/reviewer-b").set(
-        profile("reviewer-b", {
-          organizationId: ORG_B,
-          platformRole: "siteManager",
-        })
-      );
+      await seedReviewer("reviewer-b", "siteManager", ORG_B);
       await seedHazard("hazard-1", {status: "reported"});
       await seedAssignee();
 
@@ -671,9 +678,7 @@ describe("createCorrectiveAction hazard branch (mutual exclusivity)", () => {
   test("an Org A reviewer cannot assign the action to an Org B worker",
     async () => {
       await seedHazard("hazard-1", {status: "reported"});
-      await db.doc("users/worker-b").set(
-        profile("worker-b", {organizationId: ORG_B})
-      );
+      await seedWorkerAtSite("worker-b", "site-1", {organizationId: ORG_B});
 
       await expect(
         createCorrectiveAction.run(

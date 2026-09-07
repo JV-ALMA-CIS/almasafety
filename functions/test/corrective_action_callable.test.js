@@ -56,7 +56,6 @@ async function clearFirestore() {
 function profile(uid, overrides = {}) {
   return {
     uid,
-    organizationId: ORG_A,
     name: "Test User",
     email: `${uid}@example.com`,
     accountStatus: "active",
@@ -64,8 +63,34 @@ function profile(uid, overrides = {}) {
   };
 }
 
-async function seedReviewer(uid, platformRole = "siteManager") {
-  await db.doc(`users/${uid}`).set(profile(uid, {platformRole}));
+/**
+ * Seeds a `users/{uid}/memberships/{organizationId}` document — the source
+ * of truth for organization/role/site membership under the multi-org model.
+ */
+async function seedMembership(
+  uid, organizationId, role, siteIds, overrides = {}
+) {
+  await db.doc(`users/${uid}/memberships/${organizationId}`).set({
+    organizationId,
+    role,
+    workerType: null,
+    trade: null,
+    siteIds,
+    supervisorUid: null,
+    status: "active",
+    approvedAt: new Date(),
+    approvedBy: "approver-a",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  });
+}
+
+async function seedReviewer(
+  uid, platformRole = "siteManager", organizationId = ORG_A
+) {
+  await db.doc(`users/${uid}`).set(profile(uid));
+  await seedMembership(uid, organizationId, platformRole, []);
 }
 
 async function seedAction(id, overrides = {}) {
@@ -217,9 +242,7 @@ describe("updateCorrectiveActionStatus", () => {
   // the old model where only org-scoped roles above foreman could review.
   // `worker` is the real non-reviewer case now.
   test("preserves authorization: a non-reviewer role is refused", async () => {
-    await db.doc("users/worker-x").set(
-      profile("worker-x", {platformRole: "worker"})
-    );
+    await seedReviewer("worker-x", "worker");
     await seedAction("action-8", {status: "open"});
 
     await expect(
@@ -232,9 +255,7 @@ describe("updateCorrectiveActionStatus", () => {
 
   test("a foreman IS an authorized reviewer and may update status within " +
     "their own organization", async () => {
-    await db.doc("users/foreman-a").set(
-      profile("foreman-a", {platformRole: "foreman"})
-    );
+    await seedReviewer("foreman-a", "foreman");
     await seedAction("action-8b", {status: "open"});
 
     await callUpdateStatus("foreman-a", "action-8b", "inProgress");
@@ -245,12 +266,7 @@ describe("updateCorrectiveActionStatus", () => {
 
   test("preserves organization isolation: a reviewer from another " +
     "organization is refused", async () => {
-    await db.doc("users/reviewer-b").set(
-      profile("reviewer-b", {
-        organizationId: ORG_B,
-        platformRole: "siteManager",
-      })
-    );
+    await seedReviewer("reviewer-b", "siteManager", ORG_B);
     await seedAction("action-9", {status: "open"});
 
     await expect(

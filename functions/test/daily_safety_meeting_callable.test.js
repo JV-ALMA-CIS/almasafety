@@ -59,7 +59,6 @@ async function clearFirestore() {
 function profile(uid, overrides = {}) {
   return {
     uid,
-    organizationId: ORG_A,
     name: "Test User",
     email: `${uid}@example.com`,
     accountStatus: "active",
@@ -67,16 +66,45 @@ function profile(uid, overrides = {}) {
   };
 }
 
+/**
+ * Seeds a `users/{uid}/memberships/{organizationId}` document — the source
+ * of truth for organization/role/site membership under the multi-org model.
+ */
+async function seedMembership(
+  uid, organizationId, role, siteIds, overrides = {}
+) {
+  await db.doc(`users/${uid}/memberships/${organizationId}`).set({
+    organizationId,
+    role,
+    workerType: null,
+    trade: null,
+    siteIds,
+    supervisorUid: null,
+    status: "active",
+    approvedAt: new Date(),
+    approvedBy: "approver-a",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  });
+}
+
 async function seedForeman(uid, siteId = "site-1", overrides = {}) {
-  await db.doc(`users/${uid}`).set(
-    profile(uid, {platformRole: "foreman", siteIds: [siteId], ...overrides})
-  );
+  const {
+    organizationId = ORG_A, membershipStatus, ...profileOverrides
+  } = overrides;
+  await db.doc(`users/${uid}`).set(profile(uid, profileOverrides));
+  await seedMembership(uid, organizationId, "foreman", [siteId],
+    membershipStatus ? {status: membershipStatus} : {});
 }
 
 async function seedWorker(uid, siteId = "site-1", overrides = {}) {
-  await db.doc(`users/${uid}`).set(
-    profile(uid, {platformRole: "worker", siteIds: [siteId], ...overrides})
-  );
+  const {
+    organizationId = ORG_A, membershipStatus, ...profileOverrides
+  } = overrides;
+  await db.doc(`users/${uid}`).set(profile(uid, profileOverrides));
+  await seedMembership(uid, organizationId, "worker", [siteId],
+    membershipStatus ? {status: membershipStatus} : {});
 }
 
 async function seedSite(orgId, id = "site-1", overrides = {}) {
