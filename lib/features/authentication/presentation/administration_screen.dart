@@ -44,10 +44,14 @@ class AdministrationScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final profile = context.watch<SessionController>().profile;
+    final sessionController = context.watch<SessionController>();
+    final profile = sessionController.profile;
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
+    // A non-Admin's role (including canManageOrgContent) now lives on their
+    // active Membership, not the (now admin-only) profile.platformRole.
     final canManage = isPlatformAdministrator ||
-        profile?.canManageOrgContent == true;
+        (sessionController.activeMembership?.role.canManageOrgContent ??
+            false);
 
     if (!canManage) {
       // Defence in depth: the router should never route an unauthorized

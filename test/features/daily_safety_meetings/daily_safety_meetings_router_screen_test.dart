@@ -37,7 +37,10 @@ class _FakeSession extends SessionController {
          accountStatus: AccountStatus.active,
          // platformRole is admin-only now; every other role lives on the
          // active Membership instead.
-         platformRole: role == AppRole.admin ? role : null,
+         platformRole: role == AppRole.admin ||
+                 (role == AppRole.siteManager && organizationId == null)
+             ? role
+             : null,
        ),
        _membership = role == null || role == AppRole.admin || organizationId == null
            ? null
