@@ -356,8 +356,21 @@ service cloud.firestore {
       // Flat under the organization rather than nested under `projects`,
       // matching FIRESTORE_DATA_MODEL.md §3: a site's project is a
       // `projectId` field, not a path segment.
+      //
+      // PHASE 3 (authorization matrix): Site Manager/Admin see every site
+      // in the organization ("View projects/sites: Site Manager = all");
+      // a Foreman or Worker sees only a site that is in their OWN
+      // membership `siteIds` ("assigned scope only") — no extra `get()`
+      // beyond `membershipDoc` (already read for `belongsToOrganization`),
+      // since `siteIds` already lives on that same membership document.
       match /sites/{siteId} {
-        allow read: if belongsToOrganization(organizationId) || isAdmin();
+        allow read: if isAdmin()
+          || (belongsToOrganization(organizationId)
+            ? membershipDoc(organizationId).role == 'siteManager'
+            : false)
+          || (belongsToOrganization(organizationId)
+              && membershipDoc(organizationId).siteIds is list
+              && membershipDoc(organizationId).siteIds.hasAny([siteId]));
         // Provisioned exclusively through `createSite`/`updateSite`, which
         // additionally verifies server-side that the named project's own
         // `organizationId` matches this path's `organizationId` before
@@ -369,8 +382,19 @@ service cloud.firestore {
       // Flat under the organization, matching `sites/{siteId}`: an
       // activity's project and site are `projectId`/`siteId` fields, not
       // path segments.
+      //
+      // PHASE 3 (authorization matrix): scoped the same way as `sites`
+      // above — Site Manager/Admin see every activity in the organization;
+      // a Foreman or Worker sees only an activity whose own `siteId` is in
+      // their membership `siteIds`.
       match /activities/{activityId} {
-        allow read: if belongsToOrganization(organizationId) || isAdmin();
+        allow read: if isAdmin()
+          || (belongsToOrganization(organizationId)
+            ? membershipDoc(organizationId).role == 'siteManager'
+            : false)
+          || (belongsToOrganization(organizationId)
+              && membershipDoc(organizationId).siteIds is list
+              && membershipDoc(organizationId).siteIds.hasAny([resource.data.siteId]));
         // Provisioned exclusively through `createActivity`/`updateActivity`
         // (`activity_callable.ts`), which additionally verifies server-side
         // that the named site's own `organizationId`/`projectId` match this
@@ -426,13 +450,26 @@ service cloud.firestore {
 
       // ---- organizations/{organizationId}/daily_safety_meetings/{id} ----
       // Flat under the organization, matching `safety_meeting_points/{id}`.
-      // Read follows the same org-member-or-System-Administrator shape as
-      // every other operational collection here — a completed meeting is a
-      // record other org members (e.g. a Safety Manager reviewing it later)
-      // may need to see, not personal data scoped to the foreman alone like
-      // `worker_learning_records` below.
+      //
+      // PHASE 3 (authorization matrix): read is scoped by role, NOT a flat
+      // "any org member" grant like most collections in this file —
+      // Site Manager/Admin review every meeting org-wide (PROJECT_CONTEXT.md
+      // §16), a Foreman reviews only the meetings THEY conducted
+      // (`resource.data.foremanId == request.auth.uid`), and a Worker has no
+      // read access here at all (their own participation is visible through
+      // the `attendance` subcollection below instead, not the meeting
+      // document itself). This mirrors `worker_learning_records`' siteManager
+      // carve-out pattern: the caller's own membership document for THIS
+      // meeting's organization is checked, not a top-level profile field,
+      // since role is per-organization.
       match /daily_safety_meetings/{meetingId} {
-        allow read: if belongsToOrganization(organizationId) || isAdmin();
+        allow read: if isAdmin()
+          || (belongsToOrganization(organizationId)
+            ? membershipDoc(organizationId).role == 'siteManager'
+            : false)
+          || (belongsToOrganization(organizationId)
+              && membershipDoc(organizationId).role == 'foreman'
+              && resource.data.foremanId == request.auth.uid);
         // Provisioned exclusively through `createDailySafetyMeeting`/
         // `updateDailySafetyMeeting`/`completeDailySafetyMeeting`
         // (`daily_safety_meeting_callable.ts`), which additionally verifies
@@ -443,8 +480,13 @@ service cloud.firestore {
         allow write: if false;
 
         // ---- .../daily_safety_meetings/{meetingId}/attendance/{workerId} ----
-        // Read follows the parent meeting's shape: any org member or a
-        // Admin. Provisioned exclusively through
+        // Read follows the parent meeting's shape (Site Manager/Admin: all;
+        // Foreman: only their own meeting's attendance), PLUS a worker may
+        // read their OWN attendance record — this is the one place a Worker
+        // has any read access into this collection at all, matching
+        // PROJECT_CONTEXT.md §16 ("Worker: none" for reviewing meeting
+        // summaries broadly, but a worker can still see their own recorded
+        // attendance). Provisioned exclusively through
         // `recordMeetingAttendance` (`daily_safety_meeting_callable.ts`),
         // which additionally verifies server-side that the caller is the
         // meeting's own foreman, that the meeting is still `inProgress`,
@@ -452,14 +494,25 @@ service cloud.firestore {
         // `workerId` is never the caller's own uid — a worker cannot mark
         // themselves present.
         match /attendance/{workerId} {
-          allow read: if belongsToOrganization(organizationId) || isAdmin();
+          allow read: if isAdmin()
+            || (belongsToOrganization(organizationId)
+              ? membershipDoc(organizationId).role == 'siteManager'
+              : false)
+            || (belongsToOrganization(organizationId)
+                && membershipDoc(organizationId).role == 'foreman'
+                && get(/databases/$(database)/documents/organizations/$(organizationId)/daily_safety_meetings/$(meetingId)).data.foremanId == request.auth.uid)
+            || (belongsToOrganization(organizationId) && workerId == request.auth.uid);
           allow write: if false;
         }
 
         // ---- .../daily_safety_meetings/{meetingId}/concerns/{concernId} ----
-        // Read follows the parent meeting's shape: any org member or a
-        // Admin — a completed meeting's concerns are part of
-        // the permanent record, same visibility as the meeting itself.
+        // Read follows the parent meeting's shape: Site Manager/Admin see
+        // every concern; a Foreman sees only concerns on meetings they
+        // conducted; a Worker has no read access — a completed meeting's
+        // concerns are part of the same permanent record as the meeting
+        // itself, so this deliberately does NOT extend the worker
+        // self-read carve-out `attendance` above has (a concern is not
+        // "this worker's own data" the way their attendance is).
         // Provisioned exclusively through `addMeetingConcern`/
         // `updateMeetingConcern`/`removeMeetingConcern`
         // (`daily_safety_meeting_callable.ts`), which additionally verify
@@ -468,7 +521,13 @@ service cloud.firestore {
         // refuse, so a concern can never be silently altered after the
         // meeting closes.
         match /concerns/{concernId} {
-          allow read: if belongsToOrganization(organizationId) || isAdmin();
+          allow read: if isAdmin()
+            || (belongsToOrganization(organizationId)
+              ? membershipDoc(organizationId).role == 'siteManager'
+              : false)
+            || (belongsToOrganization(organizationId)
+                && membershipDoc(organizationId).role == 'foreman'
+                && get(/databases/$(database)/documents/organizations/$(organizationId)/daily_safety_meetings/$(meetingId)).data.foremanId == request.auth.uid);
           allow write: if false;
         }
       }
@@ -629,18 +688,35 @@ service cloud.firestore {
       //
       // BUG FIX: Firestore security rules evaluate every `match` block whose
       // path matches and OR their `allow` conditions together — an earlier,
-      // narrower `match` (e.g. `notifications` or `worker_learning_records`
-      // above) does NOT shadow this later wildcard. Without excluding those
-      // two collection names here explicitly, this catch-all silently
-      // widened their read access back to "any org member," defeating the
-      // narrower recipient-only / owner-or-siteManager-only scoping those
-      // blocks intentionally enforce. `operationalCollection` is therefore
-      // checked against both names and denied here — their own `match`
-      // blocks above remain the sole source of read authorization for them.
+      // narrower `match` (e.g. `notifications`, `worker_learning_records`,
+      // `sites`, `activities`, or `daily_safety_meetings` above) does NOT
+      // shadow this later wildcard. Without excluding those collection names
+      // here explicitly, this catch-all silently widened their read access
+      // back to "any org member," defeating the narrower recipient-only /
+      // owner-or-siteManager-only / site-scoped / own-meeting-only scoping
+      // those blocks intentionally enforce. `operationalCollection` is
+      // therefore checked against each name and denied here — their own
+      // `match` blocks above remain the sole source of read authorization
+      // for them.
+      //
+      // `daily_safety_meetings` ALSO covers this wildcard matching its own
+      // SUBCOLLECTIONS (`attendance`, `concerns`) via `documentId=**` — e.g.
+      // `daily_safety_meetings/{id}/attendance/{workerId}` matches
+      // `operationalCollection == 'daily_safety_meetings'` here too, not
+      // just the top-level meeting document — so excluding the one name
+      // covers all three PHASE 3-scoped blocks in one exclusion. Likewise
+      // `activities` covers its own `assignments/{uid}` subcollection —
+      // that subcollection is intentionally NOT site-scoped in this pass
+      // (see its own doc comment), so excluding `activities` here does not
+      // change its behavior, only prevents this catch-all from double
+      // granting the PARENT activity document's read.
       match /{operationalCollection}/{documentId=**} {
         allow read: if belongsToOrganization(organizationId)
           && operationalCollection != 'notifications'
-          && operationalCollection != 'worker_learning_records';
+          && operationalCollection != 'worker_learning_records'
+          && operationalCollection != 'daily_safety_meetings'
+          && operationalCollection != 'sites'
+          && operationalCollection != 'activities';
         allow write: if false;
       }
     }

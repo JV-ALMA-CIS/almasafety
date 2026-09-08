@@ -220,6 +220,97 @@ export async function requireOrganizationScopedManager(
 }
 
 /**
+ * The result of [requireOrganizationScopedManagerOrForeman]: the caller's
+ * uid, whether they hold UNRESTRICTED authority over [organizationId]
+ * (`admin` or its `siteManager`), and — for a Foreman caller only — the
+ * site(s) their own authority is confined to.
+ *
+ * `isManager: true` means every site in the organization; `isManager:
+ * false` means the caller is an active Foreman there, and their authority
+ * is confined to `siteIds` — the CALLER'S OWN membership `siteIds`, never
+ * trusted from the request payload.
+ */
+export interface OrganizationScopedActor {
+  uid: string;
+  isManager: boolean;
+  siteIds: string[];
+}
+
+/**
+ * Authorizes the caller as `admin` (any organization), `siteManager` of
+ * [organizationId] (same as [requireOrganizationScopedManager]), OR an
+ * active `foreman` of [organizationId] — returning enough to let the
+ * caller further confine a Foreman's authority to their own site(s).
+ *
+ * PHASE 3 (authorization matrix): a Foreman's assignment/removal authority
+ * over a Worker is confined to their OWN assigned site(s) — this helper
+ * exists so `site_assignment_callable.ts`/`activity_assignment_callable.ts`
+ * can grant that without duplicating the admin/siteManager resolution
+ * already implemented above. It is deliberately NOT folded into
+ * [requireOrganizationScopedManager] itself, since every OTHER caller of
+ * that function (`activity_callable.ts`'s `createActivity`/`updateActivity`,
+ * `site_assignment_callable.ts`'s own site-membership grant/removal for a
+ * FOREMAN target, organization/project/site create-or-edit) must keep
+ * refusing Foreman outright — only Worker assignment/removal admits one.
+ *
+ * @param {CallableRequest} request the incoming callable request.
+ * @param {string} organizationId the organization the action targets.
+ * @return {Promise<OrganizationScopedActor>} the authorized caller's scope.
+ */
+export async function requireOrganizationScopedManagerOrForeman(
+  request: CallableRequest,
+  organizationId: string
+): Promise<OrganizationScopedActor> {
+  const uid = request.auth?.uid;
+  if (!uid) throw denied();
+
+  const snapshot = await getFirestore().doc(`users/${uid}`).get();
+  const profile = snapshot.data();
+  if (!snapshot.exists || !profile) throw denied();
+  if (profile.accountStatus !== "active") throw denied();
+
+  if (profile.platformRole === "admin") {
+    return {uid, isManager: true, siteIds: []};
+  }
+
+  const membershipSnapshot = await getFirestore()
+    .doc(`users/${uid}/memberships/${organizationId}`)
+    .get();
+  const membership = membershipSnapshot.data();
+  if (
+    membershipSnapshot.exists && membership && membership.status === "active"
+  ) {
+    if (membership.role === "siteManager") {
+      return {uid, isManager: true, siteIds: []};
+    }
+    if (membership.role === "foreman") {
+      const siteIds: string[] = Array.isArray(membership.siteIds) ?
+        membership.siteIds.filter(
+          (id: unknown): id is string => typeof id === "string"
+        ) :
+        [];
+      return {uid, isManager: false, siteIds};
+    }
+  }
+
+  // A siteManager may also manage this organization via `managedBy` without
+  // (yet) holding an active membership document in it — same fallback
+  // `requireOrganizationScopedManager` performs above.
+  const orgSnapshot = await getFirestore()
+    .doc(`organizations/${organizationId}`)
+    .get();
+  const org = orgSnapshot.data();
+  const managedBy: string[] = org && Array.isArray(org.managedBy) ?
+    org.managedBy.filter(
+      (id: unknown): id is string => typeof id === "string"
+    ) :
+    [];
+  if (managedBy.includes(uid)) return {uid, isManager: true, siteIds: []};
+
+  throw denied();
+}
+
+/**
  * Reads and validates a required non-empty string argument.
  *
  * @param {CallableRequest} request the incoming callable request.

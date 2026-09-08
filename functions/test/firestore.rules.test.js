@@ -997,23 +997,72 @@ describe("the Organization -> Project -> Site foundation", () => {
   // DESIGN NOTE. Creating and editing organizations, projects and sites is
   // Admin-SDK-only via `organization_callable.ts`'s
   // `requireAdmin`, exactly like account review — these rules
-  // give write access to NO client, Admin included. Reads
-  // are the one place role matters here: an organization member reads their
-  // own organization's projects/sites, and `isAdmin()`
-  // additionally lets an Admin read every organization's,
-  // since they belong to none of their own.
+  // give write access to NO client, Admin included.
+  //
+  // Reads: `projects` stays a flat "any active org member" grant — nothing
+  // in the target authorization matrix scopes it. `sites` is PHASE 3-scoped:
+  // Site Manager/Admin read every site in the organization; a Foreman or
+  // Worker reads only a site that is in their OWN membership `siteIds` (see
+  // firestore.rules' own doc comment on `sites/{siteId}`). `isAdmin()`
+  // additionally lets an Admin read every organization's projects/sites,
+  // since they belong to none of their own. `active-a`'s default membership
+  // (set in the top-level `beforeEach`) is `role: "worker"` with no
+  // `siteIds` — deliberately used here to exercise the "no site access
+  // granted" case; a siteManager or a worker WITH a matching siteId is
+  // exercised in the dedicated tests below.
 
-  test("an org member can read their own organization's projects and sites",
+  test("an org member can read their own organization's projects " +
+    "(not scoped — every active member sees every project)", async () => {
+    const db = actor("active-a", "active-a@example.com");
+
+    await assertSucceeds(
+      db.doc(`organizations/${ORG_A}/projects/project-1`).get()
+    );
+  });
+
+  test("a Site Manager can read a site in their organization even with " +
+    "no siteIds of their own — Site Manager authority is org-wide, not " +
+    "site-scoped", async () => {
+    await seed(async (db) => {
+      await db
+        .doc(`users/active-a/memberships/${ORG_A}`)
+        .set(membership("active-a", ORG_A, {role: "siteManager"}));
+    });
+    const db = actor("active-a", "active-a@example.com");
+
+    await assertSucceeds(
+      db.doc(`organizations/${ORG_A}/sites/site-1`).get()
+    );
+  });
+
+  test("a Foreman/Worker with site-1 in their own siteIds can read it",
     async () => {
+      await seed(async (db) => {
+        await db
+          .doc(`users/active-a/memberships/${ORG_A}`)
+          .set(membership("active-a", ORG_A, {
+            role: "worker",
+            siteIds: ["site-1"],
+          }));
+      });
       const db = actor("active-a", "active-a@example.com");
 
-      await assertSucceeds(
-        db.doc(`organizations/${ORG_A}/projects/project-1`).get()
-      );
       await assertSucceeds(
         db.doc(`organizations/${ORG_A}/sites/site-1`).get()
       );
     });
+
+  test("a Foreman/Worker WITHOUT site-1 in their own siteIds cannot read " +
+    "it, even though they belong to the same organization", async () => {
+    const db = actor("active-a", "active-a@example.com");
+
+    // active-a's default membership (role: worker, siteIds: []) does not
+    // include site-1 — a plain org membership is no longer enough on its
+    // own for a non-Site-Manager caller.
+    await assertFails(
+      db.doc(`organizations/${ORG_A}/sites/site-1`).get()
+    );
+  });
 
   test("an org member cannot read another organization's projects or sites",
     async () => {
@@ -1130,11 +1179,16 @@ describe("the Site -> Activity -> Worker Assignment foundation", () => {
   // are Admin-SDK-only via `activity_callable.ts` and
   // `activity_assignment_callable.ts` respectively, exactly like the
   // Organization -> Project -> Site foundation above. These rules give write
-  // access to NO client for either collection. Reads follow the same
-  // org-membership-or-Admin shape as `sites/{siteId}`, and the
-  // `assignments` subcollection additionally needs to be reachable by a
-  // collection-group query (the worker detail screen's "Assigned Activities"
-  // section reads across every activity's assignments at once).
+  // access to NO client for either collection.
+  //
+  // Reads: `activities` is PHASE 3-scoped the same way as `sites/{siteId}`
+  // — Site Manager/Admin read every activity in the organization; a Foreman
+  // or Worker reads only an activity whose OWN `siteId` is in their
+  // membership `siteIds`. `assignments` (the subcollection) is deliberately
+  // NOT scoped in this pass — see its own doc comment in firestore.rules —
+  // and additionally needs to be reachable by a collection-group query (the
+  // worker detail screen's "Assigned Activities" section reads across every
+  // activity's assignments at once).
 
   beforeEach(async () => {
     await seed(async (db) => {
@@ -1163,15 +1217,54 @@ describe("the Site -> Activity -> Worker Assignment foundation", () => {
     });
   });
 
-  test("an org member can read their own organization's activities and " +
-    "assignments", async () => {
+  test("an org member (assignments — not site-scoped) can read their own " +
+    "organization's assignments regardless of siteIds", async () => {
+    const db = actor("active-a", "active-a@example.com");
+
+    await assertSucceeds(
+      db.doc(assignmentPath(ORG_A, "activity-1", "active-a")).get()
+    );
+  });
+
+  test("a Site Manager can read an activity in their organization even " +
+    "with no siteIds of their own", async () => {
+    await seed(async (db) => {
+      await db
+        .doc(`users/active-a/memberships/${ORG_A}`)
+        .set(membership("active-a", ORG_A, {role: "siteManager"}));
+    });
     const db = actor("active-a", "active-a@example.com");
 
     await assertSucceeds(
       db.doc(`organizations/${ORG_A}/activities/activity-1`).get()
     );
+  });
+
+  test("a Foreman/Worker with the activity's siteId in their own siteIds " +
+    "can read it", async () => {
+    await seed(async (db) => {
+      await db
+        .doc(`users/active-a/memberships/${ORG_A}`)
+        .set(membership("active-a", ORG_A, {
+          role: "worker",
+          siteIds: ["site-1"],
+        }));
+    });
+    const db = actor("active-a", "active-a@example.com");
+
     await assertSucceeds(
-      db.doc(assignmentPath(ORG_A, "activity-1", "active-a")).get()
+      db.doc(`organizations/${ORG_A}/activities/activity-1`).get()
+    );
+  });
+
+  test("a Foreman/Worker WITHOUT the activity's siteId in their own " +
+    "siteIds cannot read it", async () => {
+    const db = actor("active-a", "active-a@example.com");
+
+    // active-a's default membership (role: worker, siteIds: []) does not
+    // include site-1, activity-1's own site.
+    await assertFails(
+      db.doc(`organizations/${ORG_A}/activities/activity-1`).get()
     );
   });
 
@@ -1690,12 +1783,14 @@ describe("the Daily Safety Meeting foundation", () => {
   // the caller's own stored profile for `platformRole == "foreman"` and
   // confirms `siteId` is in their own `siteIds` — narrower than
   // `requireOrganizationScopedAdmin` used elsewhere, since running a toolbox
-  // talk is a foreman's operational duty, not an administrative one. Reads
-  // follow the same org-membership-or-Admin shape as every
-  // other operational collection — see this file's header note on
-  // `daily_safety_meetings/{meetingId}` in firestore.rules for why this one
-  // is not scoped narrower to the owning foreman the way
-  // `worker_learning_records` is.
+  // talk is a foreman's operational duty, not an administrative one.
+  //
+  // PHASE 3 (authorization matrix): read is role-scoped, NOT a flat
+  // any-org-member grant — Site Manager/Admin review every meeting
+  // org-wide; a Foreman reviews only meetings THEY conducted
+  // (`foremanId == request.auth.uid`); a Worker has no read access to the
+  // meeting document itself (their own attendance record is a narrower,
+  // separate carve-out — see the `attendance` describe block below).
 
   function meetingPath(organizationId, meetingId) {
     return `organizations/${organizationId}/daily_safety_meetings/` +
@@ -1713,6 +1808,22 @@ describe("the Daily Safety Meeting foundation", () => {
           role: "foreman",
           siteIds: ["site-1"],
         }));
+      // A second foreman, whose OWN meetings a foreman-a read must not
+      // reach — see "a foreman cannot read another foreman's meeting"
+      // below.
+      await db.doc(userPath("foreman-b")).set(profile("foreman-b", "active"));
+      await db
+        .doc(`users/foreman-b/memberships/${ORG_A}`)
+        .set(membership("foreman-b", ORG_A, {
+          role: "foreman",
+          siteIds: ["site-2"],
+        }));
+      // active-a is a Site Manager here (not the default worker role) so
+      // the "org member" tests below exercise the Site Manager's org-wide
+      // read grant specifically.
+      await db
+        .doc(`users/active-a/memberships/${ORG_A}`)
+        .set(membership("active-a", ORG_A, {role: "siteManager"}));
       await db.doc(meetingPath(ORG_A, "meeting-1")).set({
         organizationId: ORG_A,
         projectId: "project-1",
@@ -1732,20 +1843,47 @@ describe("the Daily Safety Meeting foundation", () => {
     });
   });
 
-  test("an org member can read their own organization's daily safety " +
+  test("a Site Manager can read their own organization's daily safety " +
     "meetings", async () => {
     const db = actor("active-a", "active-a@example.com");
 
     await assertSucceeds(db.doc(meetingPath(ORG_A, "meeting-1")).get());
   });
 
-  test("an org member cannot read another organization's daily safety " +
+  test("a Site Manager cannot read another organization's daily safety " +
     "meetings", async () => {
     const db = actor("active-a", "active-a@example.com");
 
     await assertFails(
       db.collection(`organizations/${ORG_B}/daily_safety_meetings`).get()
     );
+  });
+
+  test("a foreman can read a meeting they conducted", async () => {
+    const db = actor("foreman-a", "foreman-a@example.com");
+
+    await assertSucceeds(db.doc(meetingPath(ORG_A, "meeting-1")).get());
+  });
+
+  test("a foreman cannot read another foreman's meeting", async () => {
+    const db = actor("foreman-b", "foreman-b@example.com");
+
+    await assertFails(db.doc(meetingPath(ORG_A, "meeting-1")).get());
+  });
+
+  test("a worker cannot read the meeting document at all", async () => {
+    await seed(async (db) => {
+      await db.doc(userPath("worker-a")).set(profile("worker-a", "active"));
+      await db
+        .doc(`users/worker-a/memberships/${ORG_A}`)
+        .set(membership("worker-a", ORG_A, {
+          role: "worker",
+          siteIds: ["site-1"],
+        }));
+    });
+    const db = actor("worker-a", "worker-a@example.com");
+
+    await assertFails(db.doc(meetingPath(ORG_A, "meeting-1")).get());
   });
 
   test("a pending/suspended/rejected user reads no daily safety meeting",
@@ -1827,8 +1965,12 @@ describe("the Daily Safety Meeting foundation", () => {
     // additionally verifies server-side that the caller is the meeting's own
     // foreman, that the meeting is still `inProgress`, that the target
     // worker belongs to the meeting's own site, and that the target worker
-    // is never the caller's own uid. Reads follow the parent meeting's
-    // org-member-or-Admin shape.
+    // is never the caller's own uid.
+    //
+    // PHASE 3: read follows the parent meeting's role-scoped shape
+    // (Site Manager/Admin: all; Foreman: only their own meeting's
+    // attendance) PLUS a worker may read their OWN attendance record —
+    // the one carve-out into this collection a Worker has at all.
 
     function attendancePath(organizationId, meetingId, workerId) {
       return `${meetingPath(organizationId, meetingId)}/attendance/` +
@@ -1903,6 +2045,52 @@ describe("the Daily Safety Meeting foundation", () => {
         );
       });
 
+    test("the meeting's own foreman can read attendance for their meeting",
+      async () => {
+        const db = actor("foreman-a", "foreman-a@example.com");
+
+        await assertSucceeds(
+          db.doc(attendancePath(ORG_A, "meeting-1", "worker-a")).get()
+        );
+      });
+
+    test("a DIFFERENT foreman cannot read attendance for a meeting they " +
+      "did not conduct", async () => {
+      const db = actor("foreman-b", "foreman-b@example.com");
+
+      await assertFails(
+        db.doc(attendancePath(ORG_A, "meeting-1", "worker-a")).get()
+      );
+    });
+
+    test("a worker can read their OWN attendance record", async () => {
+      const db = actor("worker-a", "worker-a@example.com");
+
+      await assertSucceeds(
+        db.doc(attendancePath(ORG_A, "meeting-1", "worker-a")).get()
+      );
+    });
+
+    test("a worker cannot read another worker's attendance record",
+      async () => {
+        await seed(async (db) => {
+          await db
+            .doc(userPath("worker-b"))
+            .set(profile("worker-b", "active"));
+          await db
+            .doc(`users/worker-b/memberships/${ORG_A}`)
+            .set(membership("worker-b", ORG_A, {
+              role: "worker",
+              siteIds: ["site-1"],
+            }));
+        });
+        const db = actor("worker-b", "worker-b@example.com");
+
+        await assertFails(
+          db.doc(attendancePath(ORG_A, "meeting-1", "worker-a")).get()
+        );
+      });
+
     test("no client, including the meeting's own foreman, can create an " +
       "attendance record by direct write", async () => {
       await assertFails(
@@ -1962,8 +2150,12 @@ describe("the Daily Safety Meeting foundation", () => {
     // server-side that the caller is the meeting's own foreman and that the
     // meeting is still `inProgress` — once `completed`, all three refuse, so
     // a concern can never be silently altered after the meeting closes.
-    // Reads follow the parent meeting's org-member-or-Admin
-    // shape, mirroring `attendance` above.
+    //
+    // PHASE 3: read follows the parent meeting's role-scoped shape
+    // (Site Manager/Admin: all; Foreman: only their own meeting's
+    // concerns) — unlike `attendance`, a Worker has NO carve-out here at
+    // all, since a concern is not "this worker's own data" the way their
+    // attendance record is.
 
     function concernPath(organizationId, meetingId, concernId) {
       return `${meetingPath(organizationId, meetingId)}/concerns/` +
@@ -2029,6 +2221,41 @@ describe("the Daily Safety Meeting foundation", () => {
           db.doc(concernPath(ORG_A, "meeting-1", "concern-1")).get()
         );
       });
+
+    test("the meeting's own foreman can read its concerns", async () => {
+      const db = actor("foreman-a", "foreman-a@example.com");
+
+      await assertSucceeds(
+        db.doc(concernPath(ORG_A, "meeting-1", "concern-1")).get()
+      );
+    });
+
+    test("a DIFFERENT foreman cannot read concerns for a meeting they did " +
+      "not conduct", async () => {
+      const db = actor("foreman-b", "foreman-b@example.com");
+
+      await assertFails(
+        db.doc(concernPath(ORG_A, "meeting-1", "concern-1")).get()
+      );
+    });
+
+    test("a worker has no read access to concerns at all — unlike " +
+      "attendance, there is no own-record carve-out here", async () => {
+      await seed(async (db) => {
+        await db.doc(userPath("worker-a")).set(profile("worker-a", "active"));
+        await db
+          .doc(`users/worker-a/memberships/${ORG_A}`)
+          .set(membership("worker-a", ORG_A, {
+            role: "worker",
+            siteIds: ["site-1"],
+          }));
+      });
+      const db = actor("worker-a", "worker-a@example.com");
+
+      await assertFails(
+        db.doc(concernPath(ORG_A, "meeting-1", "concern-1")).get()
+      );
+    });
 
     test("no client, including the meeting's own foreman, can create a " +
       "concern by direct write", async () => {
@@ -2227,8 +2454,9 @@ describe("the Corrective Actions foundation", () => {
   // organization (for status transitions) — see `canReviewPendingAccounts`
   // in `account_approval.ts`, reused rather than re-derived. There is no
   // delete callable and this rule denies delete too: a corrective action is
-  // a permanent part of the safety record. Reads follow the same
-  // org-member-or-Admin shape as `daily_safety_meetings`.
+  // a permanent part of the safety record. Reads follow the flat
+  // any-active-org-member-or-Admin shape most operational collections use
+  // (unlike `daily_safety_meetings`, which PHASE 3 scoped by role).
 
   function actionPath(organizationId, actionId) {
     return `organizations/${organizationId}/corrective_actions/${actionId}`;
