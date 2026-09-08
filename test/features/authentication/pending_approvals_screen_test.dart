@@ -91,8 +91,11 @@ class _FakeApprovalService extends AccountApprovalService {
 /// A session controller reporting a fixed profile/membership, so the
 /// screen's own capability check can be exercised without Firebase.
 class _FakeSession extends SessionController {
-  _FakeSession({required AppRole? role, bool noActiveOrganization = false})
-    : _profile = UserProfile(
+  _FakeSession({
+    required AppRole? role,
+    bool noActiveOrganization = false,
+    List<String>? extraOrganizationIds,
+  }) : _profile = UserProfile(
         uid: 'approver-uid',
         name: 'Approver',
         email: 'approver@example.com',
@@ -113,16 +116,30 @@ class _FakeSession extends SessionController {
       // every reviewer has one. [noActiveOrganization] additionally forces
       // this for a non-Admin role, to exercise the "reviewer has a role
       // but genuinely no organization to act in yet" case.
-      _membership = role == null || role == AppRole.admin || noActiveOrganization
-          ? null
-          : Membership(
-              organizationId: 'jv-alma-cis',
-              role: role,
-              status: MembershipStatus.active,
-            );
+      _memberships = role == null || role == AppRole.admin || noActiveOrganization
+          ? const []
+          : [
+              Membership(
+                organizationId: 'jv-alma-cis',
+                role: role,
+                status: MembershipStatus.active,
+              ),
+              // Simulates a reviewer holding the same authorized role in a
+              // second organization, for the org-picker's "which of my
+              // organizations" case.
+              for (final organizationId in extraOrganizationIds ?? const [])
+                Membership(
+                  organizationId: organizationId,
+                  role: role,
+                  status: MembershipStatus.active,
+                ),
+            ];
 
   final UserProfile _profile;
-  final Membership? _membership;
+  final List<Membership> _memberships;
+
+  Membership? get _membership =>
+      _memberships.isEmpty ? null : _memberships.first;
 
   @override
   UserProfile? get profile => _profile;
@@ -132,6 +149,17 @@ class _FakeSession extends SessionController {
 
   @override
   Membership? get activeMembership => _membership;
+
+  @override
+  List<Membership> get memberships => _memberships;
+
+  @override
+  Membership? membershipFor(String organizationId) {
+    for (final membership in _memberships) {
+      if (membership.organizationId == organizationId) return membership;
+    }
+    return null;
+  }
 }
 
 void main() {
@@ -165,11 +193,13 @@ void main() {
     AccountApprovalService service, {
     AppRole? reviewerRole = AppRole.siteManager,
     bool noActiveOrganization = false,
+    List<String>? extraOrganizationIds,
   }) {
     return ChangeNotifierProvider<SessionController>(
       create: (_) => _FakeSession(
         role: reviewerRole,
         noActiveOrganization: noActiveOrganization,
+        extraOrganizationIds: extraOrganizationIds,
       ),
       child: MaterialApp(
         home: Scaffold(
@@ -485,19 +515,62 @@ void main() {
       },
     );
 
-    testWidgets('an org-scoped reviewer is never shown the organization field',
-        (tester) async {
-      final service = _FakeApprovalService(accounts: [account('alice')]);
+    testWidgets(
+      'an org-scoped reviewer sees a required organization field, '
+      'pre-selected from their own membership — not the Admin\'s optional '
+      'picker over every organization',
+      (tester) async {
+        await seedOrg('jv-alma-cis', name: 'JV Alma CIS', code: 'JV-1');
+        final service = _FakeApprovalService(accounts: [account('alice')]);
 
-      await tester.pumpWidget(
-        wrap(service, reviewerRole: AppRole.siteManager),
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
-      await tester.pumpAndSettle();
+        await tester.pumpWidget(
+          wrap(service, reviewerRole: AppRole.siteManager),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
+        await tester.pumpAndSettle();
 
-      expect(find.text('Organization'), findsNothing);
-    });
+        expect(find.text('Organization (optional)'), findsNothing);
+        expect(find.text('Organization'), findsOneWidget);
+        expect(find.text('JV Alma CIS'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'a Site Manager of two organizations can pick either one, and the '
+      'chosen organization id — not whichever happened to be active — is '
+      'what gets sent to the callable',
+      (tester) async {
+        await seedOrg('jv-alma-cis', name: 'JV Alma CIS', code: 'JV-1');
+        await seedOrg('jv-second-site', name: 'JV Second Site', code: 'JV-2');
+        final service = _FakeApprovalService(accounts: [account('alice')]);
+
+        await tester.pumpWidget(
+          wrap(
+            service,
+            reviewerRole: AppRole.siteManager,
+            extraOrganizationIds: const ['jv-second-site'],
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
+        await tester.pumpAndSettle();
+
+        // Defaults to the first (here, also the "active") organization.
+        expect(find.text('JV Alma CIS'), findsOneWidget);
+
+        await tester.tap(find.byType(DropdownButtonFormField<String>));
+        await tester.pumpAndSettle();
+        expect(find.text('JV Second Site'), findsOneWidget);
+        await tester.tap(find.text('JV Second Site').last);
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').last);
+        await tester.pumpAndSettle();
+
+        expect(service.approvedCalls.single.organizationId, 'jv-second-site');
+      },
+    );
 
     testWidgets('the dropdown shows organization name and code, never a '
         'raw Firestore document id', (tester) async {

@@ -10,6 +10,7 @@ import '../../organizations/data/organization_repository.dart';
 import '../../organizations/domain/organization.dart';
 import '../data/account_approval_service.dart';
 import '../domain/app_role.dart';
+import '../domain/membership.dart';
 import '../domain/pending_account.dart';
 import '../domain/worker_type.dart';
 import 'auth_error_banner.dart';
@@ -110,31 +111,25 @@ class _PendingApprovalsScreenState extends State<PendingApprovalsScreen> {
         profile?.platformRole ?? sessionController.activeMembership?.role;
     if (reviewerRole == null) return;
 
-    final selection = await showDialog<_RoleAssignmentSelection>(
-      context: context,
-      builder: (_) => _RoleAssignmentDialog(
-        account: account,
-        reviewerRole: reviewerRole,
-        organizationRepository: _organizationRepository,
-      ),
-    );
-    if (selection == null || !mounted) return;
+    // Every organization this reviewer holds an ACTIVE membership with
+    // review authority in — the choices offered by the org picker below for
+    // a non-Admin reviewer. A Site Manager/Foreman managing several
+    // organizations must not have to remember which one happens to be
+    // "active" in the switcher just to approve into a DIFFERENT one; the
+    // dialog lets them pick explicitly every time instead. The server
+    // independently re-verifies whichever one is chosen (requireApprover /
+    // requireGrantWithinScope) — this list is a UI convenience only.
+    final reviewerMemberships = reviewerRole == AppRole.admin
+        ? const <Membership>[]
+        : sessionController.memberships
+              .where(
+                (m) =>
+                    m.status == MembershipStatus.active &&
+                    m.role.canReviewPendingAccounts,
+              )
+              .toList(growable: false);
 
-    // For a non-Admin reviewer, the server now REQUIRES organizationId
-    // (the acting organization) rather than resolving it implicitly — see
-    // AccountApprovalService.approve's doc comment. Resolved automatically
-    // from the reviewer's own active membership, never a picker: a reviewer
-    // acts in one organization at a time.
-    final organizationId = reviewerRole == AppRole.admin
-        ? selection.organizationId
-        : sessionController.activeOrganizationId;
-
-    // A non-Admin reviewer with no active organization (no memberships at
-    // all yet, or the membership stream hasn't resolved) cannot approve
-    // anyone — the server refuses with an opaque invalid-argument that
-    // would otherwise surface as a generic "Something went wrong." Catching
-    // it here gives an actionable message instead of a failed round-trip.
-    if (reviewerRole != AppRole.admin && organizationId == null) {
+    if (reviewerRole != AppRole.admin && reviewerMemberships.isEmpty) {
       if (!mounted) return;
       setState(
         () => _errorMessage =
@@ -145,13 +140,25 @@ class _PendingApprovalsScreenState extends State<PendingApprovalsScreen> {
       return;
     }
 
+    final selection = await showDialog<_RoleAssignmentSelection>(
+      context: context,
+      builder: (_) => _RoleAssignmentDialog(
+        account: account,
+        reviewerRole: reviewerRole,
+        reviewerMemberships: reviewerMemberships,
+        initialOrganizationId: sessionController.activeOrganizationId,
+        organizationRepository: _organizationRepository,
+      ),
+    );
+    if (selection == null || !mounted) return;
+
     await _decide(
       account,
       action: () => _service.approve(
         account.uid,
         role: selection.role,
         workerType: selection.workerType,
-        organizationId: organizationId,
+        organizationId: selection.organizationId,
       ),
       successMessage: '${account.name} approved as ${selection.role.label}.',
     );
@@ -420,7 +427,8 @@ class _RoleAssignmentSelection {
   final String? organizationId;
 }
 
-/// Prompts the reviewer to choose a role (required) and worker type
+/// Prompts the reviewer to choose an organization (for a non-Admin holding
+/// more than one authorized membership), a role (required) and worker type
 /// (optional) before approving.
 ///
 /// Only offers roles the reviewer's own role is authorized to grant — this
@@ -429,31 +437,55 @@ class _RoleAssignmentSelection {
 /// UX only: the callable independently re-validates the choice server-side
 /// regardless of what this dialog allowed to be selected.
 ///
-/// An Admin additionally sees an OPTIONAL organization picker, backed by
-/// [OrganizationRepository.watchAll] and displayed by name/code — the value
-/// sent to `approvePendingAccount` is always the selected [Organization.id]
-/// (its Firestore document id), never a name/code an administrator typed or
-/// might confuse for one. Leaving it unset is the common case: an Admin in
-/// the office approving a Site Manager they know personally typically has no
-/// way to know which of possibly several organizations that colleague
-/// operates in — that Site Manager creates (or is assigned into) their own
-/// organization afterward via `createOrganization` (PROJECT_CONTEXT.md
-/// §12/§16/§18), which then backfills `users/{uid}.organizationId`. Picking
-/// an existing organization here is only for the case where the Admin
-/// already knows exactly which one this Site Manager belongs to.
+/// ORGANIZATION PICKER — two shapes depending on reviewer role:
+///
+///  - An Admin sees an OPTIONAL picker over EVERY organization, backed by
+///    [OrganizationRepository.watchAll] and displayed by name/code. Leaving
+///    it unset is the common case: an Admin in the office approving a Site
+///    Manager they know personally typically has no way to know which of
+///    possibly several organizations that colleague operates in — that Site
+///    Manager creates (or is assigned into) their own organization
+///    afterward via `createOrganization` (PROJECT_CONTEXT.md §12/§16/§18).
+///  - A Site Manager or Foreman — who may hold several authorized
+///    memberships and, managing many sites/organizations, cannot be
+///    expected to remember or double-check which one is currently "active"
+///    in the switcher before approving — sees a REQUIRED picker scoped to
+///    [reviewerMemberships]: only the organizations they hold an active,
+///    review-authorized membership in, resolved to names via
+///    [OrganizationRepository.watchByIds]. With exactly one membership the
+///    picker still renders (so the reviewer can see, not just assume, which
+///    organization they're approving into), pre-selected and effectively
+///    fixed. The value sent to `approvePendingAccount` is always the
+///    selected [Organization.id], never a name the reviewer typed — the
+///    server independently re-verifies it is one of their own authorized
+///    memberships regardless (`requireApprover`/`requireGrantWithinScope`).
 class _RoleAssignmentDialog extends StatefulWidget {
   const _RoleAssignmentDialog({
     required this.account,
     required this.reviewerRole,
+    required this.reviewerMemberships,
+    required this.initialOrganizationId,
     required this.organizationRepository,
   });
 
   final PendingAccount account;
   final AppRole reviewerRole;
 
-  /// Backs the organization dropdown for a System Administrator reviewer —
-  /// see [_needsOrganizationField]. Unused by any other reviewer role, whose
-  /// organization is always their own, fixed server-side.
+  /// The reviewer's own active, review-authorized memberships — the choices
+  /// offered by the non-Admin organization picker. Empty (and unused) for
+  /// an Admin reviewer, who instead sees every organization via
+  /// [OrganizationRepository.watchAll].
+  final List<Membership> reviewerMemberships;
+
+  /// [SessionController.activeOrganizationId] at the moment the dialog was
+  /// opened, used only to pre-select a default in the non-Admin picker —
+  /// the reviewer may still change it to any of [reviewerMemberships].
+  final String? initialOrganizationId;
+
+  /// Backs the organization dropdown for both reviewer shapes: every
+  /// organization for an Admin ([OrganizationRepository.watchAll]), or just
+  /// [reviewerMemberships]'s organizations for anyone else
+  /// ([OrganizationRepository.watchByIds]).
   final OrganizationRepository organizationRepository;
 
   @override
@@ -469,9 +501,20 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
   /// `approvePendingAccount`, never a name/code the reviewer might type.
   /// Null means "no organization yet" (the common case — see this dialog's
   /// class doc comment), not "still loading"; the field defaults to that
-  /// null/unset state even once [_organizations] finishes loading.
+  /// null/unset state even once [_organizations] finishes loading. Unused
+  /// for a non-Admin reviewer — see [_selectedMembershipOrganizationId].
   Organization? _selectedOrganization;
+
+  /// The organization id a non-Admin reviewer has picked from
+  /// [_membershipOrganizations] — defaults to [_RoleAssignmentDialog.
+  /// initialOrganizationId] when that is one of [_RoleAssignmentDialog.
+  /// reviewerMemberships], falling back to the first membership otherwise
+  /// (e.g. the active organization is not one this reviewer can approve
+  /// into, or there was no active organization at all).
+  String? _selectedMembershipOrganizationId;
+
   List<Organization> _organizations = const [];
+  Map<String, Organization> _membershipOrganizations = const {};
   bool _isLoadingOrganizations = true;
   String? _organizationsError;
   final _formKey = GlobalKey<FormState>();
@@ -490,14 +533,20 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
     AppRole.worker => const [],
   };
 
-  /// Only an Admin has no organization of their own to approve into, so
-  /// only they are prompted to choose one.
-  bool get _needsOrganizationField => widget.reviewerRole == AppRole.admin;
+  bool get _isAdminReviewer => widget.reviewerRole == AppRole.admin;
 
   @override
   void initState() {
     super.initState();
-    if (_needsOrganizationField) _loadOrganizations();
+    final initial = widget.initialOrganizationId;
+    if (initial != null &&
+        widget.reviewerMemberships.any((m) => m.organizationId == initial)) {
+      _selectedMembershipOrganizationId = initial;
+    } else if (widget.reviewerMemberships.isNotEmpty) {
+      _selectedMembershipOrganizationId =
+          widget.reviewerMemberships.first.organizationId;
+    }
+    _loadOrganizations();
   }
 
   Future<void> _loadOrganizations() async {
@@ -507,16 +556,32 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
       // dialog — no need to keep it live-streaming for the dialog's short
       // lifetime, matching how OrganizationsScreen's own stream would
       // settle to the same snapshot on first frame.
-      final organizations = await widget.organizationRepository
-          .watchAll()
-          .first;
-      if (!mounted) return;
-      // Defaults to unset (no organization) even when organizations exist —
-      // an Admin approving a Site Manager usually doesn't know which
-      // organization to pick, so the safer default is "let them create
-      // their own" rather than silently pre-selecting the first one in the
-      // list.
-      setState(() => _organizations = organizations);
+      if (_isAdminReviewer) {
+        final organizations = await widget.organizationRepository
+            .watchAll()
+            .first;
+        if (!mounted) return;
+        // Defaults to unset (no organization) even when organizations
+        // exist — an Admin approving a Site Manager usually doesn't know
+        // which organization to pick, so the safer default is "let them
+        // create their own" rather than silently pre-selecting the first
+        // one in the list.
+        setState(() => _organizations = organizations);
+      } else {
+        final organizationIds = widget.reviewerMemberships
+            .map((m) => m.organizationId)
+            .toList(growable: false);
+        final organizations = await widget.organizationRepository
+            .watchByIds(organizationIds)
+            .first;
+        if (!mounted) return;
+        setState(
+          () => _membershipOrganizations = {
+            for (final organization in organizations)
+              organization.id: organization,
+          },
+        );
+      }
     } catch (_) {
       if (!mounted) return;
       setState(
@@ -539,55 +604,75 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(
-              _needsOrganizationField
+              _isAdminReviewer
                   ? 'Choose the role and worker type to assign. If you '
                         'know which organization this person belongs to, '
                         'you may pick it — otherwise leave it unset and '
                         'they will create or be assigned to one after '
                         'being approved.'
-                  : 'Choose the role and worker type to assign. This '
-                        'activates the account in your organization.',
+                  : 'Choose the organization, role and worker type to '
+                        'assign. This activates the account in the '
+                        'organization you pick.',
               style: AppTextStyles.bodyMedium,
             ),
             const SizedBox(height: AppSpacing.md),
-            if (_needsOrganizationField) ...[
-              if (_isLoadingOrganizations)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: AppSpacing.sm),
-                  child: Center(
-                    child: SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
+            if (_isLoadingOrganizations)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: AppSpacing.sm),
+                child: Center(
+                  child: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
                   ),
-                )
-              else if (_organizationsError != null)
-                AuthErrorBanner(message: _organizationsError!)
-              else
-                DropdownButtonFormField<Organization?>(
-                  initialValue: _selectedOrganization,
-                  decoration: const InputDecoration(
-                    labelText: 'Organization (optional)',
-                  ),
-                  items: [
-                    const DropdownMenuItem(
-                      value: null,
-                      child: Text('None yet — they will create their own'),
-                    ),
-                    for (final organization in _organizations)
-                      DropdownMenuItem(
-                        value: organization,
-                        child: Text(
-                          '${organization.name} (${organization.code})',
-                        ),
-                      ),
-                  ],
-                  onChanged: (value) =>
-                      setState(() => _selectedOrganization = value),
                 ),
-              const SizedBox(height: AppSpacing.sm),
-            ],
+              )
+            else if (_organizationsError != null)
+              AuthErrorBanner(message: _organizationsError!)
+            else if (_isAdminReviewer)
+              DropdownButtonFormField<Organization?>(
+                initialValue: _selectedOrganization,
+                decoration: const InputDecoration(
+                  labelText: 'Organization (optional)',
+                ),
+                items: [
+                  const DropdownMenuItem(
+                    value: null,
+                    child: Text('None yet — they will create their own'),
+                  ),
+                  for (final organization in _organizations)
+                    DropdownMenuItem(
+                      value: organization,
+                      child: Text(
+                        '${organization.name} (${organization.code})',
+                      ),
+                    ),
+                ],
+                onChanged: (value) =>
+                    setState(() => _selectedOrganization = value),
+              )
+            else
+              DropdownButtonFormField<String>(
+                initialValue: _selectedMembershipOrganizationId,
+                decoration: const InputDecoration(labelText: 'Organization'),
+                items: [
+                  for (final membership in widget.reviewerMemberships)
+                    DropdownMenuItem(
+                      value: membership.organizationId,
+                      child: Text(
+                        _membershipOrganizations[membership.organizationId]
+                                ?.name ??
+                            membership.organizationId,
+                      ),
+                    ),
+                ],
+                onChanged: (value) => setState(
+                  () => _selectedMembershipOrganizationId = value,
+                ),
+                validator: (value) =>
+                    value == null ? 'Choose an organization.' : null,
+              ),
+            const SizedBox(height: AppSpacing.sm),
             DropdownButtonFormField<AppRole>(
               initialValue: _role,
               decoration: const InputDecoration(labelText: 'Role'),
@@ -625,9 +710,9 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
               _RoleAssignmentSelection(
                 role: _role,
                 workerType: _workerType,
-                organizationId: _needsOrganizationField
+                organizationId: _isAdminReviewer
                     ? _selectedOrganization?.id
-                    : null,
+                    : _selectedMembershipOrganizationId,
               ),
             );
           },
