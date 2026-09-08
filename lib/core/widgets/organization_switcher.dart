@@ -8,19 +8,23 @@ import '../theme/app_colors.dart';
 import '../theme/app_spacing.dart';
 import '../theme/app_text_styles.dart';
 
-/// A compact app-bar control letting a multi-membership user choose which of
-/// their OWN organizations they are currently acting within.
+/// Shows the signed-in user's current organization, and — once they hold
+/// two or more memberships — lets them switch which one is active.
 ///
-/// Renders nothing (a zero-size [SizedBox]) whenever
-/// [SessionController.memberships] holds one or fewer entries — a
-/// single-membership user has nothing to switch between, and an [AppRole]
-/// admin holds no memberships at all (platform-level, org-less by
-/// construction) — matching [OrganizationScopeSelector]'s "renders nothing"
-/// convention for the same reason: a widget that has nothing useful to show
-/// should not claim any layout space or visual attention.
+/// Always shown once there is at least one real membership, INCLUDING the
+/// common single-org case: a member should always be able to see which
+/// organization they are currently working in, not only once there are
+/// several to choose between. Renders nothing (a zero-size [SizedBox]) only
+/// when there are truly zero memberships to show — e.g. an [AppRole.admin],
+/// who holds none at all (platform-level, org-less by construction — see
+/// [OrganizationScopeSelector] for their separate "view any organization"
+/// mechanism), or a brand-new Site Manager who has not created/been placed
+/// into an organization yet.
 ///
-/// This is the self-scoping counterpart to [OrganizationScopeSelector]: that
-/// widget lets an oversight role (System Administrator) view ANY
+/// With exactly one membership the control is a plain, non-interactive
+/// label (nothing to switch to). With two or more it becomes a dropdown —
+/// this is the self-scoping counterpart to [OrganizationScopeSelector]:
+/// that widget lets an oversight role (System Administrator) view ANY
 /// organization; this widget lets an ordinary member choose which of their
 /// OWN memberships is active. Selecting an organization here only changes
 /// [SessionController.activeOrganizationId] — a UI convenience with no
@@ -32,7 +36,7 @@ import '../theme/app_text_styles.dart';
 /// screens scoped to that organization behave oddly (every reviewer/content
 /// action is refused server-side for a suspended membership), and hiding or
 /// disabling the row would make that invisible. Each row instead shows a
-/// clear "Suspended" indicator, and the active-organization button itself
+/// clear "Suspended" indicator, and the active-organization label itself
 /// shows the same indicator when the currently active membership is
 /// suspended — so a suspended organization can be viewed, but never mistaken
 /// for an active one.
@@ -48,7 +52,7 @@ class OrganizationSwitcher extends StatelessWidget {
     final sessionController = context.watch<SessionController>();
     final memberships = sessionController.memberships;
 
-    if (memberships.length <= 1) return const SizedBox.shrink();
+    if (memberships.isEmpty) return const SizedBox.shrink();
 
     final repo =
         repository ?? OrganizationRepository(firestoreService: FirestoreService());
@@ -140,7 +144,7 @@ class _OrganizationSwitcherBodyState
         .where((m) => !_isMissing(m.organizationId))
         .toList(growable: false);
 
-    if (selectableMemberships.length <= 1) return const SizedBox.shrink();
+    if (selectableMemberships.isEmpty) return const SizedBox.shrink();
 
     final active = widget.activeMembership;
     final activeIsMissing =
@@ -151,6 +155,41 @@ class _OrganizationSwitcherBodyState
             ? 'Organization unavailable'
             : _nameFor(active.organizationId));
     final activeSuspended = active?.status == MembershipStatus.suspended;
+
+    final labelContent = Padding(
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.apartment_outlined,
+            size: 18,
+            color: activeSuspended ? AppColors.warning : AppColors.primary,
+          ),
+          const SizedBox(width: AppSpacing.xs),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 180),
+            child: Text(
+              activeLabel,
+              overflow: TextOverflow.ellipsis,
+              style: AppTextStyles.label.copyWith(
+                color: activeSuspended ? AppColors.warning : AppColors.primary,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          if (activeSuspended) ...[
+            const SizedBox(width: AppSpacing.xs),
+            const _SuspendedChip(),
+          ],
+        ],
+      ),
+    );
+
+    // Exactly one real organization: nothing to switch between, so this is
+    // a plain label — still always visible, per this widget's own class
+    // doc comment, just not interactive.
+    if (selectableMemberships.length <= 1) return labelContent;
 
     return PopupMenuButton<String>(
       tooltip: 'Switch organization',
@@ -167,37 +206,12 @@ class _OrganizationSwitcherBodyState
           ),
       ],
       onSelected: widget.onSelected,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.apartment_outlined,
-              size: 18,
-              color: activeSuspended
-                  ? AppColors.warning
-                  : AppColors.primary,
-            ),
-            const SizedBox(width: AppSpacing.xs),
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 140),
-              child: Text(
-                activeLabel,
-                overflow: TextOverflow.ellipsis,
-                style: AppTextStyles.label.copyWith(
-                  color: activeSuspended ? AppColors.warning : AppColors.primary,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-            if (activeSuspended) ...[
-              const SizedBox(width: AppSpacing.xs),
-              const _SuspendedChip(),
-            ],
-            Icon(Icons.arrow_drop_down, size: 18, color: AppColors.primary),
-          ],
-        ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          labelContent,
+          Icon(Icons.arrow_drop_down, size: 18, color: AppColors.primary),
+        ],
       ),
     );
   }

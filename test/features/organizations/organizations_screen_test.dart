@@ -435,24 +435,31 @@ void main() {
       expect(find.widgetWithText(ElevatedButton, 'Projects'), findsOneWidget);
     });
 
-    testWidgets('sees the Safety Meeting Points action for their own '
-        'organization', (tester) async {
-      await seedOrg('alpha');
+    testWidgets(
+      'does NOT see the Safety Meeting Points action — regression test: '
+      'this button used to be shown to a Site Manager, but '
+      'createSafetyMeetingPoint/etc. are admin-ONLY server-side '
+      '(requireAdmin in safety_meeting_point_callable.ts,  '
+      'PROJECT_CONTEXT.md §4), so tapping it only bounced back to the '
+      'dashboard via the router\'s own admin-only gate on that route',
+      (tester) async {
+        await seedOrg('alpha');
 
-      await tester.pumpWidget(
-        wrap(
-          _FakeAdminService(),
-          reviewerRole: AppRole.siteManager,
-          organizationId: 'alpha',
-        ),
-      );
-      await tester.pumpAndSettle();
+        await tester.pumpWidget(
+          wrap(
+            _FakeAdminService(),
+            reviewerRole: AppRole.siteManager,
+            organizationId: 'alpha',
+          ),
+        );
+        await tester.pumpAndSettle();
 
-      expect(
-        find.widgetWithText(OutlinedButton, 'Safety Meeting Points'),
-        findsOneWidget,
-      );
-    });
+        expect(
+          find.widgetWithText(OutlinedButton, 'Safety Meeting Points'),
+          findsNothing,
+        );
+      },
+    );
 
     testWidgets('sees the Daily Safety Meetings action for their own '
         'organization', (tester) async {

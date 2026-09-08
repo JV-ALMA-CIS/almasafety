@@ -218,10 +218,12 @@ class _OrganizationsScreenState extends State<OrganizationsScreen> {
                   AppRoutes.manageProjects,
                   extra: organization,
                 ),
-                onViewSafetyMeetingPoints: () => context.go(
-                  AppRoutes.manageSafetyMeetingPoints,
-                  extra: organization,
-                ),
+                onViewSafetyMeetingPoints: isPlatformAdministrator
+                    ? () => context.go(
+                          AppRoutes.manageSafetyMeetingPoints,
+                          extra: organization,
+                        )
+                    : null,
                 onViewDailySafetyMeetings: () => context.go(
                   AppRoutes.manageDailySafetyMeetings,
                   extra: organization,
@@ -255,11 +257,16 @@ class _OrganizationCard extends StatelessWidget {
 
   /// Opens [AppRoutes.manageSafetyMeetingPoints] for this organization — the
   /// entry point for `createSafetyMeetingPoint`/`updateSafetyMeetingPoint`/
-  /// `activateSafetyMeetingPoint`/`deactivateSafetyMeetingPoint`, authorized
-  /// for both a System Administrator and an Organization Administrator of
-  /// this organization. That screen and its authorization already existed;
-  /// this card is what makes it reachable.
-  final VoidCallback onViewSafetyMeetingPoints;
+  /// `activateSafetyMeetingPoint`/`deactivateSafetyMeetingPoint`. Unlike
+  /// Projects/Daily Safety Meetings, this is `admin`-ONLY server-side (see
+  /// `safety_meeting_point_callable.ts`'s `requireAdmin` and
+  /// `AppRole.canManageSafetyMeetingPointLibrary`, PROJECT_CONTEXT.md §4) —
+  /// deliberately not delegated to a Site Manager, unlike this class's
+  /// former doc comment claimed. Null hides the action entirely for a
+  /// non-Admin, matching [onEdit]'s pattern: without this, a Site Manager
+  /// could tap a button that exists only to be redirected straight back to
+  /// the dashboard by the router's own admin-only gate on this route.
+  final VoidCallback? onViewSafetyMeetingPoints;
 
   /// Opens [AppRoutes.manageDailySafetyMeetings] for this organization — a
   /// read-only review of every foreman's meeting records, distinct from the
@@ -318,17 +325,18 @@ class _OrganizationCard extends StatelessWidget {
                     label: const Text('Projects'),
                   ),
                 ),
-                ConstrainedBox(
-                  constraints: const BoxConstraints(
-                    minHeight: AppSpacing.minTouchTarget,
-                    minWidth: 140,
+                if (onViewSafetyMeetingPoints != null)
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(
+                      minHeight: AppSpacing.minTouchTarget,
+                      minWidth: 140,
+                    ),
+                    child: OutlinedButton.icon(
+                      onPressed: onViewSafetyMeetingPoints,
+                      icon: const Icon(Icons.list_alt_outlined),
+                      label: const Text('Safety Meeting Points'),
+                    ),
                   ),
-                  child: OutlinedButton.icon(
-                    onPressed: onViewSafetyMeetingPoints,
-                    icon: const Icon(Icons.list_alt_outlined),
-                    label: const Text('Safety Meeting Points'),
-                  ),
-                ),
                 ConstrainedBox(
                   constraints: const BoxConstraints(
                     minHeight: AppSpacing.minTouchTarget,

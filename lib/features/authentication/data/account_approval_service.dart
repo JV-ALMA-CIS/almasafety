@@ -237,6 +237,18 @@ class AccountApprovalService {
           'status.',
           cause: e,
         );
+      case 'invalid-argument':
+        // Reachable when a non-Admin reviewer's organizationId could not be
+        // resolved (e.g. they have no active organization yet) — the UI
+        // should catch this earlier (see PendingApprovalsScreen._approve),
+        // but this keeps a direct callable failure legible rather than
+        // falling into the opaque default case below.
+        return DataException(
+          e.message ??
+              'That request was missing required information. Please try '
+                  'again.',
+          cause: e,
+        );
       default:
         return DataException(
           'Something went wrong. Please try again.',

@@ -39,16 +39,18 @@ class _FakeSession extends SessionController {
   @override
   UserProfile? get profile => _profile;
 
+  // Deliberately empty even when a membership exists: AppShell's header
+  // mounts a real, uninjectable OrganizationSwitcher whenever `memberships`
+  // is non-empty (it resolves organization names via a real
+  // OrganizationRepository talking to live Firebase), and its app-bar
+  // action mounts a real _NotificationBellAction whenever
+  // activeOrganizationId is non-null — this test file has no way to fake
+  // either and does not need to: its only concern is nav-SECTION
+  // visibility, which is driven by activeMembership alone (overridden
+  // directly below, independent of `memberships`/`activeOrganizationId`).
   @override
-  List<Membership> get memberships =>
-      _membership == null ? const [] : [_membership];
+  List<Membership> get memberships => const [];
 
-  // Deliberately null even when a membership exists: AppShell mounts a
-  // real, uninjectable _NotificationBellAction (talking to live Firebase)
-  // whenever activeOrganizationId is non-null, which this test file has no
-  // way to fake and does not need — its only concern is nav-section
-  // visibility, which is driven by activeMembership/memberships below, not
-  // by the organization id itself.
   @override
   String? get activeOrganizationId => null;
 

@@ -129,6 +129,22 @@ class _PendingApprovalsScreenState extends State<PendingApprovalsScreen> {
         ? selection.organizationId
         : sessionController.activeOrganizationId;
 
+    // A non-Admin reviewer with no active organization (no memberships at
+    // all yet, or the membership stream hasn't resolved) cannot approve
+    // anyone — the server refuses with an opaque invalid-argument that
+    // would otherwise surface as a generic "Something went wrong." Catching
+    // it here gives an actionable message instead of a failed round-trip.
+    if (reviewerRole != AppRole.admin && organizationId == null) {
+      if (!mounted) return;
+      setState(
+        () => _errorMessage =
+            'You are not currently assigned to an organization, so you '
+            'cannot approve accounts yet. Create or select an organization '
+            'first.',
+      );
+      return;
+    }
+
     await _decide(
       account,
       action: () => _service.approve(
@@ -185,9 +201,18 @@ class _PendingApprovalsScreenState extends State<PendingApprovalsScreen> {
   Widget build(BuildContext context) {
     final sessionController = context.watch<SessionController>();
     final profile = sessionController.profile;
+    // A non-Admin's review authority now lives on their active Membership,
+    // not on the (now admin-only) profile.platformRole — except for the
+    // one transient case of a Site Manager just approved with no
+    // organization yet, signalled instead by profile.platformRole ==
+    // siteManager (see account_approval.ts's approveAccount). Without this
+    // fallback, that Site Manager is let in by the router (which already
+    // accounts for it) only to hit this screen's own "you do not have
+    // permission" message immediately afterward.
     final canReview = profile?.isPlatformAdministrator == true ||
         (sessionController.activeMembership?.role.canReviewPendingAccounts ??
-            false);
+            false) ||
+        profile?.platformRole == AppRole.siteManager;
 
     if (!canReview) {
       // Defence in depth: the router should never route an unauthorized

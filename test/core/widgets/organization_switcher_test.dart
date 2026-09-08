@@ -125,18 +125,24 @@ void main() {
     expect(find.byType(PopupMenuButton<String>), findsNothing);
   });
 
-  testWidgets('renders nothing for exactly one membership', (tester) async {
-    final firestore = FakeFirebaseFirestore();
-    await seedOrg(firestore, 'org-alpha', 'Alpha Org');
-    final repository =
-        OrganizationRepository(firestoreService: FirestoreService(firestore: firestore));
-    final session = _FakeSession(memberships: [membership('org-alpha')]);
+  testWidgets(
+    'shows a plain, non-interactive label (not a dropdown) for exactly '
+    'one membership — a member should always see which organization '
+    'they are in, even with only one to choose from',
+    (tester) async {
+      final firestore = FakeFirebaseFirestore();
+      await seedOrg(firestore, 'org-alpha', 'Alpha Org');
+      final repository =
+          OrganizationRepository(firestoreService: FirestoreService(firestore: firestore));
+      final session = _FakeSession(memberships: [membership('org-alpha')]);
 
-    await tester.pumpWidget(wrap(session, repository));
-    await tester.pumpAndSettle();
+      await tester.pumpWidget(wrap(session, repository));
+      await tester.pumpAndSettle();
 
-    expect(find.byType(PopupMenuButton<String>), findsNothing);
-  });
+      expect(find.byType(PopupMenuButton<String>), findsNothing);
+      expect(find.text('Alpha Org'), findsOneWidget);
+    },
+  );
 
   testWidgets(
     'renders and lists organization names for 2+ memberships, tapping '
@@ -222,12 +228,11 @@ void main() {
       await tester.pumpAndSettle();
 
       // Only one REAL organization to choose from now, so the switcher
-      // collapses to "nothing to switch between" (a zero-size widget, same
-      // as the exactly-one-membership case) — it never renders a plain
-      // label in this mode, so there is nothing to assert beyond "the
-      // dangling id never appears anywhere".
+      // collapses to a plain label (same as the exactly-one-membership
+      // case) rather than a dropdown — the dangling one is simply excluded.
       expect(find.byType(PopupMenuButton<String>), findsNothing);
       expect(find.text('org-deleted'), findsNothing);
+      expect(find.text('Alpha Org'), findsOneWidget);
     },
   );
 

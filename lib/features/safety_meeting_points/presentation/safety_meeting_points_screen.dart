@@ -19,13 +19,16 @@ import '../domain/safety_meeting_point.dart';
 /// one.
 ///
 /// Follows [SafetyLearningLibraryScreen]'s pattern exactly, including its
-/// `canManage` gate — a System Administrator OR an Organization Administrator
-/// of the matching organization, which is precisely what
+/// `canManage` gate — [AppRole.admin] ONLY, matching
+/// `AppRole.canManageSafetyMeetingPointLibrary`. This company-wide library
+/// is deliberately NOT delegated to a Site Manager (PROJECT_CONTEXT.md §4,
+/// §12), which is precisely what
 /// `createSafetyMeetingPoint`/`updateSafetyMeetingPoint`/
 /// `activateSafetyMeetingPoint`/`deactivateSafetyMeetingPoint` authorize
-/// server-side via `requireOrganizationScopedAdmin`. There is no delete,
-/// matching every other record type here — an inactive meeting point is
-/// retained so historical references keep referring to something real.
+/// server-side via `requireAdmin` in `safety_meeting_point_callable.ts`.
+/// There is no delete, matching every other record type here — an inactive
+/// meeting point is retained so historical references keep referring to
+/// something real.
 ///
 /// Resolves its organization from the signed-in user's own profile, exactly
 /// like [SafetyLearningLibraryScreen] — see [organizationId] there for why.

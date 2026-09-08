@@ -91,20 +91,29 @@ class _FakeApprovalService extends AccountApprovalService {
 /// A session controller reporting a fixed profile/membership, so the
 /// screen's own capability check can be exercised without Firebase.
 class _FakeSession extends SessionController {
-  _FakeSession({required AppRole? role})
+  _FakeSession({required AppRole? role, bool noActiveOrganization = false})
     : _profile = UserProfile(
         uid: 'approver-uid',
         name: 'Approver',
         email: 'approver@example.com',
         accountStatus: AccountStatus.active,
         // platformRole is admin-only now; every other role lives on the
-        // active Membership instead.
-        platformRole: role == AppRole.admin ? role : null,
+        // active Membership instead — except a Site Manager approved with
+        // no organization yet, signalled by this transient marker (see
+        // account_approval.ts's approveAccount), which
+        // [noActiveOrganization] simulates for a siteManager role.
+        platformRole: role == AppRole.admin
+            ? role
+            : (noActiveOrganization && role == AppRole.siteManager
+                ? AppRole.siteManager
+                : null),
       ),
       // An Admin has no organization of its own — matching the real
       // bootstrap shape, and exercising that the screen does not assume
-      // every reviewer has one.
-      _membership = role == null || role == AppRole.admin
+      // every reviewer has one. [noActiveOrganization] additionally forces
+      // this for a non-Admin role, to exercise the "reviewer has a role
+      // but genuinely no organization to act in yet" case.
+      _membership = role == null || role == AppRole.admin || noActiveOrganization
           ? null
           : Membership(
               organizationId: 'jv-alma-cis',
@@ -155,9 +164,13 @@ void main() {
   Widget wrap(
     AccountApprovalService service, {
     AppRole? reviewerRole = AppRole.siteManager,
+    bool noActiveOrganization = false,
   }) {
     return ChangeNotifierProvider<SessionController>(
-      create: (_) => _FakeSession(role: reviewerRole),
+      create: (_) => _FakeSession(
+        role: reviewerRole,
+        noActiveOrganization: noActiveOrganization,
+      ),
       child: MaterialApp(
         home: Scaffold(
           body: PendingApprovalsScreen(
@@ -190,6 +203,39 @@ void main() {
     await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').last);
     await tester.pumpAndSettle();
   }
+
+  group('PendingApprovalsScreen (no active organization)', () {
+    testWidgets(
+      'a Site Manager with no active organization yet sees a clear '
+      'message instead of a failed round-trip when attempting to '
+      'approve — regression test for organizationId silently omitted '
+      'from the request, surfacing only as a generic server error',
+      (tester) async {
+        final service = _FakeApprovalService(accounts: [account('alice')]);
+
+        await tester.pumpWidget(
+          wrap(service, noActiveOrganization: true),
+        );
+        await tester.pumpAndSettle();
+
+        // The transient-marker fallback lets them see the queue at all —
+        // this is not the "no permission" case.
+        expect(
+          find.text('You do not have permission to review accounts.'),
+          findsNothing,
+        );
+        expect(find.text('Pending Approvals'), findsOneWidget);
+
+        await approveViaDialog(tester);
+
+        expect(
+          find.textContaining('not currently assigned to an organization'),
+          findsOneWidget,
+        );
+        expect(service.approvedCalls, isEmpty);
+      },
+    );
+  });
 
   group('PendingApprovalsScreen (approver)', () {
     testWidgets('lists each pending account with the review details', (
