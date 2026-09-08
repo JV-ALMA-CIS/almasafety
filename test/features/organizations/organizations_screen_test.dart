@@ -24,7 +24,7 @@ class _FakeAdminService extends OrganizationAdminService {
   AppException? updateError;
 
   final List<({String name, String code, OrganizationRecordStatus status})>
-      createCalls = [];
+  createCalls = [];
   final List<({String id, String? name, String? code})> updateCalls = [];
 
   @override
@@ -71,7 +71,8 @@ class _FakeSession extends SessionController {
              ? role
              : (transientSiteManagerMarker ? AppRole.siteManager : null),
        ),
-       _membership = role == null || role == AppRole.admin || organizationId == null
+       _membership =
+           role == null || role == AppRole.admin || organizationId == null
            ? null
            : Membership(
                organizationId: organizationId,
@@ -105,6 +106,14 @@ class _FakeSession extends SessionController {
     if (id == null) return null;
     for (final membership in memberships) {
       if (membership.organizationId == id) return membership;
+    }
+    return null;
+  }
+
+  @override
+  Membership? membershipFor(String organizationId) {
+    for (final membership in memberships) {
+      if (membership.organizationId == organizationId) return membership;
     }
     return null;
   }
@@ -199,7 +208,10 @@ void main() {
       expect(service.createCalls, hasLength(1));
       expect(service.createCalls.single.name, 'JV Alma CIS');
       expect(service.createCalls.single.code, 'JV-ALMA-CIS');
-      expect(service.createCalls.single.status, OrganizationRecordStatus.active);
+      expect(
+        service.createCalls.single.status,
+        OrganizationRecordStatus.active,
+      );
     });
 
     testWidgets('cannot submit the create form without a name or code', (
@@ -299,9 +311,7 @@ void main() {
   });
 
   group('OrganizationsScreen (Site Manager)', () {
-    testWidgets('sees only their own organization, not others', (
-      tester,
-    ) async {
+    testWidgets('sees only their own organization, not others', (tester) async {
       await seedOrg('alpha');
       await seedOrg('beta');
 
@@ -395,13 +405,17 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        expect(find.text('You do not have permission to manage organizations.'),
-            findsNothing);
+        expect(
+          find.text('You do not have permission to manage organizations.'),
+          findsNothing,
+        );
         expect(find.byTooltip('Add organization'), findsOneWidget);
       },
     );
 
-    testWidgets('cannot see the Edit action on their own organization', (
+    testWidgets('can see the Edit action on their own organization — '
+        'updateOrganization uses requireOrganizationScopedManager '
+        'server-side (admin OR siteManager of the org), not admin-only', (
       tester,
     ) async {
       await seedOrg('alpha');
@@ -415,7 +429,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.widgetWithText(OutlinedButton, 'Edit'), findsNothing);
+      expect(find.widgetWithText(OutlinedButton, 'Edit'), findsOneWidget);
     });
 
     testWidgets('can still navigate to Projects for their own organization', (

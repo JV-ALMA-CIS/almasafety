@@ -17,14 +17,14 @@ import '../domain/organization_record_status.dart';
 import '../domain/project.dart';
 import '../domain/site.dart';
 
-/// Lists the sites belonging to one project. A System Administrator may
-/// create or edit one; an [AppRole.siteManager] of the
-/// matching organization may view, navigate to Activities, and manage each
-/// site's assigned workers — `createSite`/`updateSite` have no Organization
-/// Administrator authorization server-side, so Create/Edit stay hidden for
-/// that role, matching [ProjectsScreen]'s own split. Worker assignment
-/// (`assignWorkerToSite`/`removeWorkerFromSite`) IS authorized for both
-/// roles — see [AppRoutes.manageSiteWorkers].
+/// Lists the sites belonging to one project. A System Administrator (any
+/// organization) or an [AppRole.siteManager] of THIS organization may
+/// create or edit sites — `createSite`/`updateSite` both use
+/// `requireOrganizationScopedManager` server-side
+/// (`organization_callable.ts`), so Create/Edit are gated on [canManage]
+/// here exactly like [ProjectsScreen], NOT on [isPlatformAdministrator]
+/// alone. Worker assignment (`assignWorkerToSite`/`removeWorkerFromSite`)
+/// uses the same authorization — see [AppRoutes.manageSiteWorkers].
 ///
 /// Follows [ProjectsScreen]'s pattern exactly — see [OrganizationsScreen]'s
 /// doc comment for the three-places-authorization-is-checked rationale.
@@ -55,7 +55,8 @@ class SitesScreen extends StatefulWidget {
 }
 
 class _SitesScreenState extends State<SitesScreen> {
-  late final SiteRepository _repository = widget.repository ??
+  late final SiteRepository _repository =
+      widget.repository ??
       SiteRepository(
         firestoreService: FirestoreService(),
         organizationId: widget.organization.id,
@@ -72,15 +73,17 @@ class _SitesScreenState extends State<SitesScreen> {
       builder: (_) => const _SiteFormDialog(),
     );
     if (result == null || !mounted) return;
-    await _save(() => _adminService.createSite(
-      organizationId: widget.organization.id,
-      projectId: widget.project.id,
-      name: result.name,
-      code: result.code,
-      location: result.location,
-      description: result.description,
-      status: result.status,
-    ));
+    await _save(
+      () => _adminService.createSite(
+        organizationId: widget.organization.id,
+        projectId: widget.project.id,
+        name: result.name,
+        code: result.code,
+        location: result.location,
+        description: result.description,
+        status: result.status,
+      ),
+    );
   }
 
   Future<void> _openEditDialog(Site site) async {
@@ -89,15 +92,17 @@ class _SitesScreenState extends State<SitesScreen> {
       builder: (_) => _SiteFormDialog(existing: site),
     );
     if (result == null || !mounted) return;
-    await _save(() => _adminService.updateSite(
-      widget.organization.id,
-      site.id,
-      name: result.name,
-      code: result.code,
-      location: result.location,
-      description: result.description,
-      status: result.status,
-    ));
+    await _save(
+      () => _adminService.updateSite(
+        widget.organization.id,
+        site.id,
+        name: result.name,
+        code: result.code,
+        location: result.location,
+        description: result.description,
+        status: result.status,
+      ),
+    );
   }
 
   Future<void> _save(Future<void> Function() action) async {
@@ -122,8 +127,11 @@ class _SitesScreenState extends State<SitesScreen> {
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
     // Checked against membershipFor(widget.organization.id) SPECIFICALLY,
     // not activeMembership — see ProjectsScreen's matching comment for why.
-    final canManage = isPlatformAdministrator ||
-        sessionController.membershipFor(widget.organization.id)?.role
+    final canManage =
+        isPlatformAdministrator ||
+        sessionController
+                .membershipFor(widget.organization.id)
+                ?.role
                 .canManageOrgContent ==
             true;
 
@@ -167,7 +175,7 @@ class _SitesScreenState extends State<SitesScreen> {
                     ],
                   ),
                 ),
-                if (isPlatformAdministrator)
+                if (canManage)
                   IconButton(
                     tooltip: 'Add site',
                     onPressed: _isSaving ? null : _openCreateDialog,
@@ -197,9 +205,7 @@ class _SitesScreenState extends State<SitesScreen> {
             for (final site in sites) ...[
               _SiteCard(
                 site: site,
-                onEdit: isPlatformAdministrator
-                    ? () => _openEditDialog(site)
-                    : null,
+                onEdit: canManage ? () => _openEditDialog(site) : null,
                 onViewActivities: () => context.go(
                   AppRoutes.manageActivities,
                   extra: (
@@ -351,14 +357,18 @@ class _SiteFormDialog extends StatefulWidget {
 
 class _SiteFormDialogState extends State<_SiteFormDialog> {
   final _formKey = GlobalKey<FormState>();
-  late final _nameController =
-      TextEditingController(text: widget.existing?.name);
-  late final _codeController =
-      TextEditingController(text: widget.existing?.code);
-  late final _locationController =
-      TextEditingController(text: widget.existing?.location);
-  late final _descriptionController =
-      TextEditingController(text: widget.existing?.description);
+  late final _nameController = TextEditingController(
+    text: widget.existing?.name,
+  );
+  late final _codeController = TextEditingController(
+    text: widget.existing?.code,
+  );
+  late final _locationController = TextEditingController(
+    text: widget.existing?.location,
+  );
+  late final _descriptionController = TextEditingController(
+    text: widget.existing?.description,
+  );
   late OrganizationRecordStatus _status =
       widget.existing?.status ?? OrganizationRecordStatus.active;
 

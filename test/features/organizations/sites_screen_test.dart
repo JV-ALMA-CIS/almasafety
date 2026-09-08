@@ -23,7 +23,7 @@ class _FakeAdminService extends OrganizationAdminService {
   AppException? createError;
 
   final List<({String organizationId, String projectId, String name})>
-      createCalls = [];
+  createCalls = [];
 
   @override
   Future<String> createSite({
@@ -37,9 +37,11 @@ class _FakeAdminService extends OrganizationAdminService {
   }) async {
     final error = createError;
     if (error != null) throw error;
-    createCalls.add(
-      (organizationId: organizationId, projectId: projectId, name: name),
-    );
+    createCalls.add((
+      organizationId: organizationId,
+      projectId: projectId,
+      name: name,
+    ));
     return 'new-site-id';
   }
 }
@@ -53,7 +55,8 @@ class _FakeSession extends SessionController {
         accountStatus: AccountStatus.active,
         platformRole: role == AppRole.admin ? role : null,
       ),
-      _membership = role == null || role == AppRole.admin || organizationId == null
+      _membership =
+          role == null || role == AppRole.admin || organizationId == null
           ? null
           : Membership(
               organizationId: organizationId,
@@ -237,9 +240,7 @@ void main() {
       expect(find.text('Site s1'), findsOneWidget);
     });
 
-    testWidgets('cannot manage another organization\'s sites', (
-      tester,
-    ) async {
+    testWidgets('cannot manage another organization\'s sites', (tester) async {
       await seedSite('org-alpha', 's1', projectId: 'project-1');
 
       await tester.pumpWidget(
@@ -258,7 +259,9 @@ void main() {
       expect(find.text('Site s1'), findsNothing);
     });
 
-    testWidgets('cannot see the Add site action', (tester) async {
+    testWidgets('can see the Add site action for their own organization — '
+        'createSite uses requireOrganizationScopedManager server-side '
+        '(admin OR siteManager of the org), not admin-only', (tester) async {
       await tester.pumpWidget(
         wrap(
           _FakeAdminService(),
@@ -268,12 +271,12 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.byTooltip('Add site'), findsNothing);
+      expect(find.byTooltip('Add site'), findsOneWidget);
     });
 
-    testWidgets('cannot see the Edit action, but sees Workers', (
-      tester,
-    ) async {
+    testWidgets('can see the Edit action for their own organization, and sees '
+        'Workers — updateSite uses the same requireOrganizationScopedManager '
+        'authorization as createSite', (tester) async {
       await seedSite('org-alpha', 's1', projectId: 'project-1');
 
       await tester.pumpWidget(
@@ -285,7 +288,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.widgetWithText(OutlinedButton, 'Edit'), findsNothing);
+      expect(find.widgetWithText(OutlinedButton, 'Edit'), findsOneWidget);
       expect(find.widgetWithText(ElevatedButton, 'Workers'), findsOneWidget);
     });
   });

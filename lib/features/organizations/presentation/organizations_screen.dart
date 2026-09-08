@@ -15,16 +15,21 @@ import '../data/organization_repository.dart';
 import '../domain/organization.dart';
 import '../domain/organization_record_status.dart';
 
-/// Lists organizations and lets a System Administrator create or edit one.
+/// Lists organizations and lets an authorized reviewer create or edit one.
 ///
 /// Reachable by [UserProfile.isPlatformAdministrator] (every organization,
-/// full create/edit — the same authorization [AdministrationScreen]
-/// requires) or an [AppRole.siteManager] (their own
-/// organization only, view/navigate to Projects/Sites only — Create/Edit
-/// stay hidden, since `createOrganization`/`updateOrganization` have no
-/// Organization Administrator authorization server-side). That check is
-/// duplicated on purpose, each instance doing a different job, exactly as
-/// documented on [OrganizationUsersScreen]:
+/// full create/edit) or an [AppRole.siteManager] (their own
+/// organization(s) only). Create and Edit are BOTH available to a Site
+/// Manager, not just Create: `createOrganization` allows `admin`/
+/// `siteManager` outright, and `updateOrganization` uses
+/// `requireOrganizationScopedManager` (`organization_callable.ts`) — the
+/// same authorization `createProject`/`createSite` use — so a Site Manager
+/// may edit an organization they manage exactly as they may edit its
+/// projects and sites. Edit is gated per-organization via
+/// [SessionController.membershipFor], not a blanket "is this caller a Site
+/// Manager at all" check, matching [ProjectsScreen]/[SitesScreen]. That
+/// check is duplicated on purpose, each instance doing a different job,
+/// exactly as documented on [OrganizationUsersScreen]:
 ///
 ///  - the router redirects unauthorized users away;
 ///  - this widget renders nothing useful without the authorization, and
@@ -38,11 +43,7 @@ import '../domain/organization_record_status.dart';
 /// [OrganizationRepository]; writes go through [OrganizationAdminService],
 /// which the server re-validates regardless of what this screen sent.
 class OrganizationsScreen extends StatefulWidget {
-  const OrganizationsScreen({
-    super.key,
-    this.repository,
-    this.adminService,
-  });
+  const OrganizationsScreen({super.key, this.repository, this.adminService});
 
   /// Injected in tests. Production builds pass nothing and the state
   /// constructs the real dependencies.
@@ -54,7 +55,8 @@ class OrganizationsScreen extends StatefulWidget {
 }
 
 class _OrganizationsScreenState extends State<OrganizationsScreen> {
-  late final OrganizationRepository _repository = widget.repository ??
+  late final OrganizationRepository _repository =
+      widget.repository ??
       OrganizationRepository(firestoreService: FirestoreService());
   late final OrganizationAdminService _adminService =
       widget.adminService ?? OrganizationAdminService();
@@ -68,11 +70,13 @@ class _OrganizationsScreenState extends State<OrganizationsScreen> {
       builder: (_) => const _OrganizationFormDialog(),
     );
     if (result == null || !mounted) return;
-    await _save(() => _adminService.createOrganization(
-      name: result.name,
-      code: result.code,
-      status: result.status,
-    ));
+    await _save(
+      () => _adminService.createOrganization(
+        name: result.name,
+        code: result.code,
+        status: result.status,
+      ),
+    );
   }
 
   Future<void> _openEditDialog(Organization organization) async {
@@ -81,12 +85,14 @@ class _OrganizationsScreenState extends State<OrganizationsScreen> {
       builder: (_) => _OrganizationFormDialog(existing: organization),
     );
     if (result == null || !mounted) return;
-    await _save(() => _adminService.updateOrganization(
-      organization.id,
-      name: result.name,
-      code: result.code,
-      status: result.status,
-    ));
+    await _save(
+      () => _adminService.updateOrganization(
+        organization.id,
+        name: result.name,
+        code: result.code,
+        status: result.status,
+      ),
+    );
   }
 
   Future<void> _save(Future<void> Function() action) async {
@@ -121,7 +127,7 @@ class _OrganizationsScreenState extends State<OrganizationsScreen> {
     // give them their first membership.
     final isSiteManager =
         sessionController.activeMembership?.role == AppRole.siteManager ||
-            profile?.platformRole == AppRole.siteManager;
+        profile?.platformRole == AppRole.siteManager;
     final canManage = isPlatformAdministrator || isSiteManager;
 
     if (!canManage) {
@@ -173,7 +179,10 @@ class _OrganizationsScreenState extends State<OrganizationsScreen> {
             Row(
               children: [
                 Expanded(
-                  child: Text('Organizations', style: AppTextStyles.headlineMedium),
+                  child: Text(
+                    'Organizations',
+                    style: AppTextStyles.headlineMedium,
+                  ),
                 ),
                 // A Site Manager may also create an organization —
                 // PROJECT_CONTEXT.md §12: "A Site Manager/Site
@@ -211,13 +220,16 @@ class _OrganizationsScreenState extends State<OrganizationsScreen> {
             for (final organization in organizations) ...[
               _OrganizationCard(
                 organization: organization,
-                onEdit: isPlatformAdministrator
+                onEdit:
+                    isPlatformAdministrator ||
+                        sessionController
+                                .membershipFor(organization.id)
+                                ?.role ==
+                            AppRole.siteManager
                     ? () => _openEditDialog(organization)
                     : null,
-                onViewProjects: () => context.go(
-                  AppRoutes.manageProjects,
-                  extra: organization,
-                ),
+                onViewProjects: () =>
+                    context.go(AppRoutes.manageProjects, extra: organization),
                 onViewSafetyMeetingPoints: () => context.go(
                   AppRoutes.manageSafetyMeetingPoints,
                   extra: organization,
@@ -380,10 +392,12 @@ class _OrganizationFormDialog extends StatefulWidget {
 
 class _OrganizationFormDialogState extends State<_OrganizationFormDialog> {
   final _formKey = GlobalKey<FormState>();
-  late final _nameController =
-      TextEditingController(text: widget.existing?.name);
-  late final _codeController =
-      TextEditingController(text: widget.existing?.code);
+  late final _nameController = TextEditingController(
+    text: widget.existing?.name,
+  );
+  late final _codeController = TextEditingController(
+    text: widget.existing?.code,
+  );
   late OrganizationRecordStatus _status =
       widget.existing?.status ?? OrganizationRecordStatus.active;
 

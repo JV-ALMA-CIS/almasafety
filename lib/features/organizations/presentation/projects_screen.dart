@@ -17,11 +17,13 @@ import '../domain/organization_record_status.dart';
 import '../domain/project.dart';
 
 /// Lists the projects belonging to one organization. A System Administrator
-/// may create or edit one; an [AppRole.siteManager] of the
-/// matching organization may view and navigate to Sites only —
-/// `createProject`/`updateProject` have no Organization Administrator
-/// authorization server-side, so Create/Edit stay hidden for that role,
-/// matching [OrganizationsScreen]'s own split.
+/// (any organization) or an [AppRole.siteManager] of THIS organization may
+/// create or edit projects — `createProject`/`updateProject` both use
+/// `requireOrganizationScopedManager` server-side
+/// (`organization_callable.ts`), the same authorization
+/// `createSite`/`updateSite` and `createSafetyMeetingPoint` already use, so
+/// Create/Edit are gated on [canManage] here exactly like those screens,
+/// NOT on [isPlatformAdministrator] alone.
 ///
 /// Follows [OrganizationsScreen]'s pattern exactly — see that screen's doc
 /// comment for the three-places-authorization-is-checked rationale, which
@@ -49,7 +51,8 @@ class ProjectsScreen extends StatefulWidget {
 }
 
 class _ProjectsScreenState extends State<ProjectsScreen> {
-  late final ProjectRepository _repository = widget.repository ??
+  late final ProjectRepository _repository =
+      widget.repository ??
       ProjectRepository(
         firestoreService: FirestoreService(),
         organizationId: widget.organization.id,
@@ -66,15 +69,17 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
       builder: (_) => const _ProjectFormDialog(),
     );
     if (result == null || !mounted) return;
-    await _save(() => _adminService.createProject(
-      organizationId: widget.organization.id,
-      name: result.name,
-      code: result.code,
-      description: result.description,
-      status: result.status,
-      startDate: result.startDate,
-      endDate: result.endDate,
-    ));
+    await _save(
+      () => _adminService.createProject(
+        organizationId: widget.organization.id,
+        name: result.name,
+        code: result.code,
+        description: result.description,
+        status: result.status,
+        startDate: result.startDate,
+        endDate: result.endDate,
+      ),
+    );
   }
 
   Future<void> _openEditDialog(Project project) async {
@@ -83,16 +88,18 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
       builder: (_) => _ProjectFormDialog(existing: project),
     );
     if (result == null || !mounted) return;
-    await _save(() => _adminService.updateProject(
-      widget.organization.id,
-      project.id,
-      name: result.name,
-      code: result.code,
-      description: result.description,
-      status: result.status,
-      startDate: result.startDate,
-      endDate: result.endDate,
-    ));
+    await _save(
+      () => _adminService.updateProject(
+        widget.organization.id,
+        project.id,
+        name: result.name,
+        code: result.code,
+        description: result.description,
+        status: result.status,
+        startDate: result.startDate,
+        endDate: result.endDate,
+      ),
+    );
   }
 
   Future<void> _save(Future<void> Function() action) async {
@@ -121,8 +128,11 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
     // happens to be "active" in the switcher), so a Site Manager of
     // several organizations must not be refused just because the one they
     // tapped into isn't the currently-active one.
-    final canManage = isPlatformAdministrator ||
-        sessionController.membershipFor(widget.organization.id)?.role
+    final canManage =
+        isPlatformAdministrator ||
+        sessionController
+                .membershipFor(widget.organization.id)
+                ?.role
                 .canManageOrgContent ==
             true;
 
@@ -166,7 +176,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                     ],
                   ),
                 ),
-                if (isPlatformAdministrator)
+                if (canManage)
                   IconButton(
                     tooltip: 'Add project',
                     onPressed: _isSaving ? null : _openCreateDialog,
@@ -196,9 +206,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
             for (final project in projects) ...[
               _ProjectCard(
                 project: project,
-                onEdit: isPlatformAdministrator
-                    ? () => _openEditDialog(project)
-                    : null,
+                onEdit: canManage ? () => _openEditDialog(project) : null,
                 onViewSites: () => context.go(
                   AppRoutes.manageSites,
                   extra: (organization: widget.organization, project: project),
@@ -317,12 +325,15 @@ class _ProjectFormDialog extends StatefulWidget {
 
 class _ProjectFormDialogState extends State<_ProjectFormDialog> {
   final _formKey = GlobalKey<FormState>();
-  late final _nameController =
-      TextEditingController(text: widget.existing?.name);
-  late final _codeController =
-      TextEditingController(text: widget.existing?.code);
-  late final _descriptionController =
-      TextEditingController(text: widget.existing?.description);
+  late final _nameController = TextEditingController(
+    text: widget.existing?.name,
+  );
+  late final _codeController = TextEditingController(
+    text: widget.existing?.code,
+  );
+  late final _descriptionController = TextEditingController(
+    text: widget.existing?.description,
+  );
   late OrganizationRecordStatus _status =
       widget.existing?.status ?? OrganizationRecordStatus.active;
 
