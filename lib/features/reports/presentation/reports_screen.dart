@@ -87,7 +87,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
     if (existing != null && existing.organizationId == organizationId) {
       return existing;
     }
-    final created = widget.repository ??
+    final created =
+        widget.repository ??
         ReportsRepository(
           firestoreService: FirestoreService(),
           organizationId: organizationId,
@@ -177,7 +178,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final sessionController = context.watch<SessionController>();
     final profile = sessionController.profile;
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
-    final canManage = isPlatformAdministrator ||
+    final canManage =
+        isPlatformAdministrator ||
         (sessionController.activeMembership?.role.canReviewPendingAccounts ??
             false);
     final organizationId = isPlatformAdministrator
@@ -189,8 +191,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
         child: Padding(
           padding: EdgeInsets.all(AppSpacing.lg),
           child: Text(
-            'Reports are available to Organization Administrators, Safety '
-            'Managers and Site Superintendents.',
+            'Reports are available to Admins and Site Managers.',
             style: AppTextStyles.bodyMedium,
             textAlign: TextAlign.center,
           ),
@@ -266,7 +267,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
                     initialValue: _projectId,
                     decoration: const InputDecoration(hintText: 'All projects'),
                     items: [
-                      const DropdownMenuItem(value: null, child: Text('All projects')),
+                      const DropdownMenuItem(
+                        value: null,
+                        child: Text('All projects'),
+                      ),
                       for (final project in projects)
                         DropdownMenuItem(
                           value: project.id,
@@ -287,9 +291,15 @@ class _ReportsScreenState extends State<ReportsScreen> {
                     initialValue: _siteId,
                     decoration: const InputDecoration(hintText: 'All sites'),
                     items: [
-                      const DropdownMenuItem(value: null, child: Text('All sites')),
+                      const DropdownMenuItem(
+                        value: null,
+                        child: Text('All sites'),
+                      ),
                       for (final site in visibleSites)
-                        DropdownMenuItem(value: site.id, child: Text(site.name)),
+                        DropdownMenuItem(
+                          value: site.id,
+                          child: Text(site.name),
+                        ),
                     ],
                     onChanged: (value) => setState(() => _siteId = value),
                   ),
@@ -325,7 +335,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
                     minHeight: AppSpacing.minTouchTarget,
                   ),
                   child: ElevatedButton.icon(
-                    onPressed: _isLoading ? null : () => _generate(organizationId),
+                    onPressed: _isLoading
+                        ? null
+                        : () => _generate(organizationId),
                     icon: const Icon(Icons.summarize_outlined),
                     label: Text(_isLoading ? 'Generating…' : 'Generate Report'),
                   ),
@@ -608,10 +620,7 @@ class _CorrectiveActionsReportView extends StatelessWidget {
             ),
             const SizedBox(width: AppSpacing.sm),
             Expanded(
-              child: _SummaryCard(
-                label: 'Completed',
-                value: '$completedCount',
-              ),
+              child: _SummaryCard(label: 'Completed', value: '$completedCount'),
             ),
           ],
         ),
@@ -681,10 +690,7 @@ class _SafetyLearningReportView extends StatelessWidget {
             ),
             const SizedBox(width: AppSpacing.sm),
             Expanded(
-              child: _SummaryCard(
-                label: 'Completed',
-                value: '$totalCompleted',
-              ),
+              child: _SummaryCard(label: 'Completed', value: '$totalCompleted'),
             ),
             const SizedBox(width: AppSpacing.sm),
             Expanded(

@@ -19,9 +19,7 @@ import '../features/organizations/domain/organization.dart';
 import '../features/organizations/domain/project.dart';
 import '../features/organizations/domain/site.dart';
 import '../features/organizations/presentation/my_workers_screen.dart';
-import '../features/organizations/presentation/organizations_screen.dart';
 import '../features/organizations/presentation/projects_router_screen.dart';
-import '../features/organizations/presentation/projects_screen.dart';
 import '../features/organizations/presentation/site_workers_screen.dart';
 import '../features/organizations/presentation/sites_screen.dart';
 import '../features/safety_learning/presentation/my_safety_learning_screen.dart';
@@ -109,8 +107,6 @@ String? authRedirect(
   // stays `admin`-only.
   final administrationRoute =
       matchedLocation == AppRoutes.administration ||
-      matchedLocation == AppRoutes.manageOrganizations ||
-      matchedLocation == AppRoutes.manageProjects ||
       matchedLocation == AppRoutes.manageSites ||
       matchedLocation == AppRoutes.manageSiteWorkers ||
       matchedLocation == AppRoutes.manageActivities ||
@@ -304,32 +300,19 @@ GoRouter buildAppRouter(SessionController session) {
             builder: (context, state) => const AdministrationScreen(),
           ),
           GoRoute(
-            path: AppRoutes.manageOrganizations,
-            builder: (context, state) => const OrganizationsScreen(),
-          ),
-          GoRoute(
-            path: AppRoutes.manageProjects,
-            // Reached only via a Card tap on OrganizationsScreen, which
-            // always supplies the tapped Organization as `extra`. Typing
-            // this URL directly (or refreshing on it) loses that context —
-            // there is nothing to fall back to but the Organizations list.
-            builder: (context, state) {
-              final organization = state.extra;
-              if (organization is! Organization) {
-                return const OrganizationsScreen();
-              }
-              return ProjectsScreen(organization: organization);
-            },
-          ),
-          GoRoute(
             path: AppRoutes.manageSites,
             // Reached only via a Card tap on ProjectsScreen, which supplies
-            // the (organization, project) pair as `extra`. Same fallback
-            // reasoning as manageProjects above.
+            // the (organization, project) pair as `extra`. Typing this URL
+            // directly (or refreshing on it) loses that context — there is
+            // nothing to fall back to but Projects itself
+            // ([ProjectsRouterScreen], which re-resolves the signed-in
+            // user's own — single, JV ALMA CIS — organization; PHASE 1
+            // removed the old Organizations-list fallback along with
+            // Organizations as a nav destination).
             builder: (context, state) {
               final extra = state.extra;
               if (extra is! ({Organization organization, Project project})) {
-                return const OrganizationsScreen();
+                return const ProjectsRouterScreen();
               }
               return SitesScreen(
                 organization: extra.organization,
@@ -350,7 +333,7 @@ GoRouter buildAppRouter(SessionController session) {
                     Project project,
                     Site site,
                   })) {
-                return const OrganizationsScreen();
+                return const ProjectsRouterScreen();
               }
               return ActivitiesScreen(
                 organization: extra.organization,
@@ -373,7 +356,7 @@ GoRouter buildAppRouter(SessionController session) {
                     Site site,
                     Activity activity,
                   })) {
-                return const OrganizationsScreen();
+                return const ProjectsRouterScreen();
               }
               return ActivityWorkersScreen(
                 organization: extra.organization,
@@ -397,7 +380,7 @@ GoRouter buildAppRouter(SessionController session) {
                     Project project,
                     Site site,
                   })) {
-                return const OrganizationsScreen();
+                return const ProjectsRouterScreen();
               }
               return SiteWorkersScreen(
                 organization: extra.organization,
@@ -412,11 +395,11 @@ GoRouter buildAppRouter(SessionController session) {
             // supplies the tapped Organization as `extra` (the acting
             // admin's own organization for an organizationAdministrator, or
             // a System Administrator's chosen organization). Same fallback
-            // reasoning as manageProjects above.
+            // reasoning as manageSites above.
             builder: (context, state) {
               final organization = state.extra;
               if (organization is! Organization) {
-                return const OrganizationsScreen();
+                return const ProjectsRouterScreen();
               }
               return SafetyLearningLibraryScreen(
                 organizationId: organization.id,
@@ -429,21 +412,18 @@ GoRouter buildAppRouter(SessionController session) {
             builder: (context, state) {
               final organization = state.extra;
               if (organization is! Organization) {
-                return const OrganizationsScreen();
+                return const ProjectsRouterScreen();
               }
               return SafetyRequirementsScreen(organization: organization);
             },
           ),
           GoRoute(
             path: AppRoutes.manageSafetyMeetingPoints,
-            // Reachable two ways, unlike manageSafetyLearning above: via
-            // OrganizationsScreen's drill-down (`extra` carries the tapped
-            // Organization), or directly from the sidebar's "Safety Meeting
+            // Reachable directly from the sidebar's "Safety Meeting
             // Points" entry (no `extra` at all) — SafetyMeetingPointsScreen
             // already falls back to the signed-in user's own
-            // activeOrganizationId when `organizationId` is omitted, so
-            // there is no OrganizationsScreen fallback needed here the way
-            // manageProjects (pre-ProjectsRouterScreen) needed one.
+            // activeOrganizationId when `organizationId` is omitted, so no
+            // Organizations-list fallback is needed here.
             builder: (context, state) {
               final organization = state.extra;
               return SafetyMeetingPointsScreen(
@@ -459,7 +439,7 @@ GoRouter buildAppRouter(SessionController session) {
             builder: (context, state) {
               final organization = state.extra;
               if (organization is! Organization) {
-                return const OrganizationsScreen();
+                return const ProjectsRouterScreen();
               }
               return AdminDailySafetyMeetingsScreen(organization: organization);
             },

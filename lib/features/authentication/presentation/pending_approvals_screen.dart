@@ -148,9 +148,8 @@ class _PendingApprovalsScreenState extends State<PendingApprovalsScreen> {
       if (!mounted) return;
       setState(
         () => _errorMessage =
-            'You are not currently assigned to an organization, so you '
-            'cannot approve accounts yet. Create or select an organization '
-            'first.',
+            'JV ALMA CIS has not been set up yet, so you cannot approve '
+            'accounts. Set it up from Operations first.',
       );
       return;
     }
@@ -287,8 +286,8 @@ class _PendingApprovalsScreenState extends State<PendingApprovalsScreen> {
         ),
         const SizedBox(height: AppSpacing.xs),
         const Text(
-          'Approving a request assigns it to your organization with the '
-          'role and worker type you choose, and activates the account.',
+          'Approving a request assigns the role and worker type you '
+          'choose, and activates the account.',
           style: AppTextStyles.bodyMedium,
         ),
         if (_errorMessage != null) ...[
@@ -626,8 +625,7 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
     try {
       // A one-shot read of the current list is enough for a selection
       // dialog — no need to keep it live-streaming for the dialog's short
-      // lifetime, matching how OrganizationsScreen's own stream would
-      // settle to the same snapshot on first frame.
+      // lifetime.
       if (_isAdminReviewer) {
         final organizations = await widget.organizationRepository
             .watchAll()
@@ -731,9 +729,8 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
                           'you may pick it — otherwise leave it unset and '
                           'they will create or be assigned to one after '
                           'being approved.'
-                    : 'Choose the organization, role and worker type to '
-                          'assign. This activates the account in the '
-                          'organization you pick.',
+                    : 'Choose the role and worker type to assign. This '
+                          'activates the account.',
                 style: AppTextStyles.bodyMedium,
               ),
               const SizedBox(height: AppSpacing.md),
@@ -774,7 +771,17 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
                     _onOrganizationChanged();
                   },
                 )
-              else
+              // PHASE 1 (single-company model): a non-Admin reviewer holds
+              // at most one membership in practice (there is only ever one
+              // company, JV ALMA CIS), so the choice below is resolved
+              // silently — via _selectedMembershipOrganizationId, already
+              // defaulted to the reviewer's one membership in initState —
+              // rather than shown as a picker with a single, pointless
+              // option. The dropdown only reappears if a reviewer somehow
+              // holds more than one membership (kept, not deleted: the
+              // underlying membership model still supports it — see
+              // SessionController.membershipFor's doc comment).
+              else if (widget.reviewerMemberships.length > 1)
                 DropdownButtonFormField<String>(
                   initialValue: _selectedMembershipOrganizationId,
                   decoration: const InputDecoration(labelText: 'Organization'),
@@ -911,8 +918,7 @@ class _SitePicker extends StatelessWidget {
       return const Padding(
         padding: EdgeInsets.symmetric(vertical: AppSpacing.xs),
         child: Text(
-          'This organization has no sites yet. You can assign one later '
-          'from Organizations.',
+          'No sites exist yet. You can assign one later from Operations.',
           style: AppTextStyles.bodyMedium,
         ),
       );

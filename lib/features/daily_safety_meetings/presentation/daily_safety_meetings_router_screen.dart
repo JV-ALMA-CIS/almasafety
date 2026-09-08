@@ -81,7 +81,8 @@ class DailySafetyMeetingsRouterScreen extends StatelessWidget {
         child: Padding(
           padding: EdgeInsets.all(AppSpacing.lg),
           child: Text(
-            'Your account is not yet assigned to an organization.',
+            'JV ALMA CIS has not been set up yet. Set it up from '
+            'Operations first.',
             style: AppTextStyles.bodyMedium,
             textAlign: TextAlign.center,
           ),
@@ -90,15 +91,15 @@ class DailySafetyMeetingsRouterScreen extends StatelessWidget {
     }
 
     final resolvedFirestoreService = firestoreService ?? FirestoreService();
-    final repository = organizationRepository ??
+    final repository =
+        organizationRepository ??
         OrganizationRepository(firestoreService: resolvedFirestoreService);
 
     return StreamBuilder<Organization?>(
       stream: repository.watchById(organizationId),
       builder: (context, snapshot) {
         final organization = snapshot.data;
-        final isLoading =
-            snapshot.connectionState == ConnectionState.waiting;
+        final isLoading = snapshot.connectionState == ConnectionState.waiting;
 
         if (isLoading && organization == null) {
           return const Center(child: CircularProgressIndicator());
@@ -108,7 +109,7 @@ class DailySafetyMeetingsRouterScreen extends StatelessWidget {
             child: Padding(
               padding: EdgeInsets.all(AppSpacing.lg),
               child: Text(
-                'Could not load your organization. Please try again.',
+                'Could not load JV ALMA CIS. Please try again.',
                 style: AppTextStyles.bodyMedium,
                 textAlign: TextAlign.center,
               ),

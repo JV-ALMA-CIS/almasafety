@@ -52,10 +52,9 @@ class PendingApprovalScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: AppSpacing.sm),
                   const Text(
-                    'An authorized JVA Safety user will assign your '
-                    'organization and site access. You will get access '
-                    'automatically once that happens — no need to sign in '
-                    'again.',
+                    'An authorized JVA Safety user will assign your role '
+                    'and site access. You will get access automatically '
+                    'once that happens — no need to sign in again.',
                     style: AppTextStyles.bodyMedium,
                     textAlign: TextAlign.center,
                   ),

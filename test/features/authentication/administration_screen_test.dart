@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
@@ -14,28 +14,30 @@ import 'package:jva_safety/routing/app_routes.dart';
 /// screen's own capability check can be exercised without Firebase. Mirrors
 /// the fake used in pending_approvals_screen_test.dart.
 class _FakeSession extends SessionController {
-  _FakeSession({required AppRole? role, bool transientSiteManagerMarker = false})
-    : _profile = UserProfile(
-        uid: 'uid-1',
-        name: 'Test User',
-        email: 'test@example.com',
-        accountStatus: AccountStatus.active,
-        // platformRole is admin-only now; every other role lives on the
-        // active Membership instead — except a Site Manager just approved
-        // with no organization yet, who has no membership at all and is
-        // signalled by this transient marker (account_approval.ts's
-        // approveAccount).
-        platformRole: role == AppRole.admin
-            ? role
-            : (transientSiteManagerMarker ? AppRole.siteManager : null),
-      ),
-      _membership = role == null || role == AppRole.admin
-          ? null
-          : Membership(
-              organizationId: 'jv-alma-cis',
-              role: role,
-              status: MembershipStatus.active,
-            );
+  _FakeSession({
+    required AppRole? role,
+    bool transientSiteManagerMarker = false,
+  }) : _profile = UserProfile(
+         uid: 'uid-1',
+         name: 'Test User',
+         email: 'test@example.com',
+         accountStatus: AccountStatus.active,
+         // platformRole is admin-only now; every other role lives on the
+         // active Membership instead — except a Site Manager just approved
+         // with no organization yet, who has no membership at all and is
+         // signalled by this transient marker (account_approval.ts's
+         // approveAccount).
+         platformRole: role == AppRole.admin
+             ? role
+             : (transientSiteManagerMarker ? AppRole.siteManager : null),
+       ),
+       _membership = role == null || role == AppRole.admin
+           ? null
+           : Membership(
+               organizationId: 'jv-alma-cis',
+               role: role,
+               status: MembershipStatus.active,
+             );
 
   final UserProfile _profile;
   final Membership? _membership;
@@ -77,11 +79,6 @@ void main() {
           builder: (context, state) =>
               const Scaffold(body: Text('Suspended Users Screen')),
         ),
-        GoRoute(
-          path: AppRoutes.manageOrganizations,
-          builder: (context, state) =>
-              const Scaffold(body: Text('Organizations Screen')),
-        ),
       ],
     );
 
@@ -95,7 +92,8 @@ void main() {
   }
 
   group('AdministrationScreen (Admin)', () {
-    testWidgets('renders all four entry points', (tester) async {
+    testWidgets('renders three entry points — PHASE 1 removed the fourth, '
+        'Organizations, under the single-company model', (tester) async {
       await tester.pumpWidget(wrap(role: AppRole.admin));
       await tester.pumpAndSettle();
 
@@ -103,7 +101,7 @@ void main() {
       expect(find.text('Pending Approvals'), findsOneWidget);
       expect(find.text('Active Users'), findsOneWidget);
       expect(find.text('Suspended / Rejected Users'), findsOneWidget);
-      expect(find.text('Organizations'), findsOneWidget);
+      expect(find.text('Organizations'), findsNothing);
     });
 
     testWidgets('links through to the approvals inbox', (tester) async {
@@ -137,20 +135,10 @@ void main() {
 
       expect(find.text('Suspended Users Screen'), findsOneWidget);
     });
-
-    testWidgets('links through to the organizations screen', (tester) async {
-      await tester.pumpWidget(wrap(role: AppRole.admin));
-      await tester.pumpAndSettle();
-
-      await tester.tap(find.text('Organizations'));
-      await tester.pumpAndSettle();
-
-      expect(find.text('Organizations Screen'), findsOneWidget);
-    });
   });
 
   group('AdministrationScreen (Site Manager)', () {
-    testWidgets('renders all four entry points, scoped to their own org', (
+    testWidgets('renders the same three entry points, JV ALMA CIS-wide', (
       tester,
     ) async {
       await tester.pumpWidget(wrap(role: AppRole.siteManager));
@@ -160,42 +148,25 @@ void main() {
       expect(find.text('Pending Approvals'), findsOneWidget);
       expect(find.text('Active Users'), findsOneWidget);
       expect(find.text('Suspended / Rejected Users'), findsOneWidget);
-      expect(find.text('Organizations'), findsOneWidget);
-    });
-
-    testWidgets('links through to the organizations screen', (tester) async {
-      await tester.pumpWidget(wrap(role: AppRole.siteManager));
-      await tester.pumpAndSettle();
-
-      await tester.tap(find.text('Organizations'));
-      await tester.pumpAndSettle();
-
-      expect(find.text('Organizations Screen'), findsOneWidget);
+      expect(find.text('Organizations'), findsNothing);
     });
   });
 
   group('AdministrationScreen (brand-new Site Manager, no membership yet)', () {
-    testWidgets(
-      'can still reach Administration and Organizations — the one path '
-      'that gives them their first membership',
-      (tester) async {
-        await tester.pumpWidget(
-          wrap(role: null, transientSiteManagerMarker: true),
-        );
-        await tester.pumpAndSettle();
+    testWidgets('can still reach Administration — the first-time company setup '
+        'prompt lives on the Operations/Projects landing page instead '
+        '(ProjectsRouterScreen), not here', (tester) async {
+      await tester.pumpWidget(
+        wrap(role: null, transientSiteManagerMarker: true),
+      );
+      await tester.pumpAndSettle();
 
-        expect(
-          find.text('You do not have permission to view administration.'),
-          findsNothing,
-        );
-        expect(find.text('Organizations'), findsOneWidget);
-
-        await tester.tap(find.text('Organizations'));
-        await tester.pumpAndSettle();
-
-        expect(find.text('Organizations Screen'), findsOneWidget);
-      },
-    );
+      expect(
+        find.text('You do not have permission to view administration.'),
+        findsNothing,
+      );
+      expect(find.text('Pending Approvals'), findsOneWidget);
+    });
   });
 
   group('AdministrationScreen (non-platform-administrator)', () {

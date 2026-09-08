@@ -37,12 +37,14 @@ class _FakeSession extends SessionController {
          accountStatus: AccountStatus.active,
          // platformRole is admin-only now; every other role lives on the
          // active Membership instead.
-         platformRole: role == AppRole.admin ||
+         platformRole:
+             role == AppRole.admin ||
                  (role == AppRole.siteManager && organizationId == null)
              ? role
              : null,
        ),
-       _membership = role == null || role == AppRole.admin || organizationId == null
+       _membership =
+           role == null || role == AppRole.admin || organizationId == null
            ? null
            : Membership(
                organizationId: organizationId,
@@ -75,7 +77,10 @@ void main() {
     firestore = FakeFirebaseFirestore();
   });
 
-  Future<void> seedOrganization(String id, {String name = 'JV Alma CIS'}) async {
+  Future<void> seedOrganization(
+    String id, {
+    String name = 'JV Alma CIS',
+  }) async {
     await firestore.doc('organizations/$id').set({
       'name': name,
       'code': 'CODE-$id',
@@ -85,7 +90,11 @@ void main() {
     });
   }
 
-  Widget wrap({required AppRole? role, String? organizationId, List<String> siteIds = const []}) {
+  Widget wrap({
+    required AppRole? role,
+    String? organizationId,
+    List<String> siteIds = const [],
+  }) {
     final firestoreService = FirestoreService(firestore: firestore);
     return ChangeNotifierProvider<SessionController>(
       create: (_) => _FakeSession(
@@ -136,34 +145,35 @@ void main() {
     // "no site assigned" message proves it (and not the admin review
     // screen) was rendered for a foreman.
     expect(
-      find.text('Daily Safety Meetings are available to a foreman assigned '
-          'to a site.'),
+      find.text(
+        'Daily Safety Meetings are available to a foreman assigned '
+        'to a site.',
+      ),
       findsOneWidget,
     );
     expect(find.text('Daily Safety Meetings'), findsNothing);
   });
 
-  testWidgets(
-    'a Site Manager is routed to the read-only review screen for '
-    'their own organization, not the foreman workspace',
-    (tester) async {
-      await seedOrganization('org-alpha', name: 'JV Alma CIS');
+  testWidgets('a Site Manager is routed to the read-only review screen for '
+      'their own organization, not the foreman workspace', (tester) async {
+    await seedOrganization('org-alpha', name: 'JV Alma CIS');
 
-      await tester.pumpWidget(
-        wrap(role: AppRole.siteManager, organizationId: 'org-alpha'),
-      );
-      await tester.pumpAndSettle();
+    await tester.pumpWidget(
+      wrap(role: AppRole.siteManager, organizationId: 'org-alpha'),
+    );
+    await tester.pumpAndSettle();
 
-      expect(find.text('Daily Safety Meetings'), findsOneWidget);
-      expect(find.text('JV Alma CIS'), findsOneWidget);
-      // Never the foreman-only messaging.
-      expect(
-        find.text('Daily Safety Meetings are available to a foreman '
-            'assigned to a site.'),
-        findsNothing,
-      );
-    },
-  );
+    expect(find.text('Daily Safety Meetings'), findsOneWidget);
+    expect(find.text('JV Alma CIS'), findsOneWidget);
+    // Never the foreman-only messaging.
+    expect(
+      find.text(
+        'Daily Safety Meetings are available to a foreman '
+        'assigned to a site.',
+      ),
+      findsNothing,
+    );
+  });
 
   testWidgets('a worker sees the foreman-workspace messaging, not the '
       'review screen', (tester) async {
@@ -173,15 +183,17 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      find.text('Daily Safety Meetings are available to a foreman assigned '
-          'to a site.'),
+      find.text(
+        'Daily Safety Meetings are available to a foreman assigned '
+        'to a site.',
+      ),
       findsOneWidget,
     );
   });
 
   testWidgets(
-    'a reviewer role with no organization yet sees a not-yet-assigned '
-    'message instead of crashing',
+    'a reviewer role before JV ALMA CIS is set up sees a clear message '
+    'instead of crashing',
     (tester) async {
       await tester.pumpWidget(
         wrap(role: AppRole.siteManager, organizationId: null),
@@ -189,7 +201,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(
-        find.text('Your account is not yet assigned to an organization.'),
+        find.textContaining('JV ALMA CIS has not been set up yet'),
         findsOneWidget,
       );
     },

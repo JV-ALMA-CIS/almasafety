@@ -285,7 +285,7 @@ void main() {
       await approveViaDialog(tester);
 
       expect(
-        find.textContaining('not currently assigned to an organization'),
+        find.textContaining('JV ALMA CIS has not been set up yet'),
         findsOneWidget,
       );
       expect(service.approvedCalls, isEmpty);
@@ -580,21 +580,27 @@ void main() {
       },
     );
 
-    testWidgets('an org-scoped reviewer sees a required organization field, '
-        'pre-selected from their own membership — not the Admin\'s optional '
-        'picker over every organization', (tester) async {
-      await seedOrg('jv-alma-cis', name: 'JV Alma CIS', code: 'JV-1');
-      final service = _FakeApprovalService(accounts: [account('alice')]);
+    testWidgets(
+      'an org-scoped reviewer with a single membership sees no organization '
+      'picker at all — PHASE 1 (single-company model): the choice is '
+      'resolved silently rather than shown as a picker with one, pointless '
+      'option, unlike the Admin\'s optional picker over every organization',
+      (tester) async {
+        await seedOrg('jv-alma-cis', name: 'JV Alma CIS', code: 'JV-1');
+        final service = _FakeApprovalService(accounts: [account('alice')]);
 
-      await tester.pumpWidget(wrap(service, reviewerRole: AppRole.siteManager));
-      await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
-      await tester.pumpAndSettle();
+        await tester.pumpWidget(
+          wrap(service, reviewerRole: AppRole.siteManager),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
+        await tester.pumpAndSettle();
 
-      expect(find.text('Organization (optional)'), findsNothing);
-      expect(find.text('Organization'), findsOneWidget);
-      expect(find.text('JV Alma CIS'), findsOneWidget);
-    });
+        expect(find.text('Organization (optional)'), findsNothing);
+        expect(find.text('Organization'), findsNothing);
+        expect(find.text('JV Alma CIS'), findsNothing);
+      },
+    );
 
     testWidgets(
       'a Site Manager of two organizations can pick either one, and the '

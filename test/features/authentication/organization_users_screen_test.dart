@@ -1,12 +1,9 @@
 import 'dart:async';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:jva_safety/core/errors/app_exception.dart';
-import 'package:jva_safety/core/services/firestore_service.dart';
 import 'package:jva_safety/core/services/session_controller.dart';
 import 'package:jva_safety/features/authentication/data/account_approval_service.dart';
 import 'package:jva_safety/features/authentication/domain/account_status.dart';
@@ -16,7 +13,6 @@ import 'package:jva_safety/features/authentication/domain/organization_user.dart
 import 'package:jva_safety/features/authentication/domain/user_profile.dart';
 import 'package:jva_safety/features/authentication/domain/worker_type.dart';
 import 'package:jva_safety/features/authentication/presentation/organization_users_screen.dart';
-import 'package:jva_safety/features/organizations/data/organization_repository.dart';
 
 /// A fake approval service.
 ///
@@ -41,16 +37,7 @@ class _FakeApprovalService extends AccountApprovalService {
   final List<String> suspendedUids = [];
   final List<String> reinstatedUids = [];
   final List<({String uid, String organizationId})> suspendedMemberships = [];
-  final List<({String uid, String organizationId})> reinstatedMemberships =
-      [];
-  final List<
-      ({
-        String uid,
-        AppRole role,
-        WorkerType? workerType,
-        List<String>? siteIds,
-        String organizationId,
-      })> addedMemberships = [];
+  final List<({String uid, String organizationId})> reinstatedMemberships = [];
   int listCallCount = 0;
 
   @override
@@ -98,25 +85,6 @@ class _FakeApprovalService extends AccountApprovalService {
     final error = decisionError;
     if (error != null) throw error;
     reinstatedMemberships.add((uid: uid, organizationId: organizationId));
-  }
-
-  @override
-  Future<void> addOrganizationMembership(
-    String uid, {
-    required AppRole role,
-    WorkerType? workerType,
-    List<String>? siteIds,
-    required String organizationId,
-  }) async {
-    final error = decisionError;
-    if (error != null) throw error;
-    addedMemberships.add((
-      uid: uid,
-      role: role,
-      workerType: workerType,
-      siteIds: siteIds,
-      organizationId: organizationId,
-    ));
   }
 }
 
@@ -180,7 +148,6 @@ void main() {
     required List<AccountStatus> statuses,
     String title = 'Active Users',
     AppRole? reviewerRole = AppRole.siteManager,
-    OrganizationRepository? organizationRepository,
   }) {
     return ChangeNotifierProvider<SessionController>(
       create: (_) => _FakeSession(role: reviewerRole),
@@ -190,7 +157,6 @@ void main() {
             statuses: statuses,
             title: title,
             service: service,
-            organizationRepository: organizationRepository,
           ),
         ),
       ),
@@ -198,9 +164,7 @@ void main() {
   }
 
   group('OrganizationUsersScreen (Active Users)', () {
-    testWidgets('lists each active user with a Suspend action', (
-      tester,
-    ) async {
+    testWidgets('lists each active user with a Suspend action', (tester) async {
       final service = _FakeApprovalService(
         usersByStatus: {
           AccountStatus.active: [user('alice'), user('bob')],
@@ -216,8 +180,14 @@ void main() {
       expect(find.text('User alice'), findsOneWidget);
       expect(find.text('alice@example.com'), findsOneWidget);
       expect(find.text('User bob'), findsOneWidget);
-      expect(find.widgetWithText(OutlinedButton, 'Suspend account'), findsNWidgets(2));
-      expect(find.widgetWithText(ElevatedButton, 'Reinstate account'), findsNothing);
+      expect(
+        find.widgetWithText(OutlinedButton, 'Suspend account'),
+        findsNWidgets(2),
+      );
+      expect(
+        find.widgetWithText(ElevatedButton, 'Reinstate account'),
+        findsNothing,
+      );
     });
 
     testWidgets('shows an empty state when there are no active users', (
@@ -289,9 +259,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('surfaces a refused suspend and keeps the row', (
-      tester,
-    ) async {
+    testWidgets('surfaces a refused suspend and keeps the row', (tester) async {
       final service = _FakeApprovalService(
         usersByStatus: {
           AccountStatus.active: [user('alice')],
@@ -388,30 +356,38 @@ void main() {
       },
     );
 
-    testWidgets('offers Reinstate for a suspended user but not a rejected one',
-        (tester) async {
-      final service = _FakeApprovalService(
-        usersByStatus: {
-          AccountStatus.suspended: [
-            user('carol', status: AccountStatus.suspended),
-          ],
-          AccountStatus.rejected: [
-            user('dave', status: AccountStatus.rejected),
-          ],
-        },
-      );
+    testWidgets(
+      'offers Reinstate for a suspended user but not a rejected one',
+      (tester) async {
+        final service = _FakeApprovalService(
+          usersByStatus: {
+            AccountStatus.suspended: [
+              user('carol', status: AccountStatus.suspended),
+            ],
+            AccountStatus.rejected: [
+              user('dave', status: AccountStatus.rejected),
+            ],
+          },
+        );
 
-      await tester.pumpWidget(
-        wrap(
-          service,
-          statuses: const [AccountStatus.suspended, AccountStatus.rejected],
-        ),
-      );
-      await tester.pumpAndSettle();
+        await tester.pumpWidget(
+          wrap(
+            service,
+            statuses: const [AccountStatus.suspended, AccountStatus.rejected],
+          ),
+        );
+        await tester.pumpAndSettle();
 
-      expect(find.widgetWithText(ElevatedButton, 'Reinstate account'), findsOneWidget);
-      expect(find.widgetWithText(OutlinedButton, 'Suspend account'), findsNothing);
-    });
+        expect(
+          find.widgetWithText(ElevatedButton, 'Reinstate account'),
+          findsOneWidget,
+        );
+        expect(
+          find.widgetWithText(OutlinedButton, 'Suspend account'),
+          findsNothing,
+        );
+      },
+    );
 
     testWidgets('reinstating calls the callable with that user\'s uid', (
       tester,
@@ -433,7 +409,9 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      await tester.tap(find.widgetWithText(ElevatedButton, 'Reinstate account'));
+      await tester.tap(
+        find.widgetWithText(ElevatedButton, 'Reinstate account'),
+      );
       await tester.pumpAndSettle();
 
       expect(service.reinstatedUids, ['carol']);
@@ -442,9 +420,7 @@ void main() {
   });
 
   group('OrganizationUsersScreen (non-reviewer)', () {
-    testWidgets('renders no list content', (
-      tester,
-    ) async {
+    testWidgets('renders no list content', (tester) async {
       // Defence in depth behind the router guard: even if an unauthorized
       // user somehow renders this widget, it must not display the list.
       final service = _FakeApprovalService(
@@ -494,7 +470,7 @@ void main() {
   });
 
   group('OrganizationUsersScreen (membership status)', () {
-    testWidgets('shows the Org: chip for an active membership', (
+    testWidgets('shows the Assignment chip for an active membership', (
       tester,
     ) async {
       final service = _FakeApprovalService(
@@ -510,65 +486,11 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('Org: Active'), findsOneWidget);
-    });
-
-    testWidgets('shows the Org: Suspended chip for a suspended membership', (
-      tester,
-    ) async {
-      final service = _FakeApprovalService(
-        usersByStatus: {
-          AccountStatus.active: [
-            user('alice', membershipStatus: MembershipStatus.suspended),
-          ],
-        },
-      );
-
-      await tester.pumpWidget(
-        wrap(service, statuses: const [AccountStatus.active]),
-      );
-      await tester.pumpAndSettle();
-
-      expect(find.text('Org: Suspended'), findsOneWidget);
+      expect(find.text('Assignment: Active'), findsOneWidget);
     });
 
     testWidgets(
-      '"Suspend in this org" calls suspendMembership with uid and '
-      'organizationId, and updates the chip in place without dropping the '
-      'row from an Active Users list',
-      (tester) async {
-        final service = _FakeApprovalService(
-          usersByStatus: {
-            AccountStatus.active: [
-              user('alice', membershipStatus: MembershipStatus.active),
-            ],
-          },
-        );
-
-        await tester.pumpWidget(
-          wrap(service, statuses: const [AccountStatus.active]),
-        );
-        await tester.pumpAndSettle();
-
-        await tester.tap(
-          find.widgetWithText(OutlinedButton, 'Suspend in this org'),
-        );
-        await tester.pumpAndSettle();
-
-        expect(service.suspendedMemberships, [
-          (uid: 'alice', organizationId: 'jv-alma-cis'),
-        ]);
-        // The account is still active, so the row stays in this
-        // account-status-scoped list — only the membership chip changes.
-        expect(find.text('User alice'), findsOneWidget);
-        expect(find.text('Org: Suspended'), findsOneWidget);
-        expect(find.text('Org: Active'), findsNothing);
-      },
-    );
-
-    testWidgets(
-      '"Reinstate in this org" calls reinstateMembership with uid and '
-      'organizationId',
+      'shows the Assignment Suspended chip for a suspended membership',
       (tester) async {
         final service = _FakeApprovalService(
           usersByStatus: {
@@ -583,17 +505,66 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        await tester.tap(
-          find.widgetWithText(ElevatedButton, 'Reinstate in this org'),
-        );
-        await tester.pumpAndSettle();
-
-        expect(service.reinstatedMemberships, [
-          (uid: 'alice', organizationId: 'jv-alma-cis'),
-        ]);
-        expect(find.text('Org: Active'), findsOneWidget);
+        expect(find.text('Assignment: Suspended'), findsOneWidget);
       },
     );
+
+    testWidgets('"Suspend assignment" calls suspendMembership with uid and '
+        'organizationId, and updates the chip in place without dropping the '
+        'row from an Active Users list', (tester) async {
+      final service = _FakeApprovalService(
+        usersByStatus: {
+          AccountStatus.active: [
+            user('alice', membershipStatus: MembershipStatus.active),
+          ],
+        },
+      );
+
+      await tester.pumpWidget(
+        wrap(service, statuses: const [AccountStatus.active]),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(
+        find.widgetWithText(OutlinedButton, 'Suspend assignment'),
+      );
+      await tester.pumpAndSettle();
+
+      expect(service.suspendedMemberships, [
+        (uid: 'alice', organizationId: 'jv-alma-cis'),
+      ]);
+      // The account is still active, so the row stays in this
+      // account-status-scoped list — only the membership chip changes.
+      expect(find.text('User alice'), findsOneWidget);
+      expect(find.text('Assignment: Suspended'), findsOneWidget);
+      expect(find.text('Assignment: Active'), findsNothing);
+    });
+
+    testWidgets('"Reinstate assignment" calls reinstateMembership with uid and '
+        'organizationId', (tester) async {
+      final service = _FakeApprovalService(
+        usersByStatus: {
+          AccountStatus.active: [
+            user('alice', membershipStatus: MembershipStatus.suspended),
+          ],
+        },
+      );
+
+      await tester.pumpWidget(
+        wrap(service, statuses: const [AccountStatus.active]),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(
+        find.widgetWithText(ElevatedButton, 'Reinstate assignment'),
+      );
+      await tester.pumpAndSettle();
+
+      expect(service.reinstatedMemberships, [
+        (uid: 'alice', organizationId: 'jv-alma-cis'),
+      ]);
+      expect(find.text('Assignment: Active'), findsOneWidget);
+    });
 
     testWidgets(
       'account-level and membership-level actions are both offered and '
@@ -618,149 +589,10 @@ void main() {
           findsOneWidget,
         );
         expect(
-          find.widgetWithText(OutlinedButton, 'Suspend in this org'),
+          find.widgetWithText(OutlinedButton, 'Suspend assignment'),
           findsOneWidget,
         );
       },
     );
-  });
-
-  group('OrganizationUsersScreen (add to another organization)', () {
-    testWidgets(
-      'opens a dialog and calls addOrganizationMembership with the chosen '
-      'role, worker type and site ids for a non-Admin reviewer acting in '
-      'their own active organization',
-      (tester) async {
-        final service = _FakeApprovalService(
-          usersByStatus: {
-            AccountStatus.active: [user('alice')],
-          },
-        );
-
-        await tester.pumpWidget(
-          wrap(
-            service,
-            statuses: const [AccountStatus.active],
-            reviewerRole: AppRole.siteManager,
-          ),
-        );
-        await tester.pumpAndSettle();
-
-        await tester.tap(
-          find.widgetWithText(OutlinedButton, 'Add to another organization'),
-        );
-        await tester.pumpAndSettle();
-
-        expect(find.text('Add User alice to another organization'),
-            findsOneWidget);
-
-        await tester.enterText(
-          find.widgetWithText(TextField, 'Site ids (optional, comma-separated)'),
-          'site-1, site-2',
-        );
-        await tester.tap(find.widgetWithText(ElevatedButton, 'Add'));
-        await tester.pumpAndSettle();
-
-        expect(service.addedMemberships, hasLength(1));
-        final call = service.addedMemberships.single;
-        expect(call.uid, 'alice');
-        expect(call.role, AppRole.foreman);
-        // The reviewer's own active organization, not a picker — mirrors
-        // PendingApprovalsScreen._approve's resolution for a non-Admin.
-        expect(call.organizationId, 'jv-alma-cis');
-        expect(call.siteIds, ['site-1', 'site-2']);
-
-        expect(
-          find.text('User alice was added to that organization.'),
-          findsOneWidget,
-        );
-      },
-    );
-
-    testWidgets(
-      'an Admin reviewer must pick an organization explicitly, sent as the '
-      'organizationId',
-      (tester) async {
-        final firestore = FakeFirebaseFirestore();
-        await firestore.doc('organizations/org-x').set({
-          'name': 'Org X',
-          'code': 'CODE-X',
-          'status': 'active',
-          'createdAt': Timestamp.now(),
-          'updatedAt': Timestamp.now(),
-        });
-        final organizationRepository = OrganizationRepository(
-          firestoreService: FirestoreService(firestore: firestore),
-        );
-        final service = _FakeApprovalService(
-          usersByStatus: {
-            AccountStatus.active: [user('alice')],
-          },
-        );
-
-        await tester.pumpWidget(
-          wrap(
-            service,
-            statuses: const [AccountStatus.active],
-            reviewerRole: AppRole.admin,
-            organizationRepository: organizationRepository,
-          ),
-        );
-        await tester.pumpAndSettle();
-
-        await tester.tap(
-          find.widgetWithText(OutlinedButton, 'Add to another organization'),
-        );
-        await tester.pumpAndSettle();
-
-        // The Add button starts disabled — no organization chosen yet.
-        final addButtonFinder = find.widgetWithText(ElevatedButton, 'Add');
-        expect(
-          tester.widget<ElevatedButton>(addButtonFinder).onPressed,
-          isNull,
-        );
-
-        await tester.tap(find.text('Organization'));
-        await tester.pumpAndSettle();
-        await tester.tap(find.text('Org X (CODE-X)').last);
-        await tester.pumpAndSettle();
-
-        await tester.tap(addButtonFinder);
-        await tester.pumpAndSettle();
-
-        expect(service.addedMemberships, hasLength(1));
-        expect(service.addedMemberships.single.organizationId, 'org-x');
-        // Admin grants siteManager, per _grantableRoles.
-        expect(service.addedMemberships.single.role, AppRole.siteManager);
-      },
-    );
-
-    testWidgets('surfaces a refused add without crashing', (tester) async {
-      final service = _FakeApprovalService(
-        usersByStatus: {
-          AccountStatus.active: [user('alice')],
-        },
-        decisionError: const PermissionDeniedException(
-          'You do not have permission to do that.',
-        ),
-      );
-
-      await tester.pumpWidget(
-        wrap(service, statuses: const [AccountStatus.active]),
-      );
-      await tester.pumpAndSettle();
-
-      await tester.tap(
-        find.widgetWithText(OutlinedButton, 'Add to another organization'),
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(ElevatedButton, 'Add'));
-      await tester.pumpAndSettle();
-
-      expect(
-        find.text('You do not have permission to do that.'),
-        findsOneWidget,
-      );
-    });
   });
 }

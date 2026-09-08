@@ -36,8 +36,6 @@ const _allOperationalRoutes = [
   AppRoutes.activeUsers,
   AppRoutes.suspendedUsers,
   AppRoutes.administration,
-  AppRoutes.manageOrganizations,
-  AppRoutes.manageProjects,
   AppRoutes.manageSites,
   AppRoutes.manageSiteWorkers,
   AppRoutes.manageSafetyMeetingPoints,
@@ -66,16 +64,14 @@ const _administrationRoutes = [
 ];
 
 /// The routes gated on [isPlatformAdministrator] OR [canManageOrgContent] —
-/// the administration hub, the Organization/Project/Site/Activity chain,
-/// Site/Activity Workers, and the read-only Daily Safety Meetings review
-/// screen, all reachable by an `admin` (any organization) or a
-/// [AppRole.siteManager] (their own organization(s) only, enforced by the
-/// screens/callables themselves rather than this router-level flag, which
-/// only says "this role may enter the chain at all").
+/// the administration hub, the Project/Site/Activity chain, Site/Activity
+/// Workers, and the read-only Daily Safety Meetings review screen, all
+/// reachable by an `admin` or a [AppRole.siteManager] (JV ALMA CIS-wide,
+/// per the single-company model, enforced by the screens/callables
+/// themselves rather than this router-level flag, which only says "this
+/// role may enter the chain at all").
 const _orgContentRoutes = [
   AppRoutes.administration,
-  AppRoutes.manageOrganizations,
-  AppRoutes.manageProjects,
   AppRoutes.manageSites,
   AppRoutes.manageSiteWorkers,
   AppRoutes.manageActivities,
@@ -236,10 +232,7 @@ void main() {
     });
 
     test('stays on /access-denied without a redirect loop', () {
-      expect(
-        authRedirect(AuthStatus.rejected, AppRoutes.accessDenied),
-        isNull,
-      );
+      expect(authRedirect(AuthStatus.rejected, AppRoutes.accessDenied), isNull);
     });
   });
 
@@ -286,7 +279,8 @@ void main() {
         expect(
           authRedirect(AuthStatus.authenticated, route),
           AppRoutes.dashboard,
-          reason: '$route requires isPlatformAdministrator or '
+          reason:
+              '$route requires isPlatformAdministrator or '
               'canManageOrgContent',
         );
       }
@@ -346,14 +340,12 @@ void main() {
       }
     });
 
-    test('every AuthStatus is classified — none falls through by accident',
-        () {
+    test('every AuthStatus is classified — none falls through by accident', () {
       // If a status is added and left unhandled, it would either fail to
       // compile (the switch is exhaustive) or show up here as an
       // unclassified status that reaches the dashboard.
       for (final status in AuthStatus.values) {
-        final reachesApp =
-            authRedirect(status, AppRoutes.dashboard) == null;
+        final reachesApp = authRedirect(status, AppRoutes.dashboard) == null;
         expect(
           reachesApp,
           status == AuthStatus.authenticated,
@@ -452,110 +444,11 @@ void main() {
     });
   });
 
-  group('authRedirect (administration routes are platform-administrator-gated)',
-      () {
-    test('an active non-administrator is redirected to the dashboard', () {
-      for (final route in _administrationRoutes) {
-        expect(
-          authRedirect(AuthStatus.authenticated, route),
-          AppRoutes.dashboard,
-        );
-        expect(
-          authRedirect(
-            AuthStatus.authenticated,
-            route,
-            isPlatformAdministrator: false,
-          ),
-          AppRoutes.dashboard,
-        );
-      }
-    });
-
-    test('an active Admin may reach both', () {
-      for (final route in _administrationRoutes) {
-        expect(
-          authRedirect(
-            AuthStatus.authenticated,
-            route,
-            isPlatformAdministrator: true,
-          ),
-          isNull,
-          reason: '$route should be reachable with isPlatformAdministrator',
-        );
-      }
-    });
-
-    test('platform authority never substitutes for an active account', () {
-      // isPlatformAdministrator is additive to accountStatus, never a
-      // bypass of it: a suspended or pending Admin reaches
-      // nothing.
-      for (final status in _deniedStatuses) {
-        for (final route in _administrationRoutes) {
-          expect(
-            authRedirect(status, route, isPlatformAdministrator: true),
-            isNotNull,
-            reason: '$status must not reach $route even as a System '
-                'Administrator',
-          );
-        }
-      }
-    });
-
-    test('platform authority grants no other route on its own', () {
-      // isPlatformAdministrator (as tested here) is scoped to exactly the
-      // library screens in _administrationRoutes; the
-      // pending-approvals inbox still requires canReviewPendingAccounts
-      // separately (which SessionController derives from the same role, but
-      // the redirect function itself treats the two flags independently).
-      for (final status in AuthStatus.values) {
-        for (final route in _protectedRoutes) {
-          expect(
-            authRedirect(status, route, isPlatformAdministrator: true),
-            authRedirect(status, route, isPlatformAdministrator: false),
-            reason: 'platform authority changed access to $route under '
-                '$status',
-          );
-        }
-      }
-    });
-
-    test('an Admin is still redirected away from the gate '
-        'screens', () {
-      for (final route in [
-        AppRoutes.login,
-        AppRoutes.register,
-        AppRoutes.pendingApproval,
-        AppRoutes.accessDenied,
-        AppRoutes.sessionLoading,
-      ]) {
-        expect(
-          authRedirect(
-            AuthStatus.authenticated,
-            route,
-            isPlatformAdministrator: true,
-          ),
-          AppRoutes.dashboard,
-        );
-      }
-    });
-
-    test('redirecting a non-administrator away lands somewhere stable', () {
-      for (final route in _administrationRoutes) {
-        final target = authRedirect(AuthStatus.authenticated, route);
-
-        expect(target, isNotNull);
-        expect(authRedirect(AuthStatus.authenticated, target!), isNull);
-      }
-    });
-  });
-
   group(
-    'authRedirect (org-content routes are platform-administrator-or-'
-    'org-content-manager-gated)',
+    'authRedirect (administration routes are platform-administrator-gated)',
     () {
-      test('an active user with neither flag is redirected to the dashboard',
-          () {
-        for (final route in _orgContentRoutes) {
+      test('an active non-administrator is redirected to the dashboard', () {
+        for (final route in _administrationRoutes) {
           expect(
             authRedirect(AuthStatus.authenticated, route),
             AppRoutes.dashboard,
@@ -565,15 +458,14 @@ void main() {
               AuthStatus.authenticated,
               route,
               isPlatformAdministrator: false,
-              canManageOrgContent: false,
             ),
             AppRoutes.dashboard,
           );
         }
       });
 
-      test('an active Admin may reach every org-content route', () {
-        for (final route in _orgContentRoutes) {
+      test('an active Admin may reach both', () {
+        for (final route in _administrationRoutes) {
           expect(
             authRedirect(
               AuthStatus.authenticated,
@@ -586,57 +478,44 @@ void main() {
         }
       });
 
-      test('an active Site Manager may reach every org-content route', () {
-        // canManageOrgContent alone (no isPlatformAdministrator) is enough —
-        // the screens themselves narrow further to the caller's own
-        // organization; this router-level flag only says "may enter the
-        // chain at all," matching how canReviewPendingAccounts is tested
-        // above.
-        for (final route in _orgContentRoutes) {
-          expect(
-            authRedirect(
-              AuthStatus.authenticated,
-              route,
-              canManageOrgContent: true,
-            ),
-            isNull,
-            reason: '$route should be reachable with canManageOrgContent',
-          );
-        }
-      });
-
-      test('neither flag substitutes for an active account', () {
+      test('platform authority never substitutes for an active account', () {
+        // isPlatformAdministrator is additive to accountStatus, never a
+        // bypass of it: a suspended or pending Admin reaches
+        // nothing.
         for (final status in _deniedStatuses) {
-          for (final route in _orgContentRoutes) {
+          for (final route in _administrationRoutes) {
             expect(
-              authRedirect(
-                status,
-                route,
-                isPlatformAdministrator: true,
-                canManageOrgContent: true,
-              ),
+              authRedirect(status, route, isPlatformAdministrator: true),
               isNotNull,
-              reason: '$status must not reach $route regardless of role',
+              reason:
+                  '$status must not reach $route even as a System '
+                  'Administrator',
             );
           }
         }
       });
 
-      test('canManageOrgContent grants no other route on its own', () {
+      test('platform authority grants no other route on its own', () {
+        // isPlatformAdministrator (as tested here) is scoped to exactly the
+        // library screens in _administrationRoutes; the
+        // pending-approvals inbox still requires canReviewPendingAccounts
+        // separately (which SessionController derives from the same role, but
+        // the redirect function itself treats the two flags independently).
         for (final status in AuthStatus.values) {
           for (final route in _protectedRoutes) {
             expect(
-              authRedirect(status, route, canManageOrgContent: true),
-              authRedirect(status, route, canManageOrgContent: false),
-              reason: 'canManageOrgContent changed access to $route under '
+              authRedirect(status, route, isPlatformAdministrator: true),
+              authRedirect(status, route, isPlatformAdministrator: false),
+              reason:
+                  'platform authority changed access to $route under '
                   '$status',
             );
           }
         }
       });
 
-      test('a Site Manager is still redirected away from the '
-          'gate screens', () {
+      test('an Admin is still redirected away from the gate '
+          'screens', () {
         for (final route in [
           AppRoutes.login,
           AppRoutes.register,
@@ -648,16 +527,15 @@ void main() {
             authRedirect(
               AuthStatus.authenticated,
               route,
-              canManageOrgContent: true,
+              isPlatformAdministrator: true,
             ),
             AppRoutes.dashboard,
           );
         }
       });
 
-      test('redirecting an unauthorized user away lands somewhere stable',
-          () {
-        for (final route in _orgContentRoutes) {
+      test('redirecting a non-administrator away lands somewhere stable', () {
+        for (final route in _administrationRoutes) {
           final target = authRedirect(AuthStatus.authenticated, route);
 
           expect(target, isNotNull);
@@ -666,6 +544,120 @@ void main() {
       });
     },
   );
+
+  group('authRedirect (org-content routes are platform-administrator-or-'
+      'org-content-manager-gated)', () {
+    test('an active user with neither flag is redirected to the dashboard', () {
+      for (final route in _orgContentRoutes) {
+        expect(
+          authRedirect(AuthStatus.authenticated, route),
+          AppRoutes.dashboard,
+        );
+        expect(
+          authRedirect(
+            AuthStatus.authenticated,
+            route,
+            isPlatformAdministrator: false,
+            canManageOrgContent: false,
+          ),
+          AppRoutes.dashboard,
+        );
+      }
+    });
+
+    test('an active Admin may reach every org-content route', () {
+      for (final route in _orgContentRoutes) {
+        expect(
+          authRedirect(
+            AuthStatus.authenticated,
+            route,
+            isPlatformAdministrator: true,
+          ),
+          isNull,
+          reason: '$route should be reachable with isPlatformAdministrator',
+        );
+      }
+    });
+
+    test('an active Site Manager may reach every org-content route', () {
+      // canManageOrgContent alone (no isPlatformAdministrator) is enough —
+      // the screens themselves narrow further to the caller's own
+      // organization; this router-level flag only says "may enter the
+      // chain at all," matching how canReviewPendingAccounts is tested
+      // above.
+      for (final route in _orgContentRoutes) {
+        expect(
+          authRedirect(
+            AuthStatus.authenticated,
+            route,
+            canManageOrgContent: true,
+          ),
+          isNull,
+          reason: '$route should be reachable with canManageOrgContent',
+        );
+      }
+    });
+
+    test('neither flag substitutes for an active account', () {
+      for (final status in _deniedStatuses) {
+        for (final route in _orgContentRoutes) {
+          expect(
+            authRedirect(
+              status,
+              route,
+              isPlatformAdministrator: true,
+              canManageOrgContent: true,
+            ),
+            isNotNull,
+            reason: '$status must not reach $route regardless of role',
+          );
+        }
+      }
+    });
+
+    test('canManageOrgContent grants no other route on its own', () {
+      for (final status in AuthStatus.values) {
+        for (final route in _protectedRoutes) {
+          expect(
+            authRedirect(status, route, canManageOrgContent: true),
+            authRedirect(status, route, canManageOrgContent: false),
+            reason:
+                'canManageOrgContent changed access to $route under '
+                '$status',
+          );
+        }
+      }
+    });
+
+    test('a Site Manager is still redirected away from the '
+        'gate screens', () {
+      for (final route in [
+        AppRoutes.login,
+        AppRoutes.register,
+        AppRoutes.pendingApproval,
+        AppRoutes.accessDenied,
+        AppRoutes.sessionLoading,
+      ]) {
+        expect(
+          authRedirect(
+            AuthStatus.authenticated,
+            route,
+            canManageOrgContent: true,
+          ),
+          AppRoutes.dashboard,
+        );
+      }
+    });
+
+    test('redirecting an unauthorized user away lands somewhere stable', () {
+      for (final route in _orgContentRoutes) {
+        final target = authRedirect(AuthStatus.authenticated, route);
+
+        expect(target, isNotNull);
+        expect(authRedirect(AuthStatus.authenticated, target!), isNull);
+      }
+    });
+  });
 
   group('authRedirect (no redirect loops anywhere)', () {
     test('the redirect target of any status is itself stable', () {
@@ -685,7 +677,8 @@ void main() {
           expect(
             authRedirect(status, first),
             isNull,
-            reason: '$status redirected $route -> $first, which redirects again',
+            reason:
+                '$status redirected $route -> $first, which redirects again',
           );
         }
       }

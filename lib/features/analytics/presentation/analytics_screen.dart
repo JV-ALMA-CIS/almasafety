@@ -81,7 +81,8 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     if (existing != null && existing.organizationId == organizationId) {
       return existing;
     }
-    final created = widget.repository ??
+    final created =
+        widget.repository ??
         AnalyticsRepository(
           firestoreService: FirestoreService(),
           organizationId: organizationId,
@@ -114,12 +115,9 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
       _errorMessage = null;
     });
     try {
-      final dashboard = await _repositoryFor(organizationId).build(
-        projectId: _projectId,
-        siteId: _siteId,
-        from: _from,
-        to: _to,
-      );
+      final dashboard = await _repositoryFor(
+        organizationId,
+      ).build(projectId: _projectId, siteId: _siteId, from: _from, to: _to);
       if (!mounted) return;
       setState(() => _dashboard = dashboard);
     } on AppException catch (e) {
@@ -153,7 +151,8 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     final sessionController = context.watch<SessionController>();
     final profile = sessionController.profile;
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
-    final canManage = isPlatformAdministrator ||
+    final canManage =
+        isPlatformAdministrator ||
         (sessionController.activeMembership?.role.canReviewPendingAccounts ??
             false);
     final organizationId = isPlatformAdministrator
@@ -165,8 +164,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
         child: Padding(
           padding: EdgeInsets.all(AppSpacing.lg),
           child: Text(
-            'Analytics is available to Organization Administrators, '
-            'Safety Managers and Site Superintendents.',
+            'Analytics is available to Admins and Site Managers.',
             style: AppTextStyles.bodyMedium,
             textAlign: TextAlign.center,
           ),
@@ -221,7 +219,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                   initialValue: _projectId,
                   decoration: const InputDecoration(hintText: 'All projects'),
                   items: [
-                    const DropdownMenuItem(value: null, child: Text('All projects')),
+                    const DropdownMenuItem(
+                      value: null,
+                      child: Text('All projects'),
+                    ),
                     for (final project in projects)
                       DropdownMenuItem(
                         value: project.id,
@@ -240,7 +241,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                   initialValue: _siteId,
                   decoration: const InputDecoration(hintText: 'All sites'),
                   items: [
-                    const DropdownMenuItem(value: null, child: Text('All sites')),
+                    const DropdownMenuItem(
+                      value: null,
+                      child: Text('All sites'),
+                    ),
                     for (final site in visibleSites)
                       DropdownMenuItem(value: site.id, child: Text(site.name)),
                   ],
@@ -277,7 +281,9 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                     minHeight: AppSpacing.minTouchTarget,
                   ),
                   child: ElevatedButton.icon(
-                    onPressed: _isLoading ? null : () => _generate(organizationId),
+                    onPressed: _isLoading
+                        ? null
+                        : () => _generate(organizationId),
                     icon: const Icon(Icons.dashboard_outlined),
                     label: Text(_isLoading ? 'Loading…' : 'Refresh'),
                   ),
@@ -334,7 +340,8 @@ class _DashboardView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final hasAnyData = dashboard.meetings.totalCount > 0 ||
+    final hasAnyData =
+        dashboard.meetings.totalCount > 0 ||
         dashboard.safetyAlerts.totalCount > 0 ||
         dashboard.correctiveActions.totalCount > 0 ||
         dashboard.safetyLearning.assignedCount > 0;
@@ -356,17 +363,29 @@ class _DashboardView extends StatelessWidget {
         _SectionTitle('Safety Meetings'),
         _MetricRow(
           cards: [
-            _MetricCard(label: 'Completed', value: '${dashboard.meetings.completedCount}'),
-            _MetricCard(label: 'In Progress', value: '${dashboard.meetings.inProgressCount}'),
+            _MetricCard(
+              label: 'Completed',
+              value: '${dashboard.meetings.completedCount}',
+            ),
+            _MetricCard(
+              label: 'In Progress',
+              value: '${dashboard.meetings.inProgressCount}',
+            ),
           ],
         ),
         if (dashboard.meetings.bySite.isNotEmpty) ...[
           const SizedBox(height: AppSpacing.sm),
-          _BarBreakdown(title: 'Meetings by site', values: dashboard.meetings.bySite),
+          _BarBreakdown(
+            title: 'Meetings by site',
+            values: dashboard.meetings.bySite,
+          ),
         ],
         if (dashboard.meetings.byDate.isNotEmpty) ...[
           const SizedBox(height: AppSpacing.sm),
-          _BarBreakdown(title: 'Meetings by date', values: dashboard.meetings.byDate),
+          _BarBreakdown(
+            title: 'Meetings by date',
+            values: dashboard.meetings.byDate,
+          ),
         ],
         const SizedBox(height: AppSpacing.lg),
         _SectionTitle('Attendance'),
@@ -412,10 +431,7 @@ class _MetricRow extends StatelessWidget {
     return Wrap(
       spacing: AppSpacing.sm,
       runSpacing: AppSpacing.sm,
-      children: [
-        for (final card in cards)
-          SizedBox(width: 150, child: card),
-      ],
+      children: [for (final card in cards) SizedBox(width: 150, child: card)],
     );
   }
 }
@@ -653,14 +669,8 @@ class _SafetyLearningSection extends StatelessWidget {
       cards: [
         _MetricCard(label: 'Assigned', value: '${metrics.assignedCount}'),
         _MetricCard(label: 'Completed', value: '${metrics.completedCount}'),
-        _MetricCard(
-          label: 'In Progress',
-          value: '${metrics.inProgressCount}',
-        ),
-        _MetricCard(
-          label: 'Outstanding',
-          value: '${metrics.outstandingCount}',
-        ),
+        _MetricCard(label: 'In Progress', value: '${metrics.inProgressCount}'),
+        _MetricCard(label: 'Outstanding', value: '${metrics.outstandingCount}'),
         _MetricCard(
           label: 'Completion %',
           value: '${metrics.completionPercentage.toStringAsFixed(0)}%',

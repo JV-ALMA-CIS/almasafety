@@ -3,7 +3,6 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../core/services/firestore_service.dart';
 import '../core/services/session_controller.dart';
-import '../core/widgets/organization_switcher.dart';
 import '../core/widgets/responsive_scaffold.dart';
 import '../features/authentication/domain/app_role.dart';
 import '../features/notifications/data/notification_repository.dart';
@@ -23,13 +22,17 @@ import 'app_routes.dart';
 /// about what the router/rules/callables would allow a modified client to
 /// reach; see those layers for the actual enforcement.
 ///
-/// The header above the navigation items carries the app's own branding
-/// plus [OrganizationSwitcher] — organization switching is context, not a
-/// navigation destination, so it lives beside the branding rather than as
-/// a sidebar entry or an app-bar action. The app bar itself stays minimal:
-/// a drawer toggle where needed, the title, and the two truly global
-/// actions (Notifications, and eventually a Profile entry) — never a list
-/// of feature buttons.
+/// PHASE 1 (single-company model): the header carries only the app's own
+/// "JVA Safety" branding — no organization switcher. JV ALMA CIS is the
+/// one company every user works under; there is nothing to switch between,
+/// so surfacing a picker (even a static "which org am I in" label) would
+/// invite a question that no longer has a meaningful answer. Internally,
+/// `SessionController.activeOrganizationId` still resolves to that one
+/// company's Firestore id — nothing about the underlying membership model
+/// changed, only what the UI shows. The app bar itself stays minimal: a
+/// drawer toggle where needed, the title, and the two truly global actions
+/// (Notifications, and eventually a Profile entry) — never a list of
+/// feature buttons.
 class AppShell extends StatelessWidget {
   const AppShell({super.key, required this.child});
 
@@ -114,10 +117,12 @@ class AppShell extends StatelessWidget {
   /// - **Administration** — reviewer roles only (`canReviewPendingAccounts`
   ///   — Admin, Site Manager and Foreman all have SOME review authority),
   ///   but its ENTRIES differ by role: the "Administration" landing page
-  ///   (Active/Suspended Users, Organizations) additionally requires
-  ///   `canManageOrgContent`, which a Foreman does not hold, so they see
-  ///   Pending Approvals and My Workers instead — never a dead-end entry
-  ///   that `AdministrationScreen` itself would refuse.
+  ///   (PHASE 1: Active/Suspended Users only — its former "Organizations"
+  ///   entry is gone under the single-company model, see
+  ///   [AdministrationScreen]) additionally requires `canManageOrgContent`,
+  ///   which a Foreman does not hold, so they see Pending Approvals and My
+  ///   Workers instead — never a dead-end entry that `AdministrationScreen`
+  ///   itself would refuse.
   List<NavSection> _sectionsFor({
     required bool isPlatformAdministrator,
     required bool canReviewPendingAccounts,
@@ -282,10 +287,13 @@ class AppShell extends StatelessWidget {
   }
 }
 
-/// Branding plus the organization switcher, shown above the navigation
-/// items. [OrganizationSwitcher] renders nothing itself for a
-/// single-membership user or Admin (see its own doc comment), so this
-/// header collapses to just the wordmark in the common case.
+/// Branding shown above the navigation items: the app wordmark plus the
+/// one company every user works under.
+///
+/// PHASE 1 (single-company model): "JV ALMA CIS" is shown as static
+/// identity text, not a selectable/switchable control — there was
+/// previously an [OrganizationSwitcher] here for the (now-removed)
+/// multi-organization case; that concept no longer applies.
 class _SidebarHeader extends StatelessWidget {
   const _SidebarHeader();
 
@@ -302,8 +310,13 @@ class _SidebarHeader extends StatelessWidget {
               context,
             ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
           ),
-          const SizedBox(height: 12),
-          const OrganizationSwitcher(),
+          const SizedBox(height: 2),
+          Text(
+            'JV ALMA CIS',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
         ],
       ),
     );

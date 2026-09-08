@@ -1,19 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/errors/app_exception.dart';
-import '../../../core/services/firestore_service.dart';
 import '../../../core/services/session_controller.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
-import '../../organizations/data/organization_repository.dart';
-import '../../organizations/domain/organization.dart';
 import '../data/account_approval_service.dart';
 import '../domain/account_status.dart';
-import '../domain/app_role.dart';
 import '../domain/membership.dart';
 import '../domain/organization_user.dart';
-import '../domain/worker_type.dart';
 import 'auth_error_banner.dart';
 
 /// Lists already-reviewed users at one or more [AccountStatus] values and
@@ -44,7 +39,6 @@ class OrganizationUsersScreen extends StatefulWidget {
     required this.title,
     super.key,
     this.service,
-    this.organizationRepository,
   });
 
   /// The statuses shown together in this list, e.g. `[active]` for Active
@@ -62,13 +56,6 @@ class OrganizationUsersScreen extends StatefulWidget {
   /// constructs the real service, which resolves FirebaseFunctions lazily.
   final AccountApprovalService? service;
 
-  /// Injected in tests. Backs the "Add to another organization" dialog's
-  /// Admin-only organization picker (mirroring
-  /// `_RoleAssignmentDialog.organizationRepository` in
-  /// pending_approvals_screen.dart). Production builds pass nothing and the
-  /// state constructs the real repository.
-  final OrganizationRepository? organizationRepository;
-
   @override
   State<OrganizationUsersScreen> createState() =>
       _OrganizationUsersScreenState();
@@ -77,18 +64,15 @@ class OrganizationUsersScreen extends StatefulWidget {
 class _OrganizationUsersScreenState extends State<OrganizationUsersScreen> {
   late final AccountApprovalService _service =
       widget.service ?? AccountApprovalService();
-  late final OrganizationRepository _organizationRepository =
-      widget.organizationRepository ??
-      OrganizationRepository(firestoreService: FirestoreService());
 
   List<OrganizationUser> _users = const [];
   bool _isLoading = true;
   String? _errorMessage;
 
-  /// Uids with a suspend/reinstate (account- or membership-level) or
-  /// add-to-organization call in flight. Tracked per-row so acting on one
-  /// user does not lock the rest of the list, and so a row cannot be
-  /// double-submitted by an impatient second tap.
+  /// Uids with a suspend/reinstate (account- or membership-level) call in
+  /// flight. Tracked per-row so acting on one user does not lock the rest
+  /// of the list, and so a row cannot be double-submitted by an impatient
+  /// second tap.
   final Set<String> _busyUids = {};
 
   @override
@@ -165,10 +149,8 @@ class _OrganizationUsersScreenState extends State<OrganizationUsersScreen> {
     String organizationId,
   ) => _decide(
     user,
-    action: () => _service.reinstateMembership(
-      user.uid,
-      organizationId: organizationId,
-    ),
+    action: () =>
+        _service.reinstateMembership(user.uid, organizationId: organizationId),
     successMessage: '${user.name} was reinstated in this organization.',
     removeFromList: false,
     newMembershipStatus: MembershipStatus.active,
@@ -198,8 +180,11 @@ class _OrganizationUsersScreenState extends State<OrganizationUsersScreen> {
           // multi-org model, so match on both — an account-level decision
           // still only concerns the one row it was invoked from.
           _users = _users
-              .where((candidate) => !(candidate.uid == user.uid &&
-                  candidate.organizationId == user.organizationId))
+              .where(
+                (candidate) =>
+                    !(candidate.uid == user.uid &&
+                        candidate.organizationId == user.organizationId),
+              )
               .toList(growable: false);
         } else if (newMembershipStatus != null) {
           // A membership-level decision does not remove the row from an
@@ -242,71 +227,12 @@ class _OrganizationUsersScreenState extends State<OrganizationUsersScreen> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  /// Opens [_AddMembershipDialog] for [user], then calls
-  /// [AccountApprovalService.addOrganizationMembership] with the chosen
-  /// role/workerType/siteIds if the reviewer confirms.
-  Future<void> _addToAnotherOrganization(OrganizationUser user) async {
-    if (_busyUids.contains(user.uid)) return;
-    final sessionController = context.read<SessionController>();
-    final profile = sessionController.profile;
-    // Mirrors PendingApprovalsScreen._approve: a non-Admin reviewer's own
-    // role lives on their active Membership, not the (now admin-only)
-    // profile.platformRole.
-    final reviewerRole =
-        profile?.platformRole ?? sessionController.activeMembership?.role;
-    if (reviewerRole == null) return;
-
-    final selection = await showDialog<_AddMembershipSelection>(
-      context: context,
-      builder: (_) => _AddMembershipDialog(
-        user: user,
-        reviewerRole: reviewerRole,
-        organizationRepository: _organizationRepository,
-      ),
-    );
-    if (selection == null || !mounted) return;
-
-    // Exactly like PendingApprovalsScreen._approve: only an Admin picks an
-    // organization explicitly. Every other reviewer acts within their own
-    // active organization, resolved automatically, never from a picker.
-    final organizationId = reviewerRole == AppRole.admin
-        ? selection.organizationId
-        : sessionController.activeOrganizationId;
-    if (organizationId == null) {
-      setState(
-        () => _errorMessage =
-            'Choose an organization to add this person to.',
-      );
-      return;
-    }
-
-    setState(() {
-      _busyUids.add(user.uid);
-      _errorMessage = null;
-    });
-    try {
-      await _service.addOrganizationMembership(
-        user.uid,
-        role: selection.role,
-        workerType: selection.workerType,
-        siteIds: selection.siteIds,
-        organizationId: organizationId,
-      );
-      if (!mounted) return;
-      _showMessage('${user.name} was added to that organization.');
-    } on AppException catch (e) {
-      if (!mounted) return;
-      setState(() => _errorMessage = e.message);
-    } finally {
-      if (mounted) setState(() => _busyUids.remove(user.uid));
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final sessionController = context.watch<SessionController>();
     final profile = sessionController.profile;
-    final canReview = profile?.isPlatformAdministrator == true ||
+    final canReview =
+        profile?.isPlatformAdministrator == true ||
         (sessionController.activeMembership?.role.canReviewPendingAccounts ??
             false);
 
@@ -325,10 +251,7 @@ class _OrganizationUsersScreenState extends State<OrganizationUsersScreen> {
       );
     }
 
-    return RefreshIndicator(
-      onRefresh: _load,
-      child: _buildBody(),
-    );
+    return RefreshIndicator(onRefresh: _load, child: _buildBody());
   }
 
   Widget _buildBody() {
@@ -380,15 +303,14 @@ class _OrganizationUsersScreenState extends State<OrganizationUsersScreen> {
                 : null,
             onSuspendMembership:
                 user.organizationId != null &&
-                        user.membershipStatus == MembershipStatus.active
-                    ? () => _suspendMembership(user, user.organizationId!)
-                    : null,
+                    user.membershipStatus == MembershipStatus.active
+                ? () => _suspendMembership(user, user.organizationId!)
+                : null,
             onReinstateMembership:
                 user.organizationId != null &&
-                        user.membershipStatus == MembershipStatus.suspended
-                    ? () => _reinstateMembership(user, user.organizationId!)
-                    : null,
-            onAddToAnotherOrganization: () => _addToAnotherOrganization(user),
+                    user.membershipStatus == MembershipStatus.suspended
+                ? () => _reinstateMembership(user, user.organizationId!)
+                : null,
           ),
           const SizedBox(height: AppSpacing.md),
         ],
@@ -402,11 +324,12 @@ class _OrganizationUsersScreenState extends State<OrganizationUsersScreen> {
 /// account-level action for a rejected one — rejection is terminal (see
 /// PROJECT_CONTEXT.md and `denyAccount` in
 /// `functions/src/account_approval.ts`). Separately, a membership-level
-/// "Suspend in this org" / "Reinstate in this org" action is offered
-/// whenever this row's own [OrganizationUser.membershipStatus] allows it —
-/// DISTINCT from the account-level actions: an active account with an
-/// active membership can show both at once, and the labels are deliberately
-/// prefixed ("account" vs "in this org") so the two are never confused.
+/// "Suspend assignment" / "Reinstate assignment" action is offered whenever
+/// this row's own [OrganizationUser.membershipStatus] allows it — DISTINCT
+/// from the account-level actions: an active account with an active
+/// membership can show both at once. "Assignment" here means this person's
+/// placement/access under JV ALMA CIS (internally still a `Membership`
+/// document, PHASE 1's single-company model), not the account itself.
 class _OrganizationUserCard extends StatelessWidget {
   const _OrganizationUserCard({
     required this.user,
@@ -415,7 +338,6 @@ class _OrganizationUserCard extends StatelessWidget {
     required this.onReinstate,
     required this.onSuspendMembership,
     required this.onReinstateMembership,
-    required this.onAddToAnotherOrganization,
   });
 
   final OrganizationUser user;
@@ -424,11 +346,11 @@ class _OrganizationUserCard extends StatelessWidget {
   final VoidCallback? onReinstate;
   final VoidCallback? onSuspendMembership;
   final VoidCallback? onReinstateMembership;
-  final VoidCallback onAddToAnotherOrganization;
 
   @override
   Widget build(BuildContext context) {
-    final hasAnyAction = onSuspend != null ||
+    final hasAnyAction =
+        onSuspend != null ||
         onReinstate != null ||
         onSuspendMembership != null ||
         onReinstateMembership != null;
@@ -462,17 +384,14 @@ class _OrganizationUserCard extends StatelessWidget {
             if (user.role != null)
               _DetailRow(
                 icon: Icons.badge_outlined,
-                value: user.role!.label, // OrganizationUser.role: display DTO field, not the Firestore `platformRole` field.
+                value: user
+                    .role!
+                    .label, // OrganizationUser.role: display DTO field, not the Firestore `platformRole` field.
               ),
             if (user.workerType != null)
               _DetailRow(
                 icon: Icons.engineering_outlined,
                 value: user.workerType!.label,
-              ),
-            if (user.organizationId != null)
-              _DetailRow(
-                icon: Icons.apartment_outlined,
-                value: user.organizationId!,
               ),
             const SizedBox(height: AppSpacing.md),
             Wrap(
@@ -500,7 +419,7 @@ class _OrganizationUserCard extends StatelessWidget {
                     onPressed: isBusy ? null : onSuspendMembership,
                     isBusy: isBusy,
                     icon: Icons.block_outlined,
-                    label: 'Suspend in this org',
+                    label: 'Suspend assignment',
                     outlined: true,
                     color: AppColors.warning,
                   ),
@@ -509,15 +428,8 @@ class _OrganizationUserCard extends StatelessWidget {
                     onPressed: isBusy ? null : onReinstateMembership,
                     isBusy: isBusy,
                     icon: Icons.how_to_reg_outlined,
-                    label: 'Reinstate in this org',
+                    label: 'Reinstate assignment',
                   ),
-                _ActionButton(
-                  onPressed: isBusy ? null : onAddToAnotherOrganization,
-                  isBusy: false,
-                  icon: Icons.group_add_outlined,
-                  label: 'Add to another organization',
-                  outlined: true,
-                ),
               ],
             ),
             if (!hasAnyAction) const SizedBox.shrink(),
@@ -608,11 +520,11 @@ class _StatusChip extends StatelessWidget {
   }
 }
 
-/// Shows this row's own per-organization [MembershipStatus] — distinct from
-/// (and visually never confused with) [_StatusChip]'s account-level
-/// [AccountStatus]: labelled "Org:" so a reviewer cannot mistake "this
-/// person's membership in this specific organization" for "this person's
-/// whole account".
+/// Shows this row's own [MembershipStatus] (internally still per-org, but
+/// there is only ever one org under the single-company model) — distinct
+/// from (and visually never confused with) [_StatusChip]'s account-level
+/// [AccountStatus]: labelled "Assignment:" so a reviewer cannot mistake
+/// "this person's work assignment" for "this person's whole account".
 class _MembershipStatusChip extends StatelessWidget {
   const _MembershipStatusChip({required this.status});
 
@@ -625,8 +537,8 @@ class _MembershipStatusChip extends StatelessWidget {
       MembershipStatus.suspended => AppColors.warning,
     };
     final label = switch (status) {
-      MembershipStatus.active => 'Org: Active',
-      MembershipStatus.suspended => 'Org: Suspended',
+      MembershipStatus.active => 'Assignment: Active',
+      MembershipStatus.suspended => 'Assignment: Suspended',
     };
     return Container(
       padding: const EdgeInsets.symmetric(
@@ -637,10 +549,7 @@ class _MembershipStatusChip extends StatelessWidget {
         border: Border.all(color: color.withValues(alpha: 0.6)),
         borderRadius: BorderRadius.circular(AppSpacing.sm),
       ),
-      child: Text(
-        label,
-        style: AppTextStyles.label.copyWith(color: color),
-      ),
+      child: Text(label, style: AppTextStyles.label.copyWith(color: color)),
     );
   }
 }
@@ -663,227 +572,6 @@ class _DetailRow extends StatelessWidget {
           Expanded(child: Text(value, style: AppTextStyles.bodyMedium)),
         ],
       ),
-    );
-  }
-}
-
-/// The role, worker type, site ids and (for a System Administrator only)
-/// organization a reviewer chose, returned by [_AddMembershipDialog].
-class _AddMembershipSelection {
-  const _AddMembershipSelection({
-    required this.role,
-    this.workerType,
-    this.siteIds,
-    this.organizationId,
-  });
-
-  final AppRole role;
-  final WorkerType? workerType;
-  final List<String>? siteIds;
-  final String? organizationId;
-}
-
-/// Prompts the reviewer to place an already-active user into an ADDITIONAL
-/// organization, via [AccountApprovalService.addOrganizationMembership].
-///
-/// Mirrors `_RoleAssignmentDialog` in pending_approvals_screen.dart closely
-/// — same grantable-roles switch (duplicated here rather than shared,
-/// matching that file's own precedent of keeping this logic local to its
-/// dialog), same Admin-only organization picker, same
-/// "non-Admin acts within their own active organization, never a picker"
-/// rule (enforced by the caller, [_OrganizationUsersScreenState]
-/// ._addToAnotherOrganization, exactly like `PendingApprovalsScreen._approve`
-/// resolves it). Adds an optional site-ids field, entered as a simple
-/// comma-separated list — this app has no existing reusable multi-select
-/// site-picker widget to draw on (checked site_workers_screen.dart and
-/// worker_detail_screen.dart; neither exposes one), and a comma-separated
-/// text field is consistent with this screen's "optional, simple" ask
-/// without inventing new picker chrome for one dialog.
-class _AddMembershipDialog extends StatefulWidget {
-  const _AddMembershipDialog({
-    required this.user,
-    required this.reviewerRole,
-    required this.organizationRepository,
-  });
-
-  final OrganizationUser user;
-  final AppRole reviewerRole;
-  final OrganizationRepository organizationRepository;
-
-  @override
-  State<_AddMembershipDialog> createState() => _AddMembershipDialogState();
-}
-
-class _AddMembershipDialogState extends State<_AddMembershipDialog> {
-  late AppRole _role = _grantableRoles.first;
-  WorkerType? _workerType;
-  final _siteIdsController = TextEditingController();
-
-  Organization? _selectedOrganization;
-  List<Organization> _organizations = const [];
-  bool _isLoadingOrganizations = true;
-  String? _organizationsError;
-
-  /// Mirrors `_RoleAssignmentDialog._grantableRoles` exactly (see that
-  /// class's doc comment for why no reviewer is ever offered a role equal to
-  /// or above their own).
-  List<AppRole> get _grantableRoles => switch (widget.reviewerRole) {
-    AppRole.admin => const [AppRole.siteManager],
-    AppRole.siteManager => const [AppRole.foreman],
-    AppRole.foreman => const [AppRole.worker],
-    AppRole.worker => const [],
-  };
-
-  bool get _needsOrganizationField => widget.reviewerRole == AppRole.admin;
-
-  @override
-  void initState() {
-    super.initState();
-    if (_needsOrganizationField) _loadOrganizations();
-  }
-
-  @override
-  void dispose() {
-    _siteIdsController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _loadOrganizations() async {
-    setState(() => _isLoadingOrganizations = true);
-    try {
-      final organizations =
-          await widget.organizationRepository.watchAll().first;
-      if (!mounted) return;
-      setState(() => _organizations = organizations);
-    } catch (_) {
-      if (!mounted) return;
-      setState(
-        () => _organizationsError = 'Could not load organizations. '
-            'Please try again.',
-      );
-    } finally {
-      if (mounted) setState(() => _isLoadingOrganizations = false);
-    }
-  }
-
-  List<String>? _parseSiteIds() {
-    final raw = _siteIdsController.text.trim();
-    if (raw.isEmpty) return null;
-    final ids = raw
-        .split(',')
-        .map((id) => id.trim())
-        .where((id) => id.isNotEmpty)
-        .toList(growable: false);
-    return ids.isEmpty ? null : ids;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text('Add ${widget.user.name} to another organization'),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              _needsOrganizationField
-                  ? 'Choose the organization, role and worker type to '
-                        'assign. This does not touch any of their existing '
-                        'memberships.'
-                  : 'Choose the role and worker type to assign. This adds '
-                        'them to your organization without touching any of '
-                        'their existing memberships.',
-              style: AppTextStyles.bodyMedium,
-            ),
-            const SizedBox(height: AppSpacing.md),
-            if (_needsOrganizationField) ...[
-              if (_isLoadingOrganizations)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: AppSpacing.sm),
-                  child: Center(
-                    child: SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                  ),
-                )
-              else if (_organizationsError != null)
-                AuthErrorBanner(message: _organizationsError!)
-              else
-                DropdownButtonFormField<Organization?>(
-                  initialValue: _selectedOrganization,
-                  decoration: const InputDecoration(
-                    labelText: 'Organization',
-                  ),
-                  items: [
-                    for (final organization in _organizations)
-                      DropdownMenuItem(
-                        value: organization,
-                        child: Text(
-                          '${organization.name} (${organization.code})',
-                        ),
-                      ),
-                  ],
-                  onChanged: (value) =>
-                      setState(() => _selectedOrganization = value),
-                ),
-              const SizedBox(height: AppSpacing.sm),
-            ],
-            DropdownButtonFormField<AppRole>(
-              initialValue: _role,
-              decoration: const InputDecoration(labelText: 'Role'),
-              items: [
-                for (final role in _grantableRoles)
-                  DropdownMenuItem(value: role, child: Text(role.label)),
-              ],
-              onChanged: (value) {
-                if (value != null) setState(() => _role = value);
-              },
-            ),
-            const SizedBox(height: AppSpacing.sm),
-            DropdownButtonFormField<WorkerType?>(
-              initialValue: _workerType,
-              decoration: const InputDecoration(labelText: 'Worker type'),
-              items: [
-                const DropdownMenuItem(value: null, child: Text('Not set')),
-                for (final type in WorkerType.values)
-                  DropdownMenuItem(value: type, child: Text(type.label)),
-              ],
-              onChanged: (value) => setState(() => _workerType = value),
-            ),
-            const SizedBox(height: AppSpacing.sm),
-            TextField(
-              controller: _siteIdsController,
-              decoration: const InputDecoration(
-                labelText: 'Site ids (optional, comma-separated)',
-              ),
-            ),
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        ElevatedButton(
-          onPressed: (_needsOrganizationField && _selectedOrganization == null)
-              ? null
-              : () => Navigator.of(context).pop(
-                    _AddMembershipSelection(
-                      role: _role,
-                      workerType: _workerType,
-                      siteIds: _parseSiteIds(),
-                      organizationId: _needsOrganizationField
-                          ? _selectedOrganization?.id
-                          : null,
-                    ),
-                  ),
-          child: const Text('Add'),
-        ),
-      ],
     );
   }
 }

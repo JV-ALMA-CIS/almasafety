@@ -11,7 +11,7 @@ import 'package:jva_safety/routing/app_routes.dart';
 import 'package:jva_safety/routing/app_shell.dart';
 
 /// A session controller reporting a fixed profile/membership, mirroring the
-/// fake used in organizations_screen_test.dart/administration_screen_test.dart.
+/// fake used in administration_screen_test.dart.
 class _FakeSession extends SessionController {
   _FakeSession({
     required AppRole? role,
@@ -39,13 +39,10 @@ class _FakeSession extends SessionController {
   @override
   UserProfile? get profile => _profile;
 
-  // Deliberately empty even when a membership exists: AppShell's header
-  // mounts a real, uninjectable OrganizationSwitcher whenever `memberships`
-  // is non-empty (it resolves organization names via a real
-  // OrganizationRepository talking to live Firebase), and its app-bar
-  // action mounts a real _NotificationBellAction whenever
-  // activeOrganizationId is non-null — this test file has no way to fake
-  // either and does not need to: its only concern is nav-SECTION
+  // Deliberately empty: AppShell's app-bar action mounts a real,
+  // uninjectable _NotificationBellAction whenever activeOrganizationId is
+  // non-null (it talks to live Firebase) — this test file has no way to
+  // fake it and does not need to: its only concern is nav-SECTION
   // visibility, which is driven by activeMembership alone (overridden
   // directly below, independent of `memberships`/`activeOrganizationId`).
   @override
@@ -183,8 +180,10 @@ void main() {
     });
 
     testWidgets('a brand-new Site Manager with no membership yet still sees '
-        'Operations/Projects and Administration — the one path to their '
-        'first membership', (tester) async {
+        'Operations/Projects (where the "Set up JV ALMA CIS" bootstrap '
+        'prompt lives — see ProjectsRouterScreen) and Administration', (
+      tester,
+    ) async {
       tester.view.physicalSize = const Size(360, 800);
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.reset);
@@ -249,7 +248,7 @@ void main() {
     testWidgets(
       'a Site Manager sees the Administration landing entry, but not My '
       'Workers — that view is Foreman-scoped; a Site Manager sees every '
-      "site's workers through Organizations instead",
+      "site's workers through Operations/Projects instead",
       (tester) async {
         tester.view.physicalSize = const Size(360, 800);
         tester.view.devicePixelRatio = 1.0;

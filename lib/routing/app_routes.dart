@@ -24,24 +24,17 @@ class AppRoutes {
   /// The Suspended/Rejected Users list, gated the same as [pendingApprovals].
   static const String suspendedUsers = '/suspended-users';
 
-  /// The Organizations screen: an Admin sees and manages every organization;
-  /// an [AppRole.siteManager] sees only their own — see
-  /// [OrganizationsScreen]'s `canManage`/`isPlatformAdministrator` getters.
-  static const String manageOrganizations = '/administration/organizations';
-
-  /// The Projects screen for one organization. Reachable by Admin (any
-  /// organization) or [AppRole.siteManager] (the organization(s) they
-  /// manage) — see [ProjectsScreen]'s `canManage` getter.
-  static const String manageProjects = '/administration/projects';
-
-  /// The Sites screen for one organization. Reachable the same as
-  /// [manageProjects] — see [SitesScreen]'s `canManage` getter.
-  /// [manageSiteWorkers] is where a Site Manager's actual write authority
-  /// over a site (worker assignment) is exposed.
+  /// The Sites screen for one organization/project. Reachable by Admin (any
+  /// organization) or [AppRole.siteManager] (JV ALMA CIS-wide, per the
+  /// single-company model) — see [SitesScreen]'s `canManage` getter. Reached
+  /// via a card tap on [AppRoutes.projects]'s [ProjectsScreen], not a
+  /// standalone nav destination. [manageSiteWorkers] is where a Site
+  /// Manager's actual write authority over a site (worker assignment) is
+  /// exposed.
   static const String manageSites = '/administration/sites';
 
   /// The Activities management screen for one site. Gated the same as
-  /// [manageProjects] — see [ActivitiesScreen]'s `canManage` getter.
+  /// [manageSites] — see [ActivitiesScreen]'s `canManage` getter.
   static const String manageActivities = '/administration/activities';
 
   /// The worker-assignment screen for one activity. Gated the same as
@@ -101,13 +94,14 @@ class AppRoutes {
   /// [DailySafetyMeetingScreen]/[DailySafetyMeetingsRouterScreen].
   static const String workers = '/workers';
 
-  /// The sidebar's own "Projects" destination — resolves the signed-in
-  /// user's active organization directly and shows [ProjectsScreen] for it
-  /// (see [ProjectsRouterScreen]), reachable without first navigating
-  /// through Organizations. Distinct from [manageProjects], which requires
-  /// an [Organization] passed via route `extra` from
-  /// [OrganizationsScreen]'s own drill-down (still the only path to Sites
-  /// and Activities, which need a project/site chosen first).
+  /// The sidebar's "Operations" destination and the app's single Projects
+  /// entry point: resolves the signed-in user's one (JV ALMA CIS)
+  /// organization directly and shows [ProjectsScreen] for it (see
+  /// [ProjectsRouterScreen]) — the only way Projects is reached; there is
+  /// no separate Organizations list to navigate through first. Tapping a
+  /// project card from here carries `(organization, project)` forward as
+  /// route `extra` to reach [AppRoutes.manageSites], and so on down to
+  /// Activities/Workers.
   static const String projects = '/projects';
   static const String sites = '/sites';
   static const String activities = '/activities';

@@ -131,41 +131,6 @@ class SessionController extends ChangeNotifier {
   /// duplicate snapshot) does not re-trigger a redundant read.
   String? _loadedSelectionForUid;
 
-  /// organizationId -> resolved display name, or null once confirmed the
-  /// organization document no longer exists. Absent means "not looked up
-  /// yet"; see [cacheOrganizationName]/[cachedOrganizationName].
-  ///
-  /// Lives here — on this app-lifetime singleton — rather than as `State`
-  /// on [OrganizationSwitcher] itself, because that widget sits under the
-  /// router's `ShellRoute` and is rebuilt on every navigation; a
-  /// widget-local cache starts over each time, so the switcher would
-  /// flash the raw Firestore document id (indistinguishable from a
-  /// Firebase uid) in place of the name on every screen change until the
-  /// lookup resolved again. This cache survives navigation and is only
-  /// ever populated, never invalidated for the life of the app — an
-  /// organization's name changing while the app is open is not a
-  /// scenario this needs to handle.
-  final Map<String, String?> _organizationNames = {};
-
-  /// The cached display name for [organizationId], or null if not yet
-  /// looked up (still loading) or confirmed to not exist.
-  String? cachedOrganizationName(String organizationId) =>
-      _organizationNames[organizationId];
-
-  /// True once [organizationId] has a cached lookup result, whether a real
-  /// name or a confirmed-missing null — as opposed to never having been
-  /// looked up at all.
-  bool hasCachedOrganizationName(String organizationId) =>
-      _organizationNames.containsKey(organizationId);
-
-  /// Records the resolved name for [organizationId] (or null if the
-  /// document was confirmed missing) so every consumer of this session
-  /// shares one lookup instead of re-fetching on every rebuild.
-  void cacheOrganizationName(String organizationId, String? name) {
-    _organizationNames[organizationId] = name;
-    notifyListeners();
-  }
-
   User? get firebaseUser => _firebaseUser;
   UserProfile? get profile => _profile;
   AuthStatus get status => _status;
@@ -221,16 +186,16 @@ class SessionController extends ChangeNotifier {
   /// The caller's own [Membership] for [organizationId] specifically, or
   /// null if they hold none there.
   ///
-  /// Distinct from [activeMembership]: that getter only ever returns the
-  /// ONE organization currently selected in the switcher, which is a UI
-  /// convenience for scoping day-to-day operational screens (Hazards,
-  /// Meetings, ...) — it is NOT "every organization this caller may act
-  /// in". A management screen reached by navigating directly to a specific
-  /// organization (e.g. tapping a card on `OrganizationsScreen`, which is
-  /// independent of which organization happens to be "active") must check
-  /// membership in THAT organization, not the active one, or a Site
-  /// Manager of several organizations is wrongly refused whenever the
-  /// organization they navigated to isn't the currently-active one.
+  /// Distinct from [activeMembership]: that getter is a UI convenience for
+  /// scoping day-to-day operational screens (Hazards, Meetings, ...), not
+  /// "every organization this caller may act in". A management screen
+  /// reached by navigating directly to a specific organization (e.g.
+  /// tapping a project card, independent of which organization happens to
+  /// be "active") must check membership in THAT organization, not the
+  /// active one. Under the single-company model (PHASE 1) every caller
+  /// holds at most one membership, so `activeOrganizationId` and this
+  /// method resolve identically in practice — this distinction remains
+  /// correct groundwork if a second organization is ever introduced.
   Membership? membershipFor(String organizationId) {
     for (final membership in _memberships) {
       if (membership.organizationId == organizationId) return membership;
@@ -285,10 +250,7 @@ class SessionController extends ChangeNotifier {
   /// into profile loading; on failure it lands on [AuthStatus.error] with
   /// [lastError] set, and rethrows so the sign-in screen can show the
   /// message inline.
-  Future<void> signIn({
-    required String email,
-    required String password,
-  }) async {
+  Future<void> signIn({required String email, required String password}) async {
     _status = AuthStatus.authenticating;
     _lastError = null;
     _safeNotify();

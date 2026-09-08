@@ -71,22 +71,22 @@ class AccessDeniedScreen extends StatelessWidget {
         return (
           Icons.lock_outline,
           'Account Suspended',
-          'Your account access has been suspended. Contact your organization '
-              'administrator to restore it.',
+          'Your account access has been suspended. Contact your Site '
+              'Manager to restore it.',
         );
       case AuthStatus.rejected:
         return (
           Icons.person_off_outlined,
           'Account Not Approved',
           'Your registration was reviewed and not approved. Contact your '
-              'organization administrator if you believe this is a mistake.',
+              'Site Manager if you believe this is a mistake.',
         );
       case AuthStatus.profileMissing:
         return (
           Icons.person_off_outlined,
           'Profile Not Found',
           'Your sign-in worked, but no JVA Safety profile is linked to this '
-              'account. Contact your organization administrator.',
+              'account. Contact your Site Manager.',
         );
       case AuthStatus.error:
         return (
@@ -104,8 +104,8 @@ class AccessDeniedScreen extends StatelessWidget {
         return (
           Icons.lock_outline,
           'Access Denied',
-          'Your account is not active. Contact your organization '
-              'administrator for access.',
+          'Your account is not active. Contact your Site Manager for '
+              'access.',
         );
     }
   }

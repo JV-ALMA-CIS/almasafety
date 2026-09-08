@@ -24,7 +24,8 @@ class _FakeSession extends SessionController {
         accountStatus: AccountStatus.active,
         platformRole: role == AppRole.admin ? role : null,
       ),
-      _membership = role == null || role == AppRole.admin || organizationId == null
+      _membership =
+          role == null || role == AppRole.admin || organizationId == null
           ? null
           : Membership(
               organizationId: organizationId,
@@ -101,16 +102,11 @@ void main() {
     ) async {
       await seedOrg('alpha');
 
-      await tester.pumpWidget(
-        wrap(role: AppRole.admin, organizationId: null),
-      );
+      await tester.pumpWidget(wrap(role: AppRole.admin, organizationId: null));
       await tester.pumpAndSettle();
 
       expect(
-        find.text(
-          'Reports are available to Organization Administrators, Safety '
-          'Managers and Site Superintendents.',
-        ),
+        find.text('Reports are available to Admins and Site Managers.'),
         findsNothing,
       );
       expect(find.text('Organization'), findsOneWidget);
@@ -155,10 +151,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(
-        find.text(
-          'Reports are available to Organization Administrators, Safety '
-          'Managers and Site Superintendents.',
-        ),
+        find.text('Reports are available to Admins and Site Managers.'),
         findsOneWidget,
       );
     });
