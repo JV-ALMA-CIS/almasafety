@@ -188,11 +188,18 @@ class _SafetyMeetingPointsScreenState extends State<SafetyMeetingPointsScreen> {
     // Admin (any organization) or a Site Manager of THIS organization —
     // field-level content a Site Manager prepares for their own Foremen,
     // see this class's own doc comment for why this is not the same
-    // admin-only shape as the Safety Learning library.
+    // admin-only shape as the Safety Learning library. Checked against
+    // membershipFor(organizationId) SPECIFICALLY, not activeMembership: a
+    // Site Manager reaches this screen by navigating to one particular
+    // organization's card (independent of which organization happens to
+    // be "active" in the switcher), so a Site Manager of several
+    // organizations must not be refused just because the one they tapped
+    // into isn't the currently-active one.
     final canManage = isPlatformAdministrator ||
-        (sessionController.activeMembership?.role.canManageOrgContent ==
-                true &&
-            sessionController.activeOrganizationId == organizationId);
+        (organizationId != null &&
+            sessionController.membershipFor(organizationId)?.role
+                    .canManageOrgContent ==
+                true);
 
     if (!canManage || organizationId == null) {
       return const Center(

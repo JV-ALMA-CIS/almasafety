@@ -172,10 +172,12 @@ class _SiteWorkersScreenState extends State<SiteWorkersScreen> {
     final sessionController = context.watch<SessionController>();
     final profile = sessionController.profile;
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
+    // Checked against membershipFor(widget.organization.id) SPECIFICALLY,
+    // not activeMembership — see ProjectsScreen's matching comment for why.
     final canManage = isPlatformAdministrator ||
-        (sessionController.activeMembership?.role.canManageOrgContent ==
-                true &&
-            sessionController.activeOrganizationId == widget.organization.id);
+        sessionController.membershipFor(widget.organization.id)?.role
+                .canManageOrgContent ==
+            true;
 
     if (!canManage) {
       return const Center(

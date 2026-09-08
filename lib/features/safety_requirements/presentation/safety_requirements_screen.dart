@@ -125,14 +125,20 @@ class _SafetyRequirementsScreenState extends State<SafetyRequirementsScreen> {
   Widget build(BuildContext context) {
     final sessionController = context.watch<SessionController>();
     final profile = sessionController.profile;
-    // A non-Admin's canManageOrgContent now lives on their active
-    // membership, not on UserProfile.platformRole, which is admin-only
-    // under the multi-org membership model.
+    // A non-Admin's canManageOrgContent now lives on their membership FOR
+    // THIS SPECIFIC organization (checked via membershipFor, not
+    // activeMembership — see ProjectsScreen's matching comment for why),
+    // not on UserProfile.platformRole, which is admin-only under the
+    // multi-org membership model — except the one transient case of a
+    // Site Manager just approved with no organization yet
+    // (profile.platformRole == siteManager), which membershipFor cannot
+    // catch since no membership exists yet either way.
     final canManageOrgContent = profile?.canManageOrgContent == true ||
-        sessionController.activeMembership?.role.canManageOrgContent == true;
-    final canManage = profile?.isPlatformAdministrator == true ||
-        (canManageOrgContent &&
-            sessionController.activeOrganizationId == widget.organization.id);
+        sessionController.membershipFor(widget.organization.id)?.role
+                .canManageOrgContent ==
+            true;
+    final canManage =
+        profile?.isPlatformAdministrator == true || canManageOrgContent;
 
     if (!canManage) {
       return const Center(

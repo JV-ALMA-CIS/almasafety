@@ -147,10 +147,12 @@ class _AdminDailySafetyMeetingsScreenState
     final sessionController = context.watch<SessionController>();
     final profile = sessionController.profile;
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
-    final membershipRole = sessionController.activeMembership?.role;
+    // Checked against membershipFor(widget.organization.id) SPECIFICALLY,
+    // not activeMembership — see ProjectsScreen's matching comment for why.
+    final membershipRole =
+        sessionController.membershipFor(widget.organization.id)?.role;
     final canManage = isPlatformAdministrator ||
-        ((membershipRole?.canReviewDailySafetyMeetings ?? false) &&
-            sessionController.activeOrganizationId == widget.organization.id);
+        (membershipRole?.canReviewDailySafetyMeetings ?? false);
 
     if (!canManage) {
       return const Center(

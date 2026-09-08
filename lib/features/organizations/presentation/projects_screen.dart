@@ -115,10 +115,16 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
     final sessionController = context.watch<SessionController>();
     final profile = sessionController.profile;
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
+    // Checked against membershipFor(widget.organization.id) SPECIFICALLY,
+    // not activeMembership: this screen is reached by navigating to one
+    // particular organization's card (independent of which organization
+    // happens to be "active" in the switcher), so a Site Manager of
+    // several organizations must not be refused just because the one they
+    // tapped into isn't the currently-active one.
     final canManage = isPlatformAdministrator ||
-        (sessionController.activeMembership?.role.canManageOrgContent ==
-                true &&
-            sessionController.activeOrganizationId == widget.organization.id);
+        sessionController.membershipFor(widget.organization.id)?.role
+                .canManageOrgContent ==
+            true;
 
     if (!canManage) {
       return const Center(

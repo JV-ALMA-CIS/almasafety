@@ -62,6 +62,10 @@ class _FakeSession extends SessionController {
 
   @override
   Membership? get activeMembership => _membership;
+
+  @override
+  Membership? membershipFor(String organizationId) =>
+      _membership?.organizationId == organizationId ? _membership : null;
 }
 
 void main() {

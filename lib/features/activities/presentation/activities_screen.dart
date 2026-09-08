@@ -126,10 +126,12 @@ class _ActivitiesScreenState extends State<ActivitiesScreen> {
   Widget build(BuildContext context) {
     final sessionController = context.watch<SessionController>();
     final profile = sessionController.profile;
+    // Checked against membershipFor(widget.organization.id) SPECIFICALLY,
+    // not activeMembership — see ProjectsScreen's matching comment for why.
     final canManage = profile?.isPlatformAdministrator == true ||
-        (sessionController.activeMembership?.role.canManageOrgContent ==
-                true &&
-            sessionController.activeOrganizationId == widget.organization.id);
+        sessionController.membershipFor(widget.organization.id)?.role
+                .canManageOrgContent ==
+            true;
 
     if (!canManage) {
       return const Center(
