@@ -43,10 +43,10 @@ class _FakeAssignmentService extends SiteAssignmentService {
   AppException? assignError;
   AppException? removeError;
 
-  final List<({String uid, String organizationId, String siteId})>
-      assignCalls = [];
-  final List<({String uid, String organizationId, String siteId})>
-      removeCalls = [];
+  final List<({String uid, String organizationId, String siteId})> assignCalls =
+      [];
+  final List<({String uid, String organizationId, String siteId})> removeCalls =
+      [];
 
   @override
   Future<void> assignWorkerToSite({
@@ -82,7 +82,8 @@ class _FakeSession extends SessionController {
         // active Membership instead.
         platformRole: role == AppRole.admin ? role : null,
       ),
-      _membership = role == null || role == AppRole.admin || organizationId == null
+      _membership =
+          role == null || role == AppRole.admin || organizationId == null
           ? null
           : Membership(
               organizationId: organizationId,
@@ -140,6 +141,16 @@ void main() {
     organizationId: 'org-alpha',
     siteIds: ['site-1'],
   );
+  const crewWorker = OrganizationUser(
+    uid: 'crew-worker-uid',
+    name: 'David Otieno',
+    email: 'david@example.com',
+    accountStatus: AccountStatus.active,
+    role: AppRole.worker,
+    trade: 'Electrician',
+    organizationId: 'org-alpha',
+    siteIds: ['site-1'],
+  );
   const unassignedWorker = OrganizationUser(
     uid: 'worker-uid',
     name: 'Mary Wanjiku',
@@ -183,52 +194,49 @@ void main() {
   }
 
   group('SiteWorkersScreen (authorization)', () {
-    testWidgets('a Admin sees the management action', (
-      tester,
-    ) async {
-      await tester.pumpWidget(
-        wrap(role: AppRole.admin, users: [foreman]),
-      );
+    testWidgets('a Admin sees the management action', (tester) async {
+      await tester.pumpWidget(wrap(role: AppRole.admin, users: [foreman]));
       await tester.pumpAndSettle();
 
-      expect(find.text('You do not have permission to manage site workers.'), findsNothing);
+      expect(
+        find.text('You do not have permission to manage site workers.'),
+        findsNothing,
+      );
       expect(find.text('John Kamau'), findsOneWidget);
     });
 
-    testWidgets(
-      'an Site Manager of the matching organization sees it',
-      (tester) async {
-        await tester.pumpWidget(
-          wrap(
-            role: AppRole.siteManager,
-            organizationId: 'org-alpha',
-            users: [foreman],
-          ),
-        );
-        await tester.pumpAndSettle();
+    testWidgets('an Site Manager of the matching organization sees it', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        wrap(
+          role: AppRole.siteManager,
+          organizationId: 'org-alpha',
+          users: [foreman],
+        ),
+      );
+      await tester.pumpAndSettle();
 
-        expect(find.text('John Kamau'), findsOneWidget);
-      },
-    );
+      expect(find.text('John Kamau'), findsOneWidget);
+    });
 
-    testWidgets(
-      'an Site Manager of a different organization is refused',
-      (tester) async {
-        await tester.pumpWidget(
-          wrap(
-            role: AppRole.siteManager,
-            organizationId: 'org-beta',
-            users: [foreman],
-          ),
-        );
-        await tester.pumpAndSettle();
+    testWidgets('an Site Manager of a different organization is refused', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        wrap(
+          role: AppRole.siteManager,
+          organizationId: 'org-beta',
+          users: [foreman],
+        ),
+      );
+      await tester.pumpAndSettle();
 
-        expect(
-          find.text('You do not have permission to manage site workers.'),
-          findsOneWidget,
-        );
-      },
-    );
+      expect(
+        find.text('You do not have permission to manage site workers.'),
+        findsOneWidget,
+      );
+    });
 
     testWidgets('a foreman does not receive the management action', (
       tester,
@@ -267,28 +275,23 @@ void main() {
     });
   });
 
-  group('SiteWorkersScreen (assigned list)', () {
-    testWidgets('shows the assigned worker with name, role and status', (
-      tester,
-    ) async {
+  group('SiteWorkersScreen (Foreman -> Crew grouping)', () {
+    testWidgets('shows a Foreman card with role and crew size', (tester) async {
       await tester.pumpWidget(
-        wrap(role: AppRole.admin, users: [foreman]),
+        wrap(role: AppRole.admin, users: [foreman, crewWorker]),
       );
       await tester.pumpAndSettle();
 
       expect(find.text('John Kamau'), findsOneWidget);
       expect(find.textContaining('Foreman'), findsOneWidget);
-      expect(find.textContaining('Active'), findsOneWidget);
+      expect(find.textContaining('1 worker'), findsOneWidget);
     });
 
     testWidgets('does not show a user not assigned to this site', (
       tester,
     ) async {
       await tester.pumpWidget(
-        wrap(
-          role: AppRole.admin,
-          users: [foreman, unassignedWorker],
-        ),
+        wrap(role: AppRole.admin, users: [foreman, unassignedWorker]),
       );
       await tester.pumpAndSettle();
 
@@ -296,16 +299,81 @@ void main() {
       expect(find.text('Mary Wanjiku'), findsNothing);
     });
 
-    testWidgets('shows an empty state when nobody is assigned', (
-      tester,
-    ) async {
+    testWidgets('shows an empty state when nobody is assigned', (tester) async {
       await tester.pumpWidget(
         wrap(role: AppRole.admin, users: [unassignedWorker]),
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('No workers assigned yet.'), findsOneWidget);
+      expect(find.text('No one assigned yet'), findsOneWidget);
     });
+
+    testWidgets(
+      'tapping a Foreman card opens their crew, showing worker trade',
+      (tester) async {
+        await tester.pumpWidget(
+          wrap(role: AppRole.admin, users: [foreman, crewWorker]),
+        );
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('John Kamau'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('John Kamau — Crew'), findsOneWidget);
+        expect(find.text('David Otieno'), findsOneWidget);
+        expect(find.textContaining('Electrician'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'a worker on a site with no Foreman assigned is shown flat, with a '
+      'warning banner, not silently dropped',
+      (tester) async {
+        const workerOnUnsupervisedSite = OrganizationUser(
+          uid: 'lone-worker-uid',
+          name: 'Alone Worker',
+          email: 'alone@example.com',
+          accountStatus: AccountStatus.active,
+          role: AppRole.worker,
+          organizationId: 'org-alpha',
+          siteIds: ['site-1'],
+        );
+
+        await tester.pumpWidget(
+          wrap(role: AppRole.admin, users: [workerOnUnsupervisedSite]),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('Alone Worker'), findsOneWidget);
+        expect(find.textContaining('No Foreman assigned'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'two Foremen sharing a site both show the same worker in their crew '
+      '— known limitation, since there is no supervisorUid link in the data',
+      (tester) async {
+        const sharedSiteForeman = OrganizationUser(
+          uid: 'foreman-shared-uid',
+          name: 'Shared Foreman',
+          email: 'shared@example.com',
+          accountStatus: AccountStatus.active,
+          role: AppRole.foreman,
+          organizationId: 'org-alpha',
+          siteIds: ['site-1'],
+        );
+
+        await tester.pumpWidget(
+          wrap(
+            role: AppRole.admin,
+            users: [foreman, sharedSiteForeman, crewWorker],
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.textContaining('1 worker'), findsNWidgets(2));
+      },
+    );
   });
 
   group('SiteWorkersScreen (assign)', () {
@@ -323,7 +391,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byTooltip('Assign worker'));
+      await tester.tap(find.byTooltip('Assign to this site'));
       await tester.pumpAndSettle();
 
       expect(find.text('Mary Wanjiku'), findsOneWidget);
@@ -339,12 +407,10 @@ void main() {
     testWidgets('an already-assigned worker is not offered as a candidate', (
       tester,
     ) async {
-      await tester.pumpWidget(
-        wrap(role: AppRole.admin, users: [foreman]),
-      );
+      await tester.pumpWidget(wrap(role: AppRole.admin, users: [foreman]));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byTooltip('Assign worker'));
+      await tester.tap(find.byTooltip('Assign to this site'));
       await tester.pumpAndSettle();
 
       expect(
@@ -365,7 +431,7 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        await tester.tap(find.byTooltip('Assign worker'));
+        await tester.tap(find.byTooltip('Assign to this site'));
         await tester.pumpAndSettle();
 
         expect(find.text('Mary Wanjiku'), findsOneWidget);
@@ -389,7 +455,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byTooltip('Assign worker'));
+      await tester.tap(find.byTooltip('Assign to this site'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Mary Wanjiku'));
       await tester.pumpAndSettle();
@@ -402,25 +468,51 @@ void main() {
   });
 
   group('SiteWorkersScreen (remove)', () {
-    testWidgets('removing an assigned worker calls SiteAssignmentService', (
-      tester,
-    ) async {
+    testWidgets(
+      'removing a Foreman from the landing list calls SiteAssignmentService',
+      (tester) async {
+        final service = _FakeAssignmentService();
+
+        await tester.pumpWidget(
+          wrap(
+            role: AppRole.admin,
+            users: [foreman],
+            assignmentService: service,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byTooltip('Remove from this site'));
+        await tester.pumpAndSettle();
+
+        expect(service.removeCalls, hasLength(1));
+        expect(service.removeCalls.single.uid, 'foreman-uid');
+        expect(service.removeCalls.single.organizationId, 'org-alpha');
+        expect(service.removeCalls.single.siteId, 'site-1');
+      },
+    );
+
+    testWidgets('removing a worker from inside the crew screen calls '
+        'SiteAssignmentService', (tester) async {
       final service = _FakeAssignmentService();
 
       await tester.pumpWidget(
         wrap(
           role: AppRole.admin,
-          users: [foreman],
+          users: [foreman, crewWorker],
           assignmentService: service,
         ),
       );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('John Kamau'));
       await tester.pumpAndSettle();
 
       await tester.tap(find.byTooltip('Remove'));
       await tester.pumpAndSettle();
 
       expect(service.removeCalls, hasLength(1));
-      expect(service.removeCalls.single.uid, 'foreman-uid');
+      expect(service.removeCalls.single.uid, 'crew-worker-uid');
       expect(service.removeCalls.single.organizationId, 'org-alpha');
       expect(service.removeCalls.single.siteId, 'site-1');
     });
@@ -433,15 +525,11 @@ void main() {
       );
 
       await tester.pumpWidget(
-        wrap(
-          role: AppRole.admin,
-          users: [foreman],
-          assignmentService: service,
-        ),
+        wrap(role: AppRole.admin, users: [foreman], assignmentService: service),
       );
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byTooltip('Remove'));
+      await tester.tap(find.byTooltip('Remove from this site'));
       await tester.pumpAndSettle();
 
       expect(
@@ -455,9 +543,7 @@ void main() {
     testWidgets('surfaces a list-loading failure', (tester) async {
       await tester.pumpWidget(
         ChangeNotifierProvider<SessionController>(
-          create: (_) => _FakeSession(
-            role: AppRole.admin,
-          ),
+          create: (_) => _FakeSession(role: AppRole.admin),
           child: MaterialApp(
             home: Scaffold(
               body: SiteWorkersScreen(

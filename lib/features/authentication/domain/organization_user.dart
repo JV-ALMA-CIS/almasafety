@@ -18,6 +18,7 @@ class OrganizationUser {
     this.phone,
     this.role,
     this.workerType,
+    this.trade,
     this.organizationId,
     this.membershipStatus,
     this.registeredAt,
@@ -31,6 +32,13 @@ class OrganizationUser {
   final AccountStatus accountStatus;
   final AppRole? role;
   final WorkerType? workerType;
+
+  /// The worker's trade/profession (e.g. "Painter", "Electrician") — a job
+  /// discipline, NEVER an authorization role. Already returned by
+  /// `listOrganizationUsers` server-side; only worker-role rows carry a
+  /// meaningful value. See FIRESTORE_DATA_MODEL.md's "Trade must never be
+  /// used as an authorization role" note.
+  final String? trade;
 
   /// The organization this row belongs to. Now present on every row: one row
   /// exists PER PERSON PER ORGANIZATION under the multi-organization
@@ -64,6 +72,7 @@ class OrganizationUser {
     final rawPhone = data['phone'];
     final rawCreatedAt = data['createdAt'];
     final rawOrganizationId = data['organizationId'];
+    final rawTrade = data['trade'];
     return OrganizationUser(
       uid: data['uid'] as String? ?? '',
       name: data['name'] as String? ?? '',
@@ -71,11 +80,12 @@ class OrganizationUser {
       phone: (rawPhone is String && rawPhone.isNotEmpty) ? rawPhone : null,
       accountStatus:
           AccountStatus.tryFromId(data['accountStatus'] as String?) ??
-              AccountStatus.pending,
+          AccountStatus.pending,
       role: AppRole.tryFromId(data['role'] as String?),
       workerType: WorkerType.tryFromId(data['workerType'] as String?),
-      organizationId: (rawOrganizationId is String &&
-              rawOrganizationId.isNotEmpty)
+      trade: (rawTrade is String && rawTrade.isNotEmpty) ? rawTrade : null,
+      organizationId:
+          (rawOrganizationId is String && rawOrganizationId.isNotEmpty)
           ? rawOrganizationId
           : null,
       membershipStatus: MembershipStatus.tryFromId(
@@ -84,9 +94,10 @@ class OrganizationUser {
       registeredAt: rawCreatedAt is String
           ? DateTime.tryParse(rawCreatedAt)
           : null,
-      siteIds: (data['siteIds'] as List<dynamic>?)
-              ?.whereType<String>()
-              .toList(growable: false) ??
+      siteIds:
+          (data['siteIds'] as List<dynamic>?)?.whereType<String>().toList(
+            growable: false,
+          ) ??
           const [],
     );
   }

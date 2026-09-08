@@ -198,6 +198,7 @@ class _WorkerCard extends StatelessWidget {
         title: Text(worker.name),
         subtitle: Text(
           [
+            if (worker.trade != null) worker.trade!,
             if (worker.workerType != null) worker.workerType!.label,
             if (siteLabel.isNotEmpty) siteLabel,
           ].join(' · '),
