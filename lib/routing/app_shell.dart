@@ -224,24 +224,27 @@ class AppShell extends StatelessWidget {
               label: 'Pending Approvals',
               route: AppRoutes.pendingApprovals,
             ),
-            // Admin-only company-wide libraries, deliberately not delegated
-            // to Site Manager (PROJECT_CONTEXT.md §4, §12) — see
-            // AppRole.canManageSafetyLearningLibrary/
-            // canManageSafetyMeetingPointLibrary.
-            if (canManageSafetyLearningLibrary) ...const [
-              NavSectionEntry(
+            // The company-wide Safety Learning library is admin-only,
+            // deliberately not delegated to Site Manager (PROJECT_CONTEXT.md
+            // §4, §12) — see AppRole.canManageSafetyLearningLibrary.
+            if (canManageSafetyLearningLibrary)
+              const NavSectionEntry(
                 icon: Icons.library_books_outlined,
                 selectedIcon: Icons.library_books,
                 label: 'Safety Learning Library',
                 route: AppRoutes.manageSafetyLearning,
               ),
-              NavSectionEntry(
+            // Safety Meeting Points, unlike the library above, is
+            // field-level content a Site Manager prepares for their own
+            // Foremen — reachable by the same canManageOrgContent
+            // boundary as Projects, not the admin-only library gate.
+            if (canManageOrgContent)
+              const NavSectionEntry(
                 icon: Icons.list_alt_outlined,
                 selectedIcon: Icons.list_alt,
                 label: 'Safety Meeting Points',
                 route: AppRoutes.manageSafetyMeetingPoints,
               ),
-            ],
           ],
         ),
     ];

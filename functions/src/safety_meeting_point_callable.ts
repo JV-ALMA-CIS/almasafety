@@ -3,19 +3,29 @@
  *
  * These are the only path that can create or edit an
  * `organizations/{orgId}/safety_meeting_points/{id}` document —
- * `firestore.rules` denies every client write to that collection outright,
- * mirroring `safety_learning_callable.ts`'s treatment of safety learning.
+ * `firestore.rules` denies every client write to that collection outright.
  *
  * WHAT AUTHORIZES A CALLER
  *
- * `requireAdmin` (imported from `organization_callable.ts`): `admin` only.
- * The Safety Meeting Point library is a platform-level, company-wide
- * responsibility deliberately NOT delegated to `siteManager`
- * (PROJECT_CONTEXT.md §4, §12) — same authority shape as safety learning
- * content management.
+ * `requireOrganizationScopedManager` (imported from
+ * `organization_callable.ts`): `admin` (any organization) or `siteManager`
+ * of the target organization — the same authority shape as
+ * `createProject`/`createSite`/`updateProject`/`updateSite`. Safety Meeting
+ * Points are the field-level, per-organization content a Site Manager
+ * prepares for the Foremen they approve and manage at their own sites
+ * (PROJECT_CONTEXT.md §12/§16) — an office-based Admin who was never on
+ * site has no way to author this content; the Site Manager who visits the
+ * site and works with those Foremen does. This mirrors
+ * `daily_safety_meeting_callable.ts`'s own read/administration split, not
+ * `safety_learning_callable.ts`'s admin-only company-wide library, which
+ * this file previously (incorrectly) matched.
  *
  * WHAT A CALLER CANNOT DO
  *
+ * - Manage a safety meeting point in an organization they do not manage —
+ *   `requireOrganizationScopedManager` refuses a `siteManager` whose uid is
+ *   in neither the target organization's `managedBy` array nor an active
+ *   `siteManager` membership there.
  * - Move a meeting point to a different organization through
  *   `updateSafetyMeetingPoint`: `organizationId` is immutable after
  *   creation, exactly like every other record type in this codebase.
@@ -33,7 +43,7 @@ import {HttpsError, onCall} from "firebase-functions/v2/https";
 import {
   isRecordStatus,
   RecordStatus,
-  requireAdmin,
+  requireOrganizationScopedManager,
 } from "./organization_callable";
 import type {CallableRequest} from "firebase-functions/v2/https";
 
@@ -134,7 +144,10 @@ function optionalStringArray(
  */
 export const createSafetyMeetingPoint = onCall(async (request) => {
   const organizationId = requireString(request, "organizationId");
-  const actorUid = await requireAdmin(request);
+  const actorUid = await requireOrganizationScopedManager(
+    request,
+    organizationId
+  );
   const title = requireString(request, "title");
   const category = requireString(request, "category");
   const description = optionalString(request, "description");
@@ -168,7 +181,10 @@ export const createSafetyMeetingPoint = onCall(async (request) => {
  */
 export const updateSafetyMeetingPoint = onCall(async (request) => {
   const organizationId = requireString(request, "organizationId");
-  const actorUid = await requireAdmin(request);
+  const actorUid = await requireOrganizationScopedManager(
+    request,
+    organizationId
+  );
   const id = requireString(request, "id");
   const title = optionalString(request, "title");
   const category = optionalString(request, "category");
@@ -222,7 +238,10 @@ async function setStatus(
   status: RecordStatus
 ): Promise<{id: string; organizationId: string}> {
   const organizationId = requireString(request, "organizationId");
-  const actorUid = await requireAdmin(request);
+  const actorUid = await requireOrganizationScopedManager(
+    request,
+    organizationId
+  );
   const id = requireString(request, "id");
 
   const ref = getFirestore().doc(

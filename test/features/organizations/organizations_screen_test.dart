@@ -436,12 +436,11 @@ void main() {
     });
 
     testWidgets(
-      'does NOT see the Safety Meeting Points action — regression test: '
-      'this button used to be shown to a Site Manager, but '
-      'createSafetyMeetingPoint/etc. are admin-ONLY server-side '
-      '(requireAdmin in safety_meeting_point_callable.ts,  '
-      'PROJECT_CONTEXT.md §4), so tapping it only bounced back to the '
-      'dashboard via the router\'s own admin-only gate on that route',
+      'sees the Safety Meeting Points action for their own organization '
+      '— it is field-level content a Site Manager prepares for their own '
+      'Foremen (requireOrganizationScopedManager in '
+      'safety_meeting_point_callable.ts, PROJECT_CONTEXT.md §12/§16), not '
+      'the same admin-only shape as the Safety Learning library',
       (tester) async {
         await seedOrg('alpha');
 
@@ -456,7 +455,7 @@ void main() {
 
         expect(
           find.widgetWithText(OutlinedButton, 'Safety Meeting Points'),
-          findsNothing,
+          findsOneWidget,
         );
       },
     );

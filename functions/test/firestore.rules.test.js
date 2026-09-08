@@ -1575,10 +1575,16 @@ describe("the Safety Requirement / Safety Learning foundation", () => {
 
 describe("the Safety Meeting Point foundation", () => {
   // DESIGN NOTE. Content management (creating/editing/activating/
-  // deactivating safety_meeting_points documents) is Admin-SDK-only via
-  // `safety_meeting_point_callable.ts`'s `requireOrganizationScopedAdmin`,
-  // exactly like safety_learning above. Reads follow the same
-  // org-membership-or-Admin shape as `safety_learning`.
+  // deactivating safety_meeting_points documents) is Admin-SDK-only from
+  // the RULES' point of view (allow write: if false, exactly like
+  // safety_learning above) -- but unlike safety_learning, the
+  // callable-level authorization behind it
+  // (`safety_meeting_point_callable.ts`'s `requireOrganizationScopedManager`)
+  // permits BOTH Admin and a Site Manager of the target organization, not
+  // Admin alone -- see safety_meeting_point_callable.test.js for that
+  // business-logic coverage, which these rules tests structurally cannot
+  // reach. Reads follow the same org-membership-or-Admin shape as
+  // `safety_learning`.
 
   function meetingPointPath(organizationId, meetingPointId) {
     return `organizations/${organizationId}/safety_meeting_points/` +

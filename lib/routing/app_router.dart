@@ -102,7 +102,12 @@ String? authRedirect(
   // (any organization) and `siteManager` (the organization(s) they manage;
   // enforced server-side, this is UX only). `manageDailySafetyMeetings` is
   // the read-only Administrator meeting list (PROJECT_CONTEXT.md §22A),
-  // which `siteManager` may also review.
+  // which `siteManager` may also review. `manageSafetyMeetingPoints` is
+  // field-level, per-organization content a Site Manager prepares for their
+  // own Foremen (PROJECT_CONTEXT.md §12/§16) — see
+  // `safety_meeting_point_callable.ts`'s `requireOrganizationScopedManager`
+  // — deliberately NOT grouped with `manageSafetyLearning` below, which
+  // stays `admin`-only.
   final administrationRoute = matchedLocation == AppRoutes.administration ||
       matchedLocation == AppRoutes.manageOrganizations ||
       matchedLocation == AppRoutes.manageProjects ||
@@ -111,12 +116,12 @@ String? authRedirect(
       matchedLocation == AppRoutes.manageActivities ||
       matchedLocation == AppRoutes.manageActivityWorkers ||
       matchedLocation == AppRoutes.manageSafetyRequirements ||
-      matchedLocation == AppRoutes.manageDailySafetyMeetings;
-  // The company-wide Safety Learning library and Safety Meeting Point
-  // library are platform-level, `admin`-only responsibilities, deliberately
-  // NOT delegated to `siteManager` (PROJECT_CONTEXT.md §4, §12).
-  final orgContentRoute = matchedLocation == AppRoutes.manageSafetyLearning ||
+      matchedLocation == AppRoutes.manageDailySafetyMeetings ||
       matchedLocation == AppRoutes.manageSafetyMeetingPoints;
+  // The company-wide Safety Learning library is a platform-level,
+  // `admin`-only responsibility, deliberately NOT delegated to `siteManager`
+  // (PROJECT_CONTEXT.md §4, §12).
+  final orgContentRoute = matchedLocation == AppRoutes.manageSafetyLearning;
 
   switch (status) {
     case AuthStatus.loading:
@@ -431,14 +436,19 @@ GoRouter buildAppRouter(SessionController session) {
           ),
           GoRoute(
             path: AppRoutes.manageSafetyMeetingPoints,
-            // Same `extra` contract as manageSafetyLearning above.
+            // Reachable two ways, unlike manageSafetyLearning above: via
+            // OrganizationsScreen's drill-down (`extra` carries the tapped
+            // Organization), or directly from the sidebar's "Safety Meeting
+            // Points" entry (no `extra` at all) — SafetyMeetingPointsScreen
+            // already falls back to the signed-in user's own
+            // activeOrganizationId when `organizationId` is omitted, so
+            // there is no OrganizationsScreen fallback needed here the way
+            // manageProjects (pre-ProjectsRouterScreen) needed one.
             builder: (context, state) {
               final organization = state.extra;
-              if (organization is! Organization) {
-                return const OrganizationsScreen();
-              }
               return SafetyMeetingPointsScreen(
-                organizationId: organization.id,
+                organizationId:
+                    organization is Organization ? organization.id : null,
               );
             },
           ),

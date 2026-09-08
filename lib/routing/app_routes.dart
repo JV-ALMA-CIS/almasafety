@@ -70,10 +70,12 @@ class AppRoutes {
   static const String manageSafetyRequirements =
       '/administration/safety-requirements';
 
-  /// The Safety Meeting Points management screen. Gated the same as
-  /// [manageSafetyLearning] — `admin`-only (see
-  /// [SafetyMeetingPointsScreen]'s `canManage` getter, which checks
-  /// `canManageSafetyMeetingPointLibrary`).
+  /// The Safety Meeting Points management screen. Reachable by Admin (any
+  /// organization) or an [AppRole.siteManager] of the matching organization
+  /// — field-level content a Site Manager prepares for their own Foremen
+  /// (PROJECT_CONTEXT.md §12/§16), NOT the same `admin`-only shape as
+  /// [manageSafetyLearning] — see [SafetyMeetingPointsScreen]'s `canManage`
+  /// getter.
   static const String manageSafetyMeetingPoints =
       '/administration/safety-meeting-points';
 

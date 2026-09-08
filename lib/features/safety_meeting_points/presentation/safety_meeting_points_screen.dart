@@ -15,23 +15,23 @@ import '../data/safety_meeting_point_repository.dart';
 import '../domain/safety_meeting_point.dart';
 
 /// The Safety Meeting Point library: lists an organization's meeting points
-/// and lets an authorized administrator create, edit, activate or deactivate
-/// one.
+/// and lets an authorized manager create, edit, activate or deactivate one.
 ///
-/// Follows [SafetyLearningLibraryScreen]'s pattern exactly, including its
-/// `canManage` gate — [AppRole.admin] ONLY, matching
-/// `AppRole.canManageSafetyMeetingPointLibrary`. This company-wide library
-/// is deliberately NOT delegated to a Site Manager (PROJECT_CONTEXT.md §4,
-/// §12), which is precisely what
-/// `createSafetyMeetingPoint`/`updateSafetyMeetingPoint`/
-/// `activateSafetyMeetingPoint`/`deactivateSafetyMeetingPoint` authorize
-/// server-side via `requireAdmin` in `safety_meeting_point_callable.ts`.
+/// `canManage` gate — [AppRole.admin] (any organization) OR
+/// [AppRole.siteManager] of the matching organization, the SAME shape as
+/// [ProjectsScreen]/[SitesScreen] — see
+/// `requireOrganizationScopedManager` in `safety_meeting_point_callable.ts`.
+/// This is field-level, per-organization content a Site Manager prepares
+/// for the Foremen they approve and manage at their own sites
+/// (PROJECT_CONTEXT.md §12/§16) — deliberately NOT the same admin-only
+/// shape as [SafetyLearningLibraryScreen]'s company-wide library, which an
+/// office-based Admin who has never visited the site has no way to author.
 /// There is no delete, matching every other record type here — an inactive
 /// meeting point is retained so historical references keep referring to
 /// something real.
 ///
-/// Resolves its organization from the signed-in user's own profile, exactly
-/// like [SafetyLearningLibraryScreen] — see [organizationId] there for why.
+/// Resolves its organization from the signed-in user's own active
+/// organization when not supplied explicitly — see [organizationId].
 class SafetyMeetingPointsScreen extends StatefulWidget {
   const SafetyMeetingPointsScreen({
     super.key,
@@ -184,10 +184,15 @@ class _SafetyMeetingPointsScreenState extends State<SafetyMeetingPointsScreen> {
     final profile = sessionController.profile;
     final organizationId =
         widget.organizationId ?? sessionController.activeOrganizationId;
-    // Admin-only: the Safety Meeting Point library is a platform-level,
-    // company-wide responsibility deliberately not delegated to Site
-    // Managers (PROJECT_CONTEXT.md §4, §12).
-    final canManage = profile?.canManageSafetyMeetingPointLibrary == true;
+    final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
+    // Admin (any organization) or a Site Manager of THIS organization —
+    // field-level content a Site Manager prepares for their own Foremen,
+    // see this class's own doc comment for why this is not the same
+    // admin-only shape as the Safety Learning library.
+    final canManage = isPlatformAdministrator ||
+        (sessionController.activeMembership?.role.canManageOrgContent ==
+                true &&
+            sessionController.activeOrganizationId == organizationId);
 
     if (!canManage || organizationId == null) {
       return const Center(

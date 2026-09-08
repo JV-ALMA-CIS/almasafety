@@ -149,14 +149,18 @@ void main() {
       expect(find.text('ADMINISTRATION'), findsOneWidget);
       expect(find.text('Administration'), findsWidgets);
       expect(find.text('Pending Approvals'), findsOneWidget);
-      // Admin-only company-wide libraries.
+      // Safety Learning Library is admin-only; Safety Meeting Points is
+      // also reachable by a Site Manager (see the Site Manager test below)
+      // but Admin sees it too, as they can act on any organization.
       expect(find.text('Safety Learning Library'), findsOneWidget);
       expect(find.text('Safety Meeting Points'), findsOneWidget);
     });
 
     testWidgets(
       'a Site Manager sees Operations, Safety, Meetings & Learning, '
-      'Insights and Administration, but not the Admin-only libraries',
+      'Insights, Administration and Safety Meeting Points (field-level '
+      'content they prepare for their own Foremen), but not the '
+      'admin-only Safety Learning Library',
       (tester) async {
         tester.view.physicalSize = const Size(360, 800);
         tester.view.devicePixelRatio = 1.0;
@@ -177,7 +181,7 @@ void main() {
         );
         expect(find.text('ADMINISTRATION'), findsOneWidget);
         expect(find.text('Safety Learning Library'), findsNothing);
-        expect(find.text('Safety Meeting Points'), findsNothing);
+        expect(find.text('Safety Meeting Points'), findsOneWidget);
       },
     );
 
