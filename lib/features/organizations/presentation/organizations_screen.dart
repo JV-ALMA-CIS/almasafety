@@ -219,10 +219,12 @@ class _OrganizationsScreenState extends State<OrganizationsScreen> {
                 // create more than one, so this is not limited to the
                 // zero-membership case above.
                 if (isPlatformAdministrator || isSiteManager)
-                  ElevatedButton.icon(
-                    onPressed: _isSaving ? null : _openCreateDialog,
-                    icon: const Icon(Icons.add),
-                    label: const Text('Add Organization'),
+                  Flexible(
+                    child: ElevatedButton.icon(
+                      onPressed: _isSaving ? null : _openCreateDialog,
+                      icon: const Icon(Icons.add),
+                      label: const Text('Add Organization'),
+                    ),
                   ),
               ],
             ),

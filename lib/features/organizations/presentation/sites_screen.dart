@@ -177,10 +177,12 @@ class _SitesScreenState extends State<SitesScreen> {
                   ),
                 ),
                 if (canManage)
-                  ElevatedButton.icon(
-                    onPressed: _isSaving ? null : _openCreateDialog,
-                    icon: const Icon(Icons.add),
-                    label: const Text('Add Site'),
+                  Flexible(
+                    child: ElevatedButton.icon(
+                      onPressed: _isSaving ? null : _openCreateDialog,
+                      icon: const Icon(Icons.add),
+                      label: const Text('Add Site'),
+                    ),
                   ),
               ],
             ),

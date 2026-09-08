@@ -209,10 +209,12 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                   ),
                 ),
                 if (canManage)
-                  ElevatedButton.icon(
-                    onPressed: _isSaving ? null : _openCreateDialog,
-                    icon: const Icon(Icons.add),
-                    label: const Text('Add Project'),
+                  Flexible(
+                    child: ElevatedButton.icon(
+                      onPressed: _isSaving ? null : _openCreateDialog,
+                      icon: const Icon(Icons.add),
+                      label: const Text('Add Project'),
+                    ),
                   ),
               ],
             ),
