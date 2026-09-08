@@ -198,6 +198,22 @@ function requireRequestOrganizationId(request: CallableRequest): string {
 }
 
 /**
+ * Reads the optional `organizationId` argument, or null if absent/blank —
+ * the non-throwing counterpart to [requireRequestOrganizationId], for a
+ * caller (only [listPendingApprovals] today) whose review authority does
+ * not need to be confined to one specific organization.
+ *
+ * @param {CallableRequest} request the incoming callable request.
+ * @return {string | null} the requested organization id, or null.
+ */
+function optionalRequestOrganizationId(request: CallableRequest): string | null {
+  const organizationId = (request.data ?? {}).organizationId;
+  return typeof organizationId === "string" && organizationId ?
+    organizationId :
+    null;
+}
+
+/**
  * Loads the caller's own membership document for [organizationId], or null
  * if none exists.
  *
@@ -265,10 +281,29 @@ async function resolveManagedOrganizationIds(uid: string): Promise<string[]> {
  * is the only place its own, separate, optional `organizationId` is
  * consulted.
  *
+ * A `siteManager`/`foreman` caller ordinarily MUST say which of their
+ * (possibly several) memberships they are acting in — every callable here
+ * except one goes on to write into, or read something scoped to, that one
+ * organization. [listPendingApprovals] is the exception: the pending queue
+ * itself has no organization (nobody has been assigned one yet), so it only
+ * needs to confirm the caller holds SOME active, review-authorized
+ * membership, not which one — [organizationRequired] lets that one caller
+ * opt out of the argument requirement. When omitted, the caller may still
+ * supply `organizationId` to narrow which membership is checked (relevant
+ * only if that specific membership's role/status differs from another one
+ * they hold); if they don't, any one active review-authorized membership
+ * satisfies the check.
+ *
  * @param {CallableRequest} request the incoming callable request.
+ * @param {boolean} organizationRequired whether a non-admin caller must
+ * supply `organizationId`. Defaults to `true`, matching every caller except
+ * [listPendingApprovals].
  * @return {Promise<Approver>} the authorized caller's uid, role and scope.
  */
-async function requireApprover(request: CallableRequest): Promise<Approver> {
+async function requireApprover(
+  request: CallableRequest,
+  organizationRequired = true
+): Promise<Approver> {
   const uid = request.auth?.uid;
   if (!uid) throw denied();
 
@@ -281,21 +316,50 @@ async function requireApprover(request: CallableRequest): Promise<Approver> {
     return {uid, role: "admin", organizationId: null, siteIds: []};
   }
 
-  const organizationId = requireRequestOrganizationId(request);
-  const membership = await loadOwnMembership(uid, organizationId);
-  if (!membership) throw denied();
-  if (membership.status !== "active") throw denied();
+  const organizationId = organizationRequired ?
+    requireRequestOrganizationId(request) :
+    optionalRequestOrganizationId(request);
 
-  const role = membership.role;
-  if (!isAppRole(role) || !canReviewPendingAccounts(role)) throw denied();
+  if (organizationId !== null) {
+    const membership = await loadOwnMembership(uid, organizationId);
+    if (!membership) throw denied();
+    if (membership.status !== "active") throw denied();
 
-  const siteIds: string[] = Array.isArray(membership.siteIds) ?
-    membership.siteIds.filter(
-      (id: unknown): id is string => typeof id === "string"
-    ) :
-    [];
+    const role = membership.role;
+    if (!isAppRole(role) || !canReviewPendingAccounts(role)) throw denied();
 
-  return {uid, role, organizationId, siteIds};
+    const siteIds: string[] = Array.isArray(membership.siteIds) ?
+      membership.siteIds.filter(
+        (id: unknown): id is string => typeof id === "string"
+      ) :
+      [];
+
+    return {uid, role, organizationId, siteIds};
+  }
+
+  // organizationRequired is false and none was supplied: fall back to any
+  // one of the caller's own active, review-authorized memberships — only
+  // reachable by listPendingApprovals, which does not act within a specific
+  // organization at all.
+  const membershipSnapshot = await getFirestore()
+    .collection(`users/${uid}/memberships`)
+    .where("status", "==", "active")
+    .get();
+
+  for (const doc of membershipSnapshot.docs) {
+    const membership = doc.data();
+    const role = membership.role;
+    if (isAppRole(role) && canReviewPendingAccounts(role)) {
+      const siteIds: string[] = Array.isArray(membership.siteIds) ?
+        membership.siteIds.filter(
+          (id: unknown): id is string => typeof id === "string"
+        ) :
+        [];
+      return {uid, role, organizationId: doc.id, siteIds};
+    }
+  }
+
+  throw denied();
 }
 
 /**
@@ -538,7 +602,7 @@ interface PendingAccount {
  * approval decision needs is returned, never the whole document.
  */
 export const listPendingApprovals = onCall(async (request) => {
-  await requireApprover(request);
+  await requireApprover(request, false);
 
   const snapshot = await getFirestore()
     .collection("users")

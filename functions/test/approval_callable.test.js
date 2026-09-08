@@ -145,6 +145,83 @@ beforeEach(async () => {
   await clearAuthUsers();
 });
 
+describe("listPendingApprovals", () => {
+  // Regression test: the queue is a shared inbox across every reviewer
+  // (pending accounts have no organization yet, so there is nothing to
+  // scope the query to — see the callable's own doc comment), so a
+  // siteManager/foreman caller must be able to load it WITHOUT supplying
+  // organizationId. requireApprover previously required it unconditionally
+  // for any non-admin caller, so a Site Manager's client — which never
+  // sends one, since there is no "which organization" to ask for a queue
+  // that isn't organization-scoped — hit `organizationId is required` just
+  // trying to view the queue at all, before they could even reach the
+  // organization-scoped approve step.
+  test(
+    "a siteManager with a single membership sees the queue with no " +
+      "organizationId argument",
+    async () => {
+      await seedProfile("site-manager-1");
+      await seedMembership("site-manager-1", ORG_A, "siteManager");
+      await seedPending("pending-1");
+
+      const result = await listPendingApprovals.run(
+        callRequest("site-manager-1", {})
+      );
+
+      expect(result.accounts.map((a) => a.uid)).toContain("pending-1");
+    }
+  );
+
+  test(
+    "a foreman with a single membership sees the queue with no " +
+      "organizationId argument",
+    async () => {
+      await seedProfile("foreman-1");
+      await seedMembership("foreman-1", ORG_A, "foreman", ["site-1"]);
+      await seedPending("pending-1");
+
+      const result = await listPendingApprovals.run(
+        callRequest("foreman-1", {})
+      );
+
+      expect(result.accounts.map((a) => a.uid)).toContain("pending-1");
+    }
+  );
+
+  test(
+    "a siteManager of two organizations sees the queue with no " +
+      "organizationId argument (one active review-authorized membership " +
+      "is enough — the queue itself is not organization-scoped)",
+    async () => {
+      await seedProfile("site-manager-1");
+      await seedMembership("site-manager-1", ORG_A, "siteManager");
+      await seedMembership("site-manager-1", ORG_B, "siteManager");
+      await seedPending("pending-1");
+
+      const result = await listPendingApprovals.run(
+        callRequest("site-manager-1", {})
+      );
+
+      expect(result.accounts.map((a) => a.uid)).toContain("pending-1");
+    }
+  );
+
+  test(
+    "a suspended-membership-only caller is still refused with no " +
+      "organizationId argument",
+    async () => {
+      await seedProfile("site-manager-1");
+      await seedMembership("site-manager-1", ORG_A, "siteManager", [], {
+        status: "suspended",
+      });
+
+      await expect(
+        listPendingApprovals.run(callRequest("site-manager-1", {}))
+      ).rejects.toThrow(/permission/);
+    }
+  );
+});
+
 describe("approvePendingAccount", () => {
   test("admin approves a pending account as siteManager with no " +
     "organizationId — activates, sets platformRole, creates no membership",
