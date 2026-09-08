@@ -156,60 +156,54 @@ void main() {
       expect(find.text('Safety Meeting Points'), findsOneWidget);
     });
 
-    testWidgets(
-      'a Site Manager sees Operations, Safety, Meetings & Learning, '
-      'Insights, Administration and Safety Meeting Points (field-level '
-      'content they prepare for their own Foremen), but not the '
-      'admin-only Safety Learning Library',
-      (tester) async {
-        tester.view.physicalSize = const Size(360, 800);
-        tester.view.devicePixelRatio = 1.0;
-        addTearDown(tester.view.reset);
+    testWidgets('a Site Manager sees Operations, Safety, Meetings & Learning, '
+        'Insights, Administration and Safety Meeting Points (field-level '
+        'content they prepare for their own Foremen), but not the '
+        'admin-only Safety Learning Library', (tester) async {
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
 
-        await tester.pumpWidget(wrap(role: AppRole.siteManager));
-        await tester.pumpAndSettle();
-        await openDrawer(tester);
+      await tester.pumpWidget(wrap(role: AppRole.siteManager));
+      await tester.pumpAndSettle();
+      await openDrawer(tester);
 
-        expect(find.text('OPERATIONS'), findsOneWidget);
-        expect(find.text('Projects'), findsOneWidget);
-        expect(find.text('INSIGHTS'), findsOneWidget);
+      expect(find.text('OPERATIONS'), findsOneWidget);
+      expect(find.text('Projects'), findsOneWidget);
+      expect(find.text('INSIGHTS'), findsOneWidget);
 
-        await tester.dragUntilVisible(
-          find.text('ADMINISTRATION'),
-          find.byType(ListView),
-          const Offset(0, -300),
-        );
-        expect(find.text('ADMINISTRATION'), findsOneWidget);
-        expect(find.text('Safety Learning Library'), findsNothing);
-        expect(find.text('Safety Meeting Points'), findsOneWidget);
-      },
-    );
+      await tester.dragUntilVisible(
+        find.text('ADMINISTRATION'),
+        find.byType(ListView),
+        const Offset(0, -300),
+      );
+      expect(find.text('ADMINISTRATION'), findsOneWidget);
+      expect(find.text('Safety Learning Library'), findsNothing);
+      expect(find.text('Safety Meeting Points'), findsOneWidget);
+    });
 
-    testWidgets(
-      'a brand-new Site Manager with no membership yet still sees '
-      'Operations/Projects and Administration — the one path to their '
-      'first membership',
-      (tester) async {
-        tester.view.physicalSize = const Size(360, 800);
-        tester.view.devicePixelRatio = 1.0;
-        addTearDown(tester.view.reset);
+    testWidgets('a brand-new Site Manager with no membership yet still sees '
+        'Operations/Projects and Administration — the one path to their '
+        'first membership', (tester) async {
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
 
-        await tester.pumpWidget(
-          wrap(role: null, transientSiteManagerMarker: true),
-        );
-        await tester.pumpAndSettle();
-        await openDrawer(tester);
+      await tester.pumpWidget(
+        wrap(role: null, transientSiteManagerMarker: true),
+      );
+      await tester.pumpAndSettle();
+      await openDrawer(tester);
 
-        expect(find.text('OPERATIONS'), findsOneWidget);
+      expect(find.text('OPERATIONS'), findsOneWidget);
 
-        await tester.dragUntilVisible(
-          find.text('ADMINISTRATION'),
-          find.byType(ListView),
-          const Offset(0, -300),
-        );
-        expect(find.text('ADMINISTRATION'), findsOneWidget);
-      },
-    );
+      await tester.dragUntilVisible(
+        find.text('ADMINISTRATION'),
+        find.byType(ListView),
+        const Offset(0, -300),
+      );
+      expect(find.text('ADMINISTRATION'), findsOneWidget);
+    });
 
     testWidgets(
       'a Foreman sees Safety, Meetings & Learning, and Administration '
@@ -229,6 +223,49 @@ void main() {
         expect(find.text('ADMINISTRATION'), findsOneWidget);
         expect(find.text('OPERATIONS'), findsNothing);
         expect(find.text('INSIGHTS'), findsNothing);
+      },
+    );
+
+    testWidgets('a Foreman sees Pending Approvals and My Workers under '
+        'Administration, but not the Administration landing entry itself — '
+        'regression test for a Foreman tapping "Administration" and hitting '
+        "AdministrationScreen's own permission refusal, since that screen's "
+        'canManage requires canManageOrgContent, which a Foreman never has', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      await tester.pumpWidget(wrap(role: AppRole.foreman));
+      await tester.pumpAndSettle();
+      await openDrawer(tester);
+
+      expect(find.text('Pending Approvals'), findsOneWidget);
+      expect(find.text('My Workers'), findsOneWidget);
+      expect(find.text('Administration'), findsNothing);
+    });
+
+    testWidgets(
+      'a Site Manager sees the Administration landing entry, but not My '
+      'Workers — that view is Foreman-scoped; a Site Manager sees every '
+      "site's workers through Organizations instead",
+      (tester) async {
+        tester.view.physicalSize = const Size(360, 800);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+
+        await tester.pumpWidget(wrap(role: AppRole.siteManager));
+        await tester.pumpAndSettle();
+        await openDrawer(tester);
+
+        await tester.dragUntilVisible(
+          find.text('Administration'),
+          find.byType(ListView),
+          const Offset(0, -300),
+        );
+        expect(find.text('Administration'), findsOneWidget);
+        expect(find.text('My Workers'), findsNothing);
       },
     );
 

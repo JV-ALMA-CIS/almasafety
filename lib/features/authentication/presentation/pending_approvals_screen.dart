@@ -7,7 +7,9 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../organizations/data/organization_repository.dart';
+import '../../organizations/data/site_repository.dart';
 import '../../organizations/domain/organization.dart';
+import '../../organizations/domain/site.dart';
 import '../data/account_approval_service.dart';
 import '../domain/app_role.dart';
 import '../domain/membership.dart';
@@ -45,6 +47,7 @@ class PendingApprovalsScreen extends StatefulWidget {
     super.key,
     this.service,
     this.organizationRepository,
+    this.siteRepositoryFor,
   });
 
   /// Injected in tests. Production builds pass nothing and the state
@@ -56,6 +59,12 @@ class PendingApprovalsScreen extends StatefulWidget {
   /// nothing and the state constructs the real repository.
   final OrganizationRepository? organizationRepository;
 
+  /// Injected in tests. Backs [_RoleAssignmentDialog]'s site picker, shown
+  /// when the role being granted is [AppRole.foreman] — see that dialog's
+  /// doc comment. Production builds pass nothing and the state constructs
+  /// the real, organization-scoped repository per call.
+  final SiteRepository Function(String organizationId)? siteRepositoryFor;
+
   @override
   State<PendingApprovalsScreen> createState() => _PendingApprovalsScreenState();
 }
@@ -66,6 +75,12 @@ class _PendingApprovalsScreenState extends State<PendingApprovalsScreen> {
   late final OrganizationRepository _organizationRepository =
       widget.organizationRepository ??
       OrganizationRepository(firestoreService: FirestoreService());
+  late final SiteRepository Function(String organizationId) _siteRepositoryFor =
+      widget.siteRepositoryFor ??
+      (organizationId) => SiteRepository(
+        firestoreService: FirestoreService(),
+        organizationId: organizationId,
+      );
 
   List<PendingAccount> _accounts = const [];
   bool _isLoading = true;
@@ -148,6 +163,7 @@ class _PendingApprovalsScreenState extends State<PendingApprovalsScreen> {
         reviewerMemberships: reviewerMemberships,
         initialOrganizationId: sessionController.activeOrganizationId,
         organizationRepository: _organizationRepository,
+        siteRepositoryFor: _siteRepositoryFor,
       ),
     );
     if (selection == null || !mounted) return;
@@ -159,6 +175,7 @@ class _PendingApprovalsScreenState extends State<PendingApprovalsScreen> {
         role: selection.role,
         workerType: selection.workerType,
         organizationId: selection.organizationId,
+        siteIds: selection.siteIds,
       ),
       successMessage: '${account.name} approved as ${selection.role.label}.',
     );
@@ -186,9 +203,11 @@ class _PendingApprovalsScreenState extends State<PendingApprovalsScreen> {
       if (!mounted) return;
       // Drop the row locally rather than refetching: the decision succeeded,
       // and the account is no longer pending by definition.
-      setState(() => _accounts = _accounts
-          .where((candidate) => candidate.uid != account.uid)
-          .toList(growable: false));
+      setState(
+        () => _accounts = _accounts
+            .where((candidate) => candidate.uid != account.uid)
+            .toList(growable: false),
+      );
       _showMessage(successMessage);
     } on AppException catch (e) {
       if (!mounted) return;
@@ -216,7 +235,8 @@ class _PendingApprovalsScreenState extends State<PendingApprovalsScreen> {
     // fallback, that Site Manager is let in by the router (which already
     // accounts for it) only to hit this screen's own "you do not have
     // permission" message immediately afterward.
-    final canReview = profile?.isPlatformAdministrator == true ||
+    final canReview =
+        profile?.isPlatformAdministrator == true ||
         (sessionController.activeMembership?.role.canReviewPendingAccounts ??
             false) ||
         profile?.platformRole == AppRole.siteManager;
@@ -236,10 +256,7 @@ class _PendingApprovalsScreenState extends State<PendingApprovalsScreen> {
       );
     }
 
-    return RefreshIndicator(
-      onRefresh: _load,
-      child: _buildBody(),
-    );
+    return RefreshIndicator(onRefresh: _load, child: _buildBody());
   }
 
   Widget _buildBody() {
@@ -413,18 +430,28 @@ class _DetailRow extends StatelessWidget {
   }
 }
 
-/// The role, worker type and (for a System Administrator only) organization
-/// a reviewer chose to assign, returned by [_RoleAssignmentDialog].
+/// The role, worker type, (for a System Administrator only) organization and
+/// (for a [AppRole.foreman] grant) site(s) a reviewer chose to assign,
+/// returned by [_RoleAssignmentDialog].
 class _RoleAssignmentSelection {
   const _RoleAssignmentSelection({
     required this.role,
     this.workerType,
     this.organizationId,
+    this.siteIds = const [],
   });
 
   final AppRole role;
   final WorkerType? workerType;
   final String? organizationId;
+
+  /// The site(s) to assign alongside this grant — populated only when
+  /// [role] is [AppRole.foreman] (see [_RoleAssignmentDialog]'s site
+  /// picker); empty otherwise. A brand-new Foreman needs at least one site
+  /// assigned to run Daily Safety Meetings at all, so this lets a Site
+  /// Manager set it in the same step as approval rather than a separate,
+  /// easy-to-forget visit to Organizations → Project → Site → Workers.
+  final List<String> siteIds;
 }
 
 /// Prompts the reviewer to choose an organization (for a non-Admin holding
@@ -459,6 +486,17 @@ class _RoleAssignmentSelection {
 ///    selected [Organization.id], never a name the reviewer typed — the
 ///    server independently re-verifies it is one of their own authorized
 ///    memberships regardless (`requireApprover`/`requireGrantWithinScope`).
+///
+/// SITE PICKER — shown only once the selected role is [AppRole.foreman],
+/// listing every site in the currently-selected organization
+/// ([SiteRepository.watchAll]) as checkboxes. Without at least one assigned
+/// site, a Foreman cannot run Daily Safety Meetings at all
+/// (`DailySafetyMeetingScreen` requires a non-empty `membership.siteIds`),
+/// so this lets the Site Manager set it in the same step as approval rather
+/// than a separate, easy-to-forget visit to Organizations → Project → Site
+/// → Workers afterward. Optional, not required: a Site Manager who does not
+/// yet know which site to assign can still approve and assign the site
+/// later via that same screen.
 class _RoleAssignmentDialog extends StatefulWidget {
   const _RoleAssignmentDialog({
     required this.account,
@@ -466,6 +504,7 @@ class _RoleAssignmentDialog extends StatefulWidget {
     required this.reviewerMemberships,
     required this.initialOrganizationId,
     required this.organizationRepository,
+    required this.siteRepositoryFor,
   });
 
   final PendingAccount account;
@@ -487,6 +526,12 @@ class _RoleAssignmentDialog extends StatefulWidget {
   /// [reviewerMemberships]'s organizations for anyone else
   /// ([OrganizationRepository.watchByIds]).
   final OrganizationRepository organizationRepository;
+
+  /// Backs the site picker shown when the role being granted is
+  /// [AppRole.foreman] — see this dialog's class doc comment. Constructs an
+  /// [OrganizationRepository]-scoped [SiteRepository] for whichever
+  /// organization is currently selected.
+  final SiteRepository Function(String organizationId) siteRepositoryFor;
 
   @override
   State<_RoleAssignmentDialog> createState() => _RoleAssignmentDialogState();
@@ -519,6 +564,27 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
   String? _organizationsError;
   final _formKey = GlobalKey<FormState>();
 
+  /// The site(s) picked in the [AppRole.foreman] site picker. Cleared
+  /// whenever the picked organization changes, since a site belongs to
+  /// exactly one organization and a stale selection from a previously
+  /// selected organization must never be sent alongside a different one.
+  final Set<String> _selectedSiteIds = {};
+  List<Site> _sites = const [];
+  bool _isLoadingSites = false;
+  String? _sitesError;
+
+  /// The organization id the site picker is (or would be) scoped to —
+  /// whichever organization is currently selected, regardless of reviewer
+  /// shape. Null when nothing is selected yet (Admin's optional picker,
+  /// left unset).
+  String? get _effectiveOrganizationId => _isAdminReviewer
+      ? _selectedOrganization?.id
+      : _selectedMembershipOrganizationId;
+
+  /// Only [AppRole.foreman] needs a site assignment at approval time — see
+  /// this dialog's class doc comment.
+  bool get _needsSiteField => _role == AppRole.foreman;
+
   /// An Admin may grant [AppRole.siteManager] (or reinstate any role); a
   /// [AppRole.siteManager] may grant [AppRole.foreman]; a [AppRole.foreman]
   /// may grant [AppRole.worker]. Mirrors `grantableRoles` in
@@ -547,6 +613,12 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
           widget.reviewerMemberships.first.organizationId;
     }
     _loadOrganizations();
+    // _grantableRoles' first entry — the field initializer default for
+    // _role — may already be AppRole.foreman (true for every siteManager
+    // reviewer, since foreman is their ONLY grantable role): the site
+    // picker must load immediately rather than waiting for a role change
+    // that will never come.
+    if (_needsSiteField) _loadSites();
   }
 
   Future<void> _loadOrganizations() async {
@@ -585,7 +657,8 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
     } catch (_) {
       if (!mounted) return;
       setState(
-        () => _organizationsError = 'Could not load organizations. '
+        () => _organizationsError =
+            'Could not load organizations. '
             'Please try again.',
       );
     } finally {
@@ -593,109 +666,177 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
     }
   }
 
+  Future<void> _loadSites() async {
+    final organizationId = _effectiveOrganizationId;
+    if (organizationId == null) return;
+    setState(() {
+      _isLoadingSites = true;
+      _sitesError = null;
+    });
+    try {
+      final sites = await widget
+          .siteRepositoryFor(organizationId)
+          .watchAll()
+          .first;
+      if (!mounted) return;
+      setState(() => _sites = sites);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _sitesError = 'Could not load sites. Please try again.');
+    } finally {
+      if (mounted) setState(() => _isLoadingSites = false);
+    }
+  }
+
+  /// Called whenever the granted role changes: loads sites the first time
+  /// it becomes [AppRole.foreman] with an organization already selected,
+  /// and clears any previously picked site(s) when it stops being
+  /// [AppRole.foreman] (a picked site is meaningless for any other role).
+  void _onRoleChanged(AppRole role) {
+    setState(() {
+      _role = role;
+      if (role != AppRole.foreman) _selectedSiteIds.clear();
+    });
+    if (role == AppRole.foreman && _sites.isEmpty && !_isLoadingSites) {
+      _loadSites();
+    }
+  }
+
+  /// Called whenever the picked organization changes: a previously loaded
+  /// site list and any selected site(s) belong to the OLD organization, so
+  /// both are invalidated and reloaded if still needed.
+  void _onOrganizationChanged() {
+    setState(() {
+      _sites = const [];
+      _selectedSiteIds.clear();
+    });
+    if (_needsSiteField) _loadSites();
+  }
+
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
       title: Text('Approve ${widget.account.name}'),
-      content: Form(
-        key: _formKey,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              _isAdminReviewer
-                  ? 'Choose the role and worker type to assign. If you '
-                        'know which organization this person belongs to, '
-                        'you may pick it — otherwise leave it unset and '
-                        'they will create or be assigned to one after '
-                        'being approved.'
-                  : 'Choose the organization, role and worker type to '
-                        'assign. This activates the account in the '
-                        'organization you pick.',
-              style: AppTextStyles.bodyMedium,
-            ),
-            const SizedBox(height: AppSpacing.md),
-            if (_isLoadingOrganizations)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: AppSpacing.sm),
-                child: Center(
-                  child: SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                ),
-              )
-            else if (_organizationsError != null)
-              AuthErrorBanner(message: _organizationsError!)
-            else if (_isAdminReviewer)
-              DropdownButtonFormField<Organization?>(
-                initialValue: _selectedOrganization,
-                decoration: const InputDecoration(
-                  labelText: 'Organization (optional)',
-                ),
-                items: [
-                  const DropdownMenuItem(
-                    value: null,
-                    child: Text('None yet — they will create their own'),
-                  ),
-                  for (final organization in _organizations)
-                    DropdownMenuItem(
-                      value: organization,
-                      child: Text(
-                        '${organization.name} (${organization.code})',
-                      ),
-                    ),
-                ],
-                onChanged: (value) =>
-                    setState(() => _selectedOrganization = value),
-              )
-            else
-              DropdownButtonFormField<String>(
-                initialValue: _selectedMembershipOrganizationId,
-                decoration: const InputDecoration(labelText: 'Organization'),
-                items: [
-                  for (final membership in widget.reviewerMemberships)
-                    DropdownMenuItem(
-                      value: membership.organizationId,
-                      child: Text(
-                        _membershipOrganizations[membership.organizationId]
-                                ?.name ??
-                            membership.organizationId,
-                      ),
-                    ),
-                ],
-                onChanged: (value) => setState(
-                  () => _selectedMembershipOrganizationId = value,
-                ),
-                validator: (value) =>
-                    value == null ? 'Choose an organization.' : null,
+      content: SingleChildScrollView(
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                _isAdminReviewer
+                    ? 'Choose the role and worker type to assign. If you '
+                          'know which organization this person belongs to, '
+                          'you may pick it — otherwise leave it unset and '
+                          'they will create or be assigned to one after '
+                          'being approved.'
+                    : 'Choose the organization, role and worker type to '
+                          'assign. This activates the account in the '
+                          'organization you pick.',
+                style: AppTextStyles.bodyMedium,
               ),
-            const SizedBox(height: AppSpacing.sm),
-            DropdownButtonFormField<AppRole>(
-              initialValue: _role,
-              decoration: const InputDecoration(labelText: 'Role'),
-              items: [
-                for (final role in _grantableRoles)
-                  DropdownMenuItem(value: role, child: Text(role.label)),
+              const SizedBox(height: AppSpacing.md),
+              if (_isLoadingOrganizations)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: AppSpacing.sm),
+                  child: Center(
+                    child: SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ),
+                )
+              else if (_organizationsError != null)
+                AuthErrorBanner(message: _organizationsError!)
+              else if (_isAdminReviewer)
+                DropdownButtonFormField<Organization?>(
+                  initialValue: _selectedOrganization,
+                  decoration: const InputDecoration(
+                    labelText: 'Organization (optional)',
+                  ),
+                  items: [
+                    const DropdownMenuItem(
+                      value: null,
+                      child: Text('None yet — they will create their own'),
+                    ),
+                    for (final organization in _organizations)
+                      DropdownMenuItem(
+                        value: organization,
+                        child: Text(
+                          '${organization.name} (${organization.code})',
+                        ),
+                      ),
+                  ],
+                  onChanged: (value) {
+                    setState(() => _selectedOrganization = value);
+                    _onOrganizationChanged();
+                  },
+                )
+              else
+                DropdownButtonFormField<String>(
+                  initialValue: _selectedMembershipOrganizationId,
+                  decoration: const InputDecoration(labelText: 'Organization'),
+                  items: [
+                    for (final membership in widget.reviewerMemberships)
+                      DropdownMenuItem(
+                        value: membership.organizationId,
+                        child: Text(
+                          _membershipOrganizations[membership.organizationId]
+                                  ?.name ??
+                              membership.organizationId,
+                        ),
+                      ),
+                  ],
+                  onChanged: (value) {
+                    setState(() => _selectedMembershipOrganizationId = value);
+                    _onOrganizationChanged();
+                  },
+                  validator: (value) =>
+                      value == null ? 'Choose an organization.' : null,
+                ),
+              const SizedBox(height: AppSpacing.sm),
+              DropdownButtonFormField<AppRole>(
+                initialValue: _role,
+                decoration: const InputDecoration(labelText: 'Role'),
+                items: [
+                  for (final role in _grantableRoles)
+                    DropdownMenuItem(value: role, child: Text(role.label)),
+                ],
+                onChanged: (value) {
+                  if (value != null) _onRoleChanged(value);
+                },
+              ),
+              if (_needsSiteField) ...[
+                const SizedBox(height: AppSpacing.sm),
+                _SitePicker(
+                  isLoading: _isLoadingSites,
+                  error: _sitesError,
+                  sites: _sites,
+                  selectedSiteIds: _selectedSiteIds,
+                  onToggle: (siteId, selected) => setState(() {
+                    if (selected) {
+                      _selectedSiteIds.add(siteId);
+                    } else {
+                      _selectedSiteIds.remove(siteId);
+                    }
+                  }),
+                ),
               ],
-              onChanged: (value) {
-                if (value != null) setState(() => _role = value);
-              },
-            ),
-            const SizedBox(height: AppSpacing.sm),
-            DropdownButtonFormField<WorkerType?>(
-              initialValue: _workerType,
-              decoration: const InputDecoration(labelText: 'Worker type'),
-              items: [
-                const DropdownMenuItem(value: null, child: Text('Not set')),
-                for (final type in WorkerType.values)
-                  DropdownMenuItem(value: type, child: Text(type.label)),
-              ],
-              onChanged: (value) => setState(() => _workerType = value),
-            ),
-          ],
+              const SizedBox(height: AppSpacing.sm),
+              DropdownButtonFormField<WorkerType?>(
+                initialValue: _workerType,
+                decoration: const InputDecoration(labelText: 'Worker type'),
+                items: [
+                  const DropdownMenuItem(value: null, child: Text('Not set')),
+                  for (final type in WorkerType.values)
+                    DropdownMenuItem(value: type, child: Text(type.label)),
+                ],
+                onChanged: (value) => setState(() => _workerType = value),
+              ),
+            ],
+          ),
         ),
       ),
       actions: [
@@ -713,11 +854,85 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
                 organizationId: _isAdminReviewer
                     ? _selectedOrganization?.id
                     : _selectedMembershipOrganizationId,
+                siteIds: _needsSiteField
+                    ? _selectedSiteIds.toList(growable: false)
+                    : const [],
               ),
             );
           },
           child: const Text('Approve'),
         ),
+      ],
+    );
+  }
+}
+
+/// A checkbox list of an organization's sites, letting the reviewer pick
+/// zero or more to assign the Foreman being approved to.
+///
+/// Optional by design: leaving every box unchecked is valid (a Site Manager
+/// who does not yet know the right site can still approve, and assign a
+/// site later via Organizations → Project → Site → Workers) — the dialog's
+/// submit action never blocks on this field, unlike the required
+/// organization picker.
+class _SitePicker extends StatelessWidget {
+  const _SitePicker({
+    required this.isLoading,
+    required this.error,
+    required this.sites,
+    required this.selectedSiteIds,
+    required this.onToggle,
+  });
+
+  final bool isLoading;
+  final String? error;
+  final List<Site> sites;
+  final Set<String> selectedSiteIds;
+  final void Function(String siteId, bool selected) onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    if (isLoading) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: AppSpacing.sm),
+        child: Center(
+          child: SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ),
+      );
+    }
+    if (error != null) {
+      return AuthErrorBanner(message: error!);
+    }
+    if (sites.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: AppSpacing.xs),
+        child: Text(
+          'This organization has no sites yet. You can assign one later '
+          'from Organizations.',
+          style: AppTextStyles.bodyMedium,
+        ),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(bottom: AppSpacing.xs),
+          child: Text('Site(s) — optional', style: AppTextStyles.label),
+        ),
+        for (final site in sites)
+          CheckboxListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            title: Text(site.name),
+            value: selectedSiteIds.contains(site.id),
+            onChanged: (checked) => onToggle(site.id, checked ?? false),
+          ),
       ],
     );
   }

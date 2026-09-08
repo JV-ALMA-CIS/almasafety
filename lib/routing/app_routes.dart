@@ -62,8 +62,7 @@ class AppRoutes {
   /// not delegated to `siteManager` (PROJECT_CONTEXT.md §4, §12; see
   /// [SafetyLearningLibraryScreen]'s `canManage` getter, which checks
   /// `canManageSafetyLearningLibrary`).
-  static const String manageSafetyLearning =
-      '/administration/safety-learning';
+  static const String manageSafetyLearning = '/administration/safety-learning';
 
   /// The Safety Requirements management screen. Gated the same as
   /// [manageSafetyLearning].
@@ -94,6 +93,12 @@ class AppRoutes {
       '/administration/daily-safety-meetings';
 
   static const String dashboard = '/dashboard';
+
+  /// A Foreman's read-only view of the Workers assigned to their own
+  /// site(s) — see [MyWorkersScreen]. Not route-gated beyond the
+  /// authenticated-user redirect: the screen itself is a no-op for any
+  /// role other than a site-assigned Foreman, matching the pattern used by
+  /// [DailySafetyMeetingScreen]/[DailySafetyMeetingsRouterScreen].
   static const String workers = '/workers';
 
   /// The sidebar's own "Projects" destination — resolves the signed-in
@@ -113,6 +118,7 @@ class AppRoutes {
   /// navigation redesign's "Meetings & Learning" group so the information
   /// architecture is visible ahead of the feature shipping.
   static const String safetyVideos = '/safety-videos';
+
   /// The bottom-nav "Meetings" destination — dispatches by role via
   /// [DailySafetyMeetingsRouterScreen]: the foreman's own operational
   /// workspace, or the read-only organization-wide review screen for any

@@ -86,16 +86,26 @@ class AccountApprovalService {
   /// independently verifies this is an organization the caller actually
   /// holds an active, authorized-role membership in — a modified client
   /// cannot use this to name a different organization than one of its own.
+  ///
+  /// [siteIds] assigns the approved user directly to one or more sites
+  /// within [organizationId] as part of the same call — most relevantly for
+  /// [AppRole.foreman]: without at least one assigned site, a Foreman has
+  /// no site to run Daily Safety Meetings for (`DailySafetyMeetingScreen`
+  /// requires `membership.siteIds` to be non-empty), so leaving this unset
+  /// at approval time silently strands them until someone separately visits
+  /// Organizations → Project → Site → Workers to assign one.
   Future<void> approve(
     String uid, {
     required AppRole role,
     WorkerType? workerType,
     String? organizationId,
+    List<String>? siteIds,
   }) => _call<Object?>('approvePendingAccount', {
     'uid': uid,
     'role': role.id,
     if (workerType != null) 'workerType': workerType.id,
     'organizationId': ?organizationId,
+    if (siteIds != null && siteIds.isNotEmpty) 'siteIds': siteIds,
   });
 
   /// Rejects [uid]. The profile is retained; rejection is a status, not a

@@ -18,6 +18,7 @@ import '../features/activities/presentation/activity_workers_screen.dart';
 import '../features/organizations/domain/organization.dart';
 import '../features/organizations/domain/project.dart';
 import '../features/organizations/domain/site.dart';
+import '../features/organizations/presentation/my_workers_screen.dart';
 import '../features/organizations/presentation/organizations_screen.dart';
 import '../features/organizations/presentation/projects_router_screen.dart';
 import '../features/organizations/presentation/projects_screen.dart';
@@ -41,10 +42,7 @@ import 'app_shell.dart';
 
 /// The routes reachable without a signed-in, approved account. Everything
 /// else is operational and requires [AuthStatus.authenticated].
-const Set<String> _publicRoutes = {
-  AppRoutes.login,
-  AppRoutes.register,
-};
+const Set<String> _publicRoutes = {AppRoutes.login, AppRoutes.register};
 
 /// App-wide router configuration.
 ///
@@ -95,7 +93,8 @@ String? authRedirect(
   final pendingRoute = matchedLocation == AppRoutes.pendingApproval;
   final deniedRoute = matchedLocation == AppRoutes.accessDenied;
   final loadingRoute = matchedLocation == AppRoutes.sessionLoading;
-  final reviewRoute = matchedLocation == AppRoutes.pendingApprovals ||
+  final reviewRoute =
+      matchedLocation == AppRoutes.pendingApprovals ||
       matchedLocation == AppRoutes.activeUsers ||
       matchedLocation == AppRoutes.suspendedUsers;
   // Org/project/site/activity/worker management — reachable by both `admin`
@@ -108,7 +107,8 @@ String? authRedirect(
   // `safety_meeting_point_callable.ts`'s `requireOrganizationScopedManager`
   // — deliberately NOT grouped with `manageSafetyLearning` below, which
   // stays `admin`-only.
-  final administrationRoute = matchedLocation == AppRoutes.administration ||
+  final administrationRoute =
+      matchedLocation == AppRoutes.administration ||
       matchedLocation == AppRoutes.manageOrganizations ||
       matchedLocation == AppRoutes.manageProjects ||
       matchedLocation == AppRoutes.manageSites ||
@@ -150,7 +150,9 @@ String? authRedirect(
       if (reviewRoute && !canReviewPendingAccounts) {
         return AppRoutes.dashboard;
       }
-      if (administrationRoute && !isPlatformAdministrator && !canManageOrgContent) {
+      if (administrationRoute &&
+          !isPlatformAdministrator &&
+          !canManageOrgContent) {
         return AppRoutes.dashboard;
       }
       if (orgContentRoute && !isPlatformAdministrator) {
@@ -173,14 +175,14 @@ GoRouter buildAppRouter(SessionController session) {
       // membership model. profile?.canX defaults to false rather than null,
       // so this must be `||`, not `??`, or the membership check would never
       // be reached.
-      canReviewPendingAccounts: (session.profile?.canReviewPendingAccounts ??
-              false) ||
+      canReviewPendingAccounts:
+          (session.profile?.canReviewPendingAccounts ?? false) ||
           (session.activeMembership?.role.canReviewPendingAccounts ?? false),
       isPlatformAdministrator:
           session.profile?.isPlatformAdministrator ?? false,
       canManageOrgContent:
           (session.profile?.canManageOrgContent ?? false) ||
-              (session.activeMembership?.role.canManageOrgContent ?? false),
+          (session.activeMembership?.role.canManageOrgContent ?? false),
     ),
     routes: [
       GoRoute(
@@ -233,10 +235,7 @@ GoRouter buildAppRouter(SessionController session) {
           ),
           GoRoute(
             path: AppRoutes.workers,
-            builder: (context, state) => const PlaceholderScreen(
-              featureName: 'Workers',
-              icon: Icons.groups_outlined,
-            ),
+            builder: (context, state) => const MyWorkersScreen(),
           ),
           GoRoute(
             path: AppRoutes.projects,
@@ -273,7 +272,8 @@ GoRouter buildAppRouter(SessionController session) {
           ),
           GoRoute(
             path: AppRoutes.dailySafetyMeetings,
-            builder: (context, state) => const DailySafetyMeetingsRouterScreen(),
+            builder: (context, state) =>
+                const DailySafetyMeetingsRouterScreen(),
           ),
           GoRoute(
             path: AppRoutes.hazards,
@@ -447,8 +447,9 @@ GoRouter buildAppRouter(SessionController session) {
             builder: (context, state) {
               final organization = state.extra;
               return SafetyMeetingPointsScreen(
-                organizationId:
-                    organization is Organization ? organization.id : null,
+                organizationId: organization is Organization
+                    ? organization.id
+                    : null,
               );
             },
           ),

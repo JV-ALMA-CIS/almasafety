@@ -17,6 +17,7 @@ import 'package:jva_safety/features/authentication/domain/user_profile.dart';
 import 'package:jva_safety/features/authentication/domain/worker_type.dart';
 import 'package:jva_safety/features/authentication/presentation/pending_approvals_screen.dart';
 import 'package:jva_safety/features/organizations/data/organization_repository.dart';
+import 'package:jva_safety/features/organizations/data/site_repository.dart';
 import 'package:jva_safety/features/organizations/domain/organization.dart';
 
 /// A fake approval service.
@@ -44,13 +45,15 @@ class _FakeApprovalService extends AccountApprovalService {
 
   final List<String> rejectedUids = [];
   final List<
-      ({
-        String uid,
-        AppRole role,
-        WorkerType? workerType,
-        String? organizationId,
-      })>
-      approvedCalls = [];
+    ({
+      String uid,
+      AppRole role,
+      WorkerType? workerType,
+      String? organizationId,
+      List<String>? siteIds,
+    })
+  >
+  approvedCalls = [];
   int listCallCount = 0;
 
   @override
@@ -69,6 +72,7 @@ class _FakeApprovalService extends AccountApprovalService {
     required AppRole role,
     WorkerType? workerType,
     String? organizationId,
+    List<String>? siteIds,
   }) async {
     final error = decisionError;
     if (error != null) throw error;
@@ -77,6 +81,7 @@ class _FakeApprovalService extends AccountApprovalService {
       role: role,
       workerType: workerType,
       organizationId: organizationId,
+      siteIds: siteIds,
     ));
   }
 
@@ -96,44 +101,45 @@ class _FakeSession extends SessionController {
     bool noActiveOrganization = false,
     List<String>? extraOrganizationIds,
   }) : _profile = UserProfile(
-        uid: 'approver-uid',
-        name: 'Approver',
-        email: 'approver@example.com',
-        accountStatus: AccountStatus.active,
-        // platformRole is admin-only now; every other role lives on the
-        // active Membership instead — except a Site Manager approved with
-        // no organization yet, signalled by this transient marker (see
-        // account_approval.ts's approveAccount), which
-        // [noActiveOrganization] simulates for a siteManager role.
-        platformRole: role == AppRole.admin
-            ? role
-            : (noActiveOrganization && role == AppRole.siteManager
-                ? AppRole.siteManager
-                : null),
-      ),
-      // An Admin has no organization of its own — matching the real
-      // bootstrap shape, and exercising that the screen does not assume
-      // every reviewer has one. [noActiveOrganization] additionally forces
-      // this for a non-Admin role, to exercise the "reviewer has a role
-      // but genuinely no organization to act in yet" case.
-      _memberships = role == null || role == AppRole.admin || noActiveOrganization
-          ? const []
-          : [
-              Membership(
-                organizationId: 'jv-alma-cis',
-                role: role,
-                status: MembershipStatus.active,
-              ),
-              // Simulates a reviewer holding the same authorized role in a
-              // second organization, for the org-picker's "which of my
-              // organizations" case.
-              for (final organizationId in extraOrganizationIds ?? const [])
-                Membership(
-                  organizationId: organizationId,
-                  role: role,
-                  status: MembershipStatus.active,
-                ),
-            ];
+         uid: 'approver-uid',
+         name: 'Approver',
+         email: 'approver@example.com',
+         accountStatus: AccountStatus.active,
+         // platformRole is admin-only now; every other role lives on the
+         // active Membership instead — except a Site Manager approved with
+         // no organization yet, signalled by this transient marker (see
+         // account_approval.ts's approveAccount), which
+         // [noActiveOrganization] simulates for a siteManager role.
+         platformRole: role == AppRole.admin
+             ? role
+             : (noActiveOrganization && role == AppRole.siteManager
+                   ? AppRole.siteManager
+                   : null),
+       ),
+       // An Admin has no organization of its own — matching the real
+       // bootstrap shape, and exercising that the screen does not assume
+       // every reviewer has one. [noActiveOrganization] additionally forces
+       // this for a non-Admin role, to exercise the "reviewer has a role
+       // but genuinely no organization to act in yet" case.
+       _memberships =
+           role == null || role == AppRole.admin || noActiveOrganization
+           ? const []
+           : [
+               Membership(
+                 organizationId: 'jv-alma-cis',
+                 role: role,
+                 status: MembershipStatus.active,
+               ),
+               // Simulates a reviewer holding the same authorized role in a
+               // second organization, for the org-picker's "which of my
+               // organizations" case.
+               for (final organizationId in extraOrganizationIds ?? const [])
+                 Membership(
+                   organizationId: organizationId,
+                   role: role,
+                   status: MembershipStatus.active,
+                 ),
+             ];
 
   final UserProfile _profile;
   final List<Membership> _memberships;
@@ -179,10 +185,31 @@ void main() {
     );
   }
 
-  Future<void> seedOrg(String id, {String name = 'Org', String code = 'CODE'}) async {
+  Future<void> seedOrg(
+    String id, {
+    String name = 'Org',
+    String code = 'CODE',
+  }) async {
     await firestore.doc('organizations/$id').set({
       'name': name,
       'code': code,
+      'status': 'active',
+      'createdAt': Timestamp.now(),
+      'updatedAt': Timestamp.now(),
+    });
+  }
+
+  Future<void> seedSite(
+    String organizationId,
+    String id, {
+    String name = 'Site',
+    String projectId = 'project-1',
+  }) async {
+    await firestore.doc('organizations/$organizationId/sites/$id').set({
+      'organizationId': organizationId,
+      'projectId': projectId,
+      'name': name,
+      'code': 'CODE-$id',
       'status': 'active',
       'createdAt': Timestamp.now(),
       'updatedAt': Timestamp.now(),
@@ -208,6 +235,10 @@ void main() {
             organizationRepository: OrganizationRepository(
               firestoreService: FirestoreService(firestore: firestore),
             ),
+            siteRepositoryFor: (organizationId) => SiteRepository(
+              firestoreService: FirestoreService(firestore: firestore),
+              organizationId: organizationId,
+            ),
           ),
         ),
       ),
@@ -216,10 +247,7 @@ void main() {
 
   /// Taps Approve on the first matching card, then confirms the role dialog
   /// with its default selection (or picks [role] first if given).
-  Future<void> approveViaDialog(
-    WidgetTester tester, {
-    AppRole? role,
-  }) async {
+  Future<void> approveViaDialog(WidgetTester tester, {AppRole? role}) async {
     await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
     await tester.pumpAndSettle();
 
@@ -235,36 +263,33 @@ void main() {
   }
 
   group('PendingApprovalsScreen (no active organization)', () {
-    testWidgets(
-      'a Site Manager with no active organization yet sees a clear '
-      'message instead of a failed round-trip when attempting to '
-      'approve — regression test for organizationId silently omitted '
-      'from the request, surfacing only as a generic server error',
-      (tester) async {
-        final service = _FakeApprovalService(accounts: [account('alice')]);
+    testWidgets('a Site Manager with no active organization yet sees a clear '
+        'message instead of a failed round-trip when attempting to '
+        'approve — regression test for organizationId silently omitted '
+        'from the request, surfacing only as a generic server error', (
+      tester,
+    ) async {
+      final service = _FakeApprovalService(accounts: [account('alice')]);
 
-        await tester.pumpWidget(
-          wrap(service, noActiveOrganization: true),
-        );
-        await tester.pumpAndSettle();
+      await tester.pumpWidget(wrap(service, noActiveOrganization: true));
+      await tester.pumpAndSettle();
 
-        // The transient-marker fallback lets them see the queue at all —
-        // this is not the "no permission" case.
-        expect(
-          find.text('You do not have permission to review accounts.'),
-          findsNothing,
-        );
-        expect(find.text('Pending Approvals'), findsOneWidget);
+      // The transient-marker fallback lets them see the queue at all —
+      // this is not the "no permission" case.
+      expect(
+        find.text('You do not have permission to review accounts.'),
+        findsNothing,
+      );
+      expect(find.text('Pending Approvals'), findsOneWidget);
 
-        await approveViaDialog(tester);
+      await approveViaDialog(tester);
 
-        expect(
-          find.textContaining('not currently assigned to an organization'),
-          findsOneWidget,
-        );
-        expect(service.approvedCalls, isEmpty);
-      },
-    );
+      expect(
+        find.textContaining('not currently assigned to an organization'),
+        findsOneWidget,
+      );
+      expect(service.approvedCalls, isEmpty);
+    });
   });
 
   group('PendingApprovalsScreen (approver)', () {
@@ -291,10 +316,7 @@ void main() {
       await tester.pumpWidget(wrap(_FakeApprovalService()));
       await tester.pumpAndSettle();
 
-      expect(
-        find.text('No accounts are waiting for review.'),
-        findsOneWidget,
-      );
+      expect(find.text('No accounts are waiting for review.'), findsOneWidget);
     });
 
     testWidgets('shows a loading indicator while the queue loads', (
@@ -338,8 +360,9 @@ void main() {
       },
     );
 
-    testWidgets('cancelling the role dialog leaves the account in the queue',
-        (tester) async {
+    testWidgets('cancelling the role dialog leaves the account in the queue', (
+      tester,
+    ) async {
       final service = _FakeApprovalService(accounts: [account('alice')]);
 
       await tester.pumpWidget(wrap(service));
@@ -365,9 +388,7 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        await tester.tap(
-          find.widgetWithText(ElevatedButton, 'Approve').first,
-        );
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
         await tester.pumpAndSettle();
         await tester.tap(find.byType(DropdownButtonFormField<AppRole>));
         await tester.pumpAndSettle();
@@ -378,6 +399,56 @@ void main() {
         expect(find.text(AppRole.foreman.label), findsWidgets);
       },
     );
+
+    testWidgets(
+      'a Site Manager approving a Foreman is offered a site picker, and '
+      'the checked site(s) are sent alongside the approval — regression '
+      'test for a Foreman approved with no site, who could never open '
+      'Daily Safety Meetings (DailySafetyMeetingScreen requires a '
+      'non-empty membership.siteIds)',
+      (tester) async {
+        await seedOrg('jv-alma-cis', name: 'JV Alma CIS', code: 'JV-1');
+        await seedSite('jv-alma-cis', 'site-1', name: 'North Yard');
+        await seedSite('jv-alma-cis', 'site-2', name: 'South Yard');
+        final service = _FakeApprovalService(accounts: [account('alice')]);
+
+        await tester.pumpWidget(
+          wrap(service, reviewerRole: AppRole.siteManager),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
+        await tester.pumpAndSettle();
+
+        // The role dropdown already defaults to the only grantable role
+        // (Foreman) for a Site Manager, so the site picker should already
+        // be showing without any extra interaction.
+        expect(find.text('North Yard'), findsOneWidget);
+        expect(find.text('South Yard'), findsOneWidget);
+
+        await tester.tap(find.text('North Yard'));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').last);
+        await tester.pumpAndSettle();
+
+        expect(service.approvedCalls.single.siteIds, ['site-1']);
+      },
+    );
+
+    testWidgets('the site picker is not shown when approving a role other than '
+        'Foreman', (tester) async {
+      await seedSite('jv-alma-cis', 'site-1', name: 'North Yard');
+      final service = _FakeApprovalService(accounts: [account('alice')]);
+
+      // An Admin approving Site Manager never needs a site picker — only
+      // a Foreman grant does.
+      await tester.pumpWidget(wrap(service, reviewerRole: AppRole.admin));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
+      await tester.pumpAndSettle();
+
+      expect(find.text('North Yard'), findsNothing);
+    });
 
     testWidgets('rejecting calls the callable with that account\'s uid', (
       tester,
@@ -465,9 +536,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(
-        tester
-            .getSize(find.widgetWithText(ElevatedButton, 'Approve'))
-            .height,
+        tester.getSize(find.widgetWithText(ElevatedButton, 'Approve')).height,
         greaterThanOrEqualTo(48),
       );
       expect(
@@ -501,13 +570,9 @@ void main() {
         await seedOrg('org-1', name: 'Test Org', code: '12345');
         final service = _FakeApprovalService(accounts: [account('alice')]);
 
-        await tester.pumpWidget(
-          wrap(service, reviewerRole: AppRole.admin),
-        );
+        await tester.pumpWidget(wrap(service, reviewerRole: AppRole.admin));
         await tester.pumpAndSettle();
-        await tester.tap(
-          find.widgetWithText(ElevatedButton, 'Approve').first,
-        );
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
         await tester.pumpAndSettle();
 
         expect(find.text('Organization (optional)'), findsOneWidget);
@@ -515,26 +580,21 @@ void main() {
       },
     );
 
-    testWidgets(
-      'an org-scoped reviewer sees a required organization field, '
-      'pre-selected from their own membership — not the Admin\'s optional '
-      'picker over every organization',
-      (tester) async {
-        await seedOrg('jv-alma-cis', name: 'JV Alma CIS', code: 'JV-1');
-        final service = _FakeApprovalService(accounts: [account('alice')]);
+    testWidgets('an org-scoped reviewer sees a required organization field, '
+        'pre-selected from their own membership — not the Admin\'s optional '
+        'picker over every organization', (tester) async {
+      await seedOrg('jv-alma-cis', name: 'JV Alma CIS', code: 'JV-1');
+      final service = _FakeApprovalService(accounts: [account('alice')]);
 
-        await tester.pumpWidget(
-          wrap(service, reviewerRole: AppRole.siteManager),
-        );
-        await tester.pumpAndSettle();
-        await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
-        await tester.pumpAndSettle();
+      await tester.pumpWidget(wrap(service, reviewerRole: AppRole.siteManager));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
+      await tester.pumpAndSettle();
 
-        expect(find.text('Organization (optional)'), findsNothing);
-        expect(find.text('Organization'), findsOneWidget);
-        expect(find.text('JV Alma CIS'), findsOneWidget);
-      },
-    );
+      expect(find.text('Organization (optional)'), findsNothing);
+      expect(find.text('Organization'), findsOneWidget);
+      expect(find.text('JV Alma CIS'), findsOneWidget);
+    });
 
     testWidgets(
       'a Site Manager of two organizations can pick either one, and the '
@@ -577,9 +637,7 @@ void main() {
       await seedOrg('aImNf59EoZ99hNQms2YR', name: 'Test Org', code: '12345');
       final service = _FakeApprovalService(accounts: [account('alice')]);
 
-      await tester.pumpWidget(
-        wrap(service, reviewerRole: AppRole.admin),
-      );
+      await tester.pumpWidget(wrap(service, reviewerRole: AppRole.admin));
       await tester.pumpAndSettle();
       await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
       await tester.pumpAndSettle();
@@ -593,28 +651,23 @@ void main() {
       expect(find.text('aImNf59EoZ99hNQms2YR'), findsNothing);
     });
 
-    testWidgets(
-      'approving with no organization selected leaves organizationId '
-      'unset — the common case for an Admin who does not know which '
-      'organization a Site Manager belongs to',
-      (tester) async {
-        final service = _FakeApprovalService(accounts: [account('alice')]);
+    testWidgets('approving with no organization selected leaves organizationId '
+        'unset — the common case for an Admin who does not know which '
+        'organization a Site Manager belongs to', (tester) async {
+      final service = _FakeApprovalService(accounts: [account('alice')]);
 
-        await tester.pumpWidget(
-          wrap(service, reviewerRole: AppRole.admin),
-        );
-        await tester.pumpAndSettle();
-        await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
-        await tester.pumpAndSettle();
+      await tester.pumpWidget(wrap(service, reviewerRole: AppRole.admin));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
+      await tester.pumpAndSettle();
 
-        // No organization picked; submitting still succeeds.
-        await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').last);
-        await tester.pumpAndSettle();
+      // No organization picked; submitting still succeeds.
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').last);
+      await tester.pumpAndSettle();
 
-        expect(service.approvedCalls, hasLength(1));
-        expect(service.approvedCalls.single.organizationId, isNull);
-      },
-    );
+      expect(service.approvedCalls, hasLength(1));
+      expect(service.approvedCalls.single.organizationId, isNull);
+    });
 
     testWidgets(
       'approving supplies the selected organization\'s Firestore document '
@@ -623,13 +676,9 @@ void main() {
         await seedOrg('aImNf59EoZ99hNQms2YR', name: 'Test Org', code: '12345');
         final service = _FakeApprovalService(accounts: [account('alice')]);
 
-        await tester.pumpWidget(
-          wrap(service, reviewerRole: AppRole.admin),
-        );
+        await tester.pumpWidget(wrap(service, reviewerRole: AppRole.admin));
         await tester.pumpAndSettle();
-        await tester.tap(
-          find.widgetWithText(ElevatedButton, 'Approve').first,
-        );
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
         await tester.pumpAndSettle();
 
         await tester.tap(find.byType(DropdownButtonFormField<Organization?>));
@@ -657,13 +706,9 @@ void main() {
         await seedOrg('org-beta', name: 'Beta Org', code: 'BETA');
         final service = _FakeApprovalService(accounts: [account('alice')]);
 
-        await tester.pumpWidget(
-          wrap(service, reviewerRole: AppRole.admin),
-        );
+        await tester.pumpWidget(wrap(service, reviewerRole: AppRole.admin));
         await tester.pumpAndSettle();
-        await tester.tap(
-          find.widgetWithText(ElevatedButton, 'Approve').first,
-        );
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
         await tester.pumpAndSettle();
 
         await tester.tap(find.byType(DropdownButtonFormField<Organization?>));
@@ -679,28 +724,23 @@ void main() {
       },
     );
 
-    testWidgets(
-      'may grant Site Manager, but never Admin itself',
-      (tester) async {
-        final service = _FakeApprovalService(accounts: [account('alice')]);
+    testWidgets('may grant Site Manager, but never Admin itself', (
+      tester,
+    ) async {
+      final service = _FakeApprovalService(accounts: [account('alice')]);
 
-        await tester.pumpWidget(
-          wrap(service, reviewerRole: AppRole.admin),
-        );
-        await tester.pumpAndSettle();
-        await tester.tap(
-          find.widgetWithText(ElevatedButton, 'Approve').first,
-        );
-        await tester.pumpAndSettle();
-        await tester.tap(find.byType(DropdownButtonFormField<AppRole>));
-        await tester.pumpAndSettle();
+      await tester.pumpWidget(wrap(service, reviewerRole: AppRole.admin));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(DropdownButtonFormField<AppRole>));
+      await tester.pumpAndSettle();
 
-        expect(find.text(AppRole.siteManager.label), findsWidgets);
-        expect(find.text(AppRole.foreman.label), findsNothing);
-        expect(find.text(AppRole.worker.label), findsNothing);
-        expect(find.text(AppRole.admin.label), findsNothing);
-      },
-    );
+      expect(find.text(AppRole.siteManager.label), findsWidgets);
+      expect(find.text(AppRole.foreman.label), findsNothing);
+      expect(find.text(AppRole.worker.label), findsNothing);
+      expect(find.text(AppRole.admin.label), findsNothing);
+    });
   });
 
   group('PendingApprovalsScreen (non-reviewer)', () {

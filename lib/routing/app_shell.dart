@@ -50,13 +50,16 @@ class AppShell extends StatelessWidget {
     // screen (Organizations) that gives them their first membership.
     final membershipRole = sessionController.activeMembership?.role;
     final isTransientSiteManager = profile?.platformRole == AppRole.siteManager;
-    final canReviewPendingAccounts = isPlatformAdministrator ||
+    final canReviewPendingAccounts =
+        isPlatformAdministrator ||
         (membershipRole?.canReviewPendingAccounts ?? false) ||
         isTransientSiteManager;
-    final canManageOrgContent = isPlatformAdministrator ||
+    final canManageOrgContent =
+        isPlatformAdministrator ||
         (membershipRole?.canManageOrgContent ?? false) ||
         isTransientSiteManager;
-    final canReviewDailySafetyMeetings = isPlatformAdministrator ||
+    final canReviewDailySafetyMeetings =
+        isPlatformAdministrator ||
         (membershipRole?.canReviewDailySafetyMeetings ?? false);
     final canManageSafetyLearningLibrary =
         profile?.canManageSafetyLearningLibrary ?? false;
@@ -109,8 +112,12 @@ class AppShell extends StatelessWidget {
   ///   PROJECT_CONTEXT.md §12/§16; conflating the two would show a Foreman
   ///   Insights they cannot actually use.
   /// - **Administration** — reviewer roles only (`canReviewPendingAccounts`
-  ///   — Admin, Site Manager and Foreman all have SOME review authority,
-  ///   even if scoped differently once inside).
+  ///   — Admin, Site Manager and Foreman all have SOME review authority),
+  ///   but its ENTRIES differ by role: the "Administration" landing page
+  ///   (Active/Suspended Users, Organizations) additionally requires
+  ///   `canManageOrgContent`, which a Foreman does not hold, so they see
+  ///   Pending Approvals and My Workers instead — never a dead-end entry
+  ///   that `AdministrationScreen` itself would refuse.
   List<NavSection> _sectionsFor({
     required bool isPlatformAdministrator,
     required bool canReviewPendingAccounts,
@@ -212,18 +219,42 @@ class AppShell extends StatelessWidget {
         NavSection(
           title: 'Administration',
           entries: [
-            const NavSectionEntry(
-              icon: Icons.admin_panel_settings_outlined,
-              selectedIcon: Icons.admin_panel_settings,
-              label: 'Administration',
-              route: AppRoutes.administration,
-            ),
+            // AdministrationScreen's own landing page (Active/Suspended
+            // Users, Organizations) is gated on canManageOrgContent, not
+            // canReviewPendingAccounts — a Foreman satisfies the latter
+            // (they may approve Workers) but not the former (no
+            // organization-wide management standing per
+            // PROJECT_CONTEXT.md §16), so showing them this entry would be
+            // a dead end ("you do not have permission"). A Foreman's own
+            // review authority is fully covered by Pending Approvals and
+            // My Workers below instead.
+            if (canManageOrgContent)
+              const NavSectionEntry(
+                icon: Icons.admin_panel_settings_outlined,
+                selectedIcon: Icons.admin_panel_settings,
+                label: 'Administration',
+                route: AppRoutes.administration,
+              ),
             const NavSectionEntry(
               icon: Icons.how_to_reg_outlined,
               selectedIcon: Icons.how_to_reg,
               label: 'Pending Approvals',
               route: AppRoutes.pendingApprovals,
             ),
+            // My Workers is the Foreman-scoped counterpart to Site
+            // Manager/Admin's Organizations -> Site Workers drill-down:
+            // a read-only list of the Workers assigned to the Foreman's
+            // own site(s). Shown only to a Foreman (review authority
+            // without org-content management) — a Site Manager/Admin
+            // already sees every site's assigned workers through
+            // Organizations instead.
+            if (canReviewPendingAccounts && !canManageOrgContent)
+              const NavSectionEntry(
+                icon: Icons.groups_outlined,
+                selectedIcon: Icons.groups,
+                label: 'My Workers',
+                route: AppRoutes.workers,
+              ),
             // The company-wide Safety Learning library is admin-only,
             // deliberately not delegated to Site Manager (PROJECT_CONTEXT.md
             // §4, §12) — see AppRole.canManageSafetyLearningLibrary.
@@ -267,9 +298,9 @@ class _SidebarHeader extends StatelessWidget {
         children: [
           Text(
             'JVA Safety',
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
           ),
           const SizedBox(height: 12),
           const OrganizationSwitcher(),
@@ -289,7 +320,10 @@ class _SidebarHeader extends StatelessWidget {
 /// previews — the unread-only query exists for [NotificationsScreen]-style
 /// consumers that only ever need the count, not this one.
 class _NotificationBellAction extends StatefulWidget {
-  const _NotificationBellAction({required this.organizationId, required this.uid});
+  const _NotificationBellAction({
+    required this.organizationId,
+    required this.uid,
+  });
 
   final String organizationId;
   final String uid;
