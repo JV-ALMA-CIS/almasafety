@@ -206,7 +206,9 @@ function requireRequestOrganizationId(request: CallableRequest): string {
  * @param {CallableRequest} request the incoming callable request.
  * @return {string | null} the requested organization id, or null.
  */
-function optionalRequestOrganizationId(request: CallableRequest): string | null {
+function optionalRequestOrganizationId(
+  request: CallableRequest
+): string | null {
   const organizationId = (request.data ?? {}).organizationId;
   return typeof organizationId === "string" && organizationId ?
     organizationId :
