@@ -220,7 +220,16 @@ class ResponsiveScaffold extends StatelessWidget {
     if (isDesktop) {
       return Scaffold(
         appBar: appBar,
+        // Row defaults to CrossAxisAlignment.center, which does NOT stretch
+        // children to the Row's full height — without this, the 280px
+        // sidebar (and the ListView inside it) shrink-wraps to its content's
+        // natural height instead of filling the available vertical space,
+        // silently clipping/un-scrollably truncating whichever nav entries
+        // land past that height (Insights, Administration, ...) with no
+        // visible sign anything is wrong. CrossAxisAlignment.stretch fixes
+        // both the sidebar and the body beside it.
         body: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             SizedBox(
               width: 280,
