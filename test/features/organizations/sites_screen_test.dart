@@ -164,7 +164,7 @@ void main() {
       await tester.pumpWidget(wrap(service));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byTooltip('Add site'));
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Add Site').first);
       await tester.pumpAndSettle();
       await tester.enterText(
         find.widgetWithText(TextFormField, 'Name'),
@@ -194,7 +194,7 @@ void main() {
         await tester.pumpWidget(wrap(service));
         await tester.pumpAndSettle();
 
-        await tester.tap(find.byTooltip('Add site'));
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Add Site').first);
         await tester.pumpAndSettle();
         await tester.enterText(
           find.widgetWithText(TextFormField, 'Name'),
@@ -218,7 +218,7 @@ void main() {
       await tester.pumpWidget(wrap(_FakeAdminService()));
       await tester.pumpAndSettle();
 
-      expect(find.text('No sites yet.'), findsOneWidget);
+      expect(find.text('No sites yet'), findsOneWidget);
     });
   });
 
@@ -271,7 +271,10 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.byTooltip('Add site'), findsOneWidget);
+      expect(
+        find.widgetWithText(ElevatedButton, 'Add Site').first,
+        findsOneWidget,
+      );
     });
 
     testWidgets('can see the Edit action for their own organization, and sees '

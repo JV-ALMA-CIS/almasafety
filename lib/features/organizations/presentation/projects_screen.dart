@@ -7,6 +7,7 @@ import '../../../core/services/session_controller.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../../core/widgets/empty_state.dart';
 import '../../../routing/app_routes.dart';
 import '../../authentication/domain/app_role.dart';
 import '../../authentication/presentation/auth_error_banner.dart';
@@ -69,8 +70,13 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
       builder: (_) => const _ProjectFormDialog(),
     );
     if (result == null || !mounted) return;
-    await _save(
-      () => _adminService.createProject(
+
+    setState(() {
+      _isSaving = true;
+      _errorMessage = null;
+    });
+    try {
+      final id = await _adminService.createProject(
         organizationId: widget.organization.id,
         name: result.name,
         code: result.code,
@@ -78,8 +84,34 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
         status: result.status,
         startDate: result.startDate,
         endDate: result.endDate,
-      ),
-    );
+      );
+      if (!mounted) return;
+      // Straight into the new project's Sites — same reasoning as
+      // OrganizationsScreen routing into Projects after creating an
+      // organization: a brand-new project has no sites yet, and that is
+      // the very next thing a Site Manager needs to add.
+      context.go(
+        AppRoutes.manageSites,
+        extra: (
+          organization: widget.organization,
+          project: Project(
+            id: id,
+            organizationId: widget.organization.id,
+            name: result.name,
+            code: result.code,
+            description: result.description,
+            status: result.status,
+            startDate: result.startDate,
+            endDate: result.endDate,
+          ),
+        ),
+      );
+    } on AppException catch (e) {
+      if (!mounted) return;
+      setState(() => _errorMessage = e.message);
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
   }
 
   Future<void> _openEditDialog(Project project) async {
@@ -177,10 +209,10 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                   ),
                 ),
                 if (canManage)
-                  IconButton(
-                    tooltip: 'Add project',
+                  ElevatedButton.icon(
                     onPressed: _isSaving ? null : _openCreateDialog,
-                    icon: const Icon(Icons.add_circle_outline),
+                    icon: const Icon(Icons.add),
+                    label: const Text('Add Project'),
                   ),
               ],
             ),
@@ -195,13 +227,19 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                 child: Center(child: CircularProgressIndicator()),
               ),
             if (!isLoading && projects.isEmpty && streamError == null)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: AppSpacing.xl),
-                child: Text(
-                  'No projects yet.',
-                  style: AppTextStyles.bodyMedium,
-                  textAlign: TextAlign.center,
-                ),
+              EmptyState(
+                icon: Icons.apartment_outlined,
+                title: 'No projects yet',
+                message: canManage
+                    ? 'Create a project to start adding sites and workers.'
+                    : null,
+                action: canManage
+                    ? ElevatedButton.icon(
+                        onPressed: _isSaving ? null : _openCreateDialog,
+                        icon: const Icon(Icons.add),
+                        label: const Text('Add Project'),
+                      )
+                    : null,
               ),
             for (final project in projects) ...[
               _ProjectCard(

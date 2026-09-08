@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import 'package:jva_safety/core/errors/app_exception.dart';
 import 'package:jva_safety/core/services/firestore_service.dart';
@@ -12,8 +13,10 @@ import 'package:jva_safety/features/authentication/domain/membership.dart';
 import 'package:jva_safety/features/authentication/domain/user_profile.dart';
 import 'package:jva_safety/features/organizations/data/organization_admin_service.dart';
 import 'package:jva_safety/features/organizations/data/organization_repository.dart';
+import 'package:jva_safety/features/organizations/domain/organization.dart';
 import 'package:jva_safety/features/organizations/domain/organization_record_status.dart';
 import 'package:jva_safety/features/organizations/presentation/organizations_screen.dart';
+import 'package:jva_safety/routing/app_routes.dart';
 
 /// A fake admin service, subclassing the real one rather than mocking — the
 /// repo's established pattern (see organization_users_screen_test.dart).
@@ -136,6 +139,12 @@ void main() {
     });
   }
 
+  /// Captures whatever `extra` the last navigation to
+  /// [AppRoutes.manageProjects] carried, so a test can assert the
+  /// brand-new organization this screen routes into immediately after
+  /// creation — see OrganizationsScreen._openCreateDialog's doc comment.
+  Object? lastManageProjectsExtra;
+
   Widget wrap(
     _FakeAdminService adminService, {
     AppRole? reviewerRole = AppRole.admin,
@@ -143,6 +152,28 @@ void main() {
     bool transientSiteManagerMarker = false,
     List<Membership>? memberships,
   }) {
+    final router = GoRouter(
+      initialLocation: AppRoutes.manageOrganizations,
+      routes: [
+        GoRoute(
+          path: AppRoutes.manageOrganizations,
+          builder: (context, state) => OrganizationsScreen(
+            repository: OrganizationRepository(
+              firestoreService: FirestoreService(firestore: firestore),
+            ),
+            adminService: adminService,
+          ),
+        ),
+        GoRoute(
+          path: AppRoutes.manageProjects,
+          builder: (context, state) {
+            lastManageProjectsExtra = state.extra;
+            return const Scaffold(body: Text('Projects screen'));
+          },
+        ),
+      ],
+    );
+
     return ChangeNotifierProvider<SessionController>(
       create: (_) => _FakeSession(
         role: reviewerRole,
@@ -150,16 +181,7 @@ void main() {
         transientSiteManagerMarker: transientSiteManagerMarker,
         memberships: memberships,
       ),
-      child: MaterialApp(
-        home: Scaffold(
-          body: OrganizationsScreen(
-            repository: OrganizationRepository(
-              firestoreService: FirestoreService(firestore: firestore),
-            ),
-            adminService: adminService,
-          ),
-        ),
-      ),
+      child: MaterialApp.router(routerConfig: router),
     );
   }
 
@@ -180,18 +202,21 @@ void main() {
       await tester.pumpWidget(wrap(_FakeAdminService()));
       await tester.pumpAndSettle();
 
-      expect(find.text('No organizations yet.'), findsOneWidget);
+      expect(find.text('No organizations yet'), findsOneWidget);
     });
 
-    testWidgets('creating calls the admin service with the form values', (
-      tester,
-    ) async {
+    testWidgets('creating calls the admin service with the form values, then '
+        'navigates straight into the new organization\'s Projects — the '
+        'natural next step for a brand-new organization with no projects '
+        'yet', (tester) async {
       final service = _FakeAdminService();
 
       await tester.pumpWidget(wrap(service));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byTooltip('Add organization'));
+      await tester.tap(
+        find.widgetWithText(ElevatedButton, 'Add Organization').first,
+      );
       await tester.pumpAndSettle();
 
       await tester.enterText(
@@ -212,6 +237,14 @@ void main() {
         service.createCalls.single.status,
         OrganizationRecordStatus.active,
       );
+
+      expect(find.text('Projects screen'), findsOneWidget);
+      final extra = lastManageProjectsExtra;
+      expect(extra, isA<Organization>());
+      extra as Organization;
+      expect(extra.id, 'new-org-id');
+      expect(extra.name, 'JV Alma CIS');
+      expect(extra.code, 'JV-ALMA-CIS');
     });
 
     testWidgets('cannot submit the create form without a name or code', (
@@ -222,7 +255,9 @@ void main() {
       await tester.pumpWidget(wrap(service));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byTooltip('Add organization'));
+      await tester.tap(
+        find.widgetWithText(ElevatedButton, 'Add Organization').first,
+      );
       await tester.pumpAndSettle();
       await tester.tap(find.widgetWithText(ElevatedButton, 'Create'));
       await tester.pumpAndSettle();
@@ -268,7 +303,9 @@ void main() {
       await tester.pumpWidget(wrap(service));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byTooltip('Add organization'));
+      await tester.tap(
+        find.widgetWithText(ElevatedButton, 'Add Organization').first,
+      );
       await tester.pumpAndSettle();
       await tester.enterText(
         find.widgetWithText(TextFormField, 'Name'),
@@ -387,7 +424,10 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        expect(find.byTooltip('Add organization'), findsOneWidget);
+        expect(
+          find.widgetWithText(ElevatedButton, 'Add Organization').first,
+          findsOneWidget,
+        );
       },
     );
 
@@ -409,7 +449,10 @@ void main() {
           find.text('You do not have permission to manage organizations.'),
           findsNothing,
         );
-        expect(find.byTooltip('Add organization'), findsOneWidget);
+        expect(
+          find.widgetWithText(ElevatedButton, 'Add Organization').first,
+          findsOneWidget,
+        );
       },
     );
 

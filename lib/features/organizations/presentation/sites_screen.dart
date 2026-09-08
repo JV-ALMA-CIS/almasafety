@@ -7,6 +7,7 @@ import '../../../core/services/session_controller.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../../core/widgets/empty_state.dart';
 import '../../../routing/app_routes.dart';
 import '../../authentication/domain/app_role.dart';
 import '../../authentication/presentation/auth_error_banner.dart';
@@ -176,10 +177,10 @@ class _SitesScreenState extends State<SitesScreen> {
                   ),
                 ),
                 if (canManage)
-                  IconButton(
-                    tooltip: 'Add site',
+                  ElevatedButton.icon(
                     onPressed: _isSaving ? null : _openCreateDialog,
-                    icon: const Icon(Icons.add_circle_outline),
+                    icon: const Icon(Icons.add),
+                    label: const Text('Add Site'),
                   ),
               ],
             ),
@@ -194,13 +195,19 @@ class _SitesScreenState extends State<SitesScreen> {
                 child: Center(child: CircularProgressIndicator()),
               ),
             if (!isLoading && sites.isEmpty && streamError == null)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: AppSpacing.xl),
-                child: Text(
-                  'No sites yet.',
-                  style: AppTextStyles.bodyMedium,
-                  textAlign: TextAlign.center,
-                ),
+              EmptyState(
+                icon: Icons.location_city_outlined,
+                title: 'No sites yet',
+                message: canManage
+                    ? 'Create a site to start assigning workers.'
+                    : null,
+                action: canManage
+                    ? ElevatedButton.icon(
+                        onPressed: _isSaving ? null : _openCreateDialog,
+                        icon: const Icon(Icons.add),
+                        label: const Text('Add Site'),
+                      )
+                    : null,
               ),
             for (final site in sites) ...[
               _SiteCard(

@@ -7,6 +7,7 @@ import '../../../core/services/session_controller.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../../core/widgets/empty_state.dart';
 import '../../../routing/app_routes.dart';
 import '../../authentication/domain/app_role.dart';
 import '../../authentication/presentation/auth_error_banner.dart';
@@ -70,13 +71,40 @@ class _OrganizationsScreenState extends State<OrganizationsScreen> {
       builder: (_) => const _OrganizationFormDialog(),
     );
     if (result == null || !mounted) return;
-    await _save(
-      () => _adminService.createOrganization(
+
+    setState(() {
+      _isSaving = true;
+      _errorMessage = null;
+    });
+    try {
+      final id = await _adminService.createOrganization(
         name: result.name,
         code: result.code,
         status: result.status,
-      ),
-    );
+      );
+      if (!mounted) return;
+      // Straight into the new organization's Projects — a brand-new
+      // organization has none yet, and the natural next step is creating
+      // the first one, not leaving the Site Manager to work out on their
+      // own that Organizations -> tap the card -> Projects is the path
+      // there. Constructed from the form values and the id the server
+      // handed back, rather than waiting for the list stream to catch up
+      // (which may lag a beat behind this write).
+      context.go(
+        AppRoutes.manageProjects,
+        extra: Organization(
+          id: id,
+          name: result.name,
+          code: result.code,
+          status: result.status,
+        ),
+      );
+    } on AppException catch (e) {
+      if (!mounted) return;
+      setState(() => _errorMessage = e.message);
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
   }
 
   Future<void> _openEditDialog(Organization organization) async {
@@ -191,10 +219,10 @@ class _OrganizationsScreenState extends State<OrganizationsScreen> {
                 // create more than one, so this is not limited to the
                 // zero-membership case above.
                 if (isPlatformAdministrator || isSiteManager)
-                  IconButton(
-                    tooltip: 'Add organization',
+                  ElevatedButton.icon(
                     onPressed: _isSaving ? null : _openCreateDialog,
-                    icon: const Icon(Icons.add_circle_outline),
+                    icon: const Icon(Icons.add),
+                    label: const Text('Add Organization'),
                   ),
               ],
             ),
@@ -209,13 +237,20 @@ class _OrganizationsScreenState extends State<OrganizationsScreen> {
                 child: Center(child: CircularProgressIndicator()),
               ),
             if (!isLoading && organizations.isEmpty && streamError == null)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: AppSpacing.xl),
-                child: Text(
-                  'No organizations yet.',
-                  style: AppTextStyles.bodyMedium,
-                  textAlign: TextAlign.center,
-                ),
+              EmptyState(
+                icon: Icons.corporate_fare_outlined,
+                title: 'No organizations yet',
+                message: isPlatformAdministrator || isSiteManager
+                    ? 'Create an organization to start adding projects, '
+                          'sites and workers.'
+                    : null,
+                action: (isPlatformAdministrator || isSiteManager)
+                    ? ElevatedButton.icon(
+                        onPressed: _isSaving ? null : _openCreateDialog,
+                        icon: const Icon(Icons.add),
+                        label: const Text('Add Organization'),
+                      )
+                    : null,
               ),
             for (final organization in organizations) ...[
               _OrganizationCard(

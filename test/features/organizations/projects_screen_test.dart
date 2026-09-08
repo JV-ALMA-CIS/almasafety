@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import 'package:jva_safety/core/errors/app_exception.dart';
 import 'package:jva_safety/core/services/firestore_service.dart';
@@ -14,7 +15,9 @@ import 'package:jva_safety/features/organizations/data/organization_admin_servic
 import 'package:jva_safety/features/organizations/data/project_repository.dart';
 import 'package:jva_safety/features/organizations/domain/organization.dart';
 import 'package:jva_safety/features/organizations/domain/organization_record_status.dart';
+import 'package:jva_safety/features/organizations/domain/project.dart';
 import 'package:jva_safety/features/organizations/presentation/projects_screen.dart';
+import 'package:jva_safety/routing/app_routes.dart';
 
 class _FakeAdminService extends OrganizationAdminService {
   _FakeAdminService({this.createError});
@@ -101,17 +104,23 @@ void main() {
     });
   }
 
+  /// Captures whatever `extra` the last navigation to [AppRoutes.manageSites]
+  /// carried, so a test can assert the brand-new project this screen routes
+  /// into immediately after creation — see ProjectsScreen._openCreateDialog's
+  /// doc comment.
+  Object? lastManageSitesExtra;
+
   Widget wrap(
     _FakeAdminService adminService, {
     AppRole? reviewerRole = AppRole.admin,
     String? organizationId,
   }) {
-    return ChangeNotifierProvider<SessionController>(
-      create: (_) =>
-          _FakeSession(role: reviewerRole, organizationId: organizationId),
-      child: MaterialApp(
-        home: Scaffold(
-          body: ProjectsScreen(
+    final router = GoRouter(
+      initialLocation: AppRoutes.projects,
+      routes: [
+        GoRoute(
+          path: AppRoutes.projects,
+          builder: (context, state) => ProjectsScreen(
             organization: organization,
             repository: ProjectRepository(
               firestoreService: FirestoreService(firestore: firestore),
@@ -120,7 +129,20 @@ void main() {
             adminService: adminService,
           ),
         ),
-      ),
+        GoRoute(
+          path: AppRoutes.manageSites,
+          builder: (context, state) {
+            lastManageSitesExtra = state.extra;
+            return const Scaffold(body: Text('Sites screen'));
+          },
+        ),
+      ],
+    );
+
+    return ChangeNotifierProvider<SessionController>(
+      create: (_) =>
+          _FakeSession(role: reviewerRole, organizationId: organizationId),
+      child: MaterialApp.router(routerConfig: router),
     );
   }
 
@@ -138,13 +160,17 @@ void main() {
       expect(find.text('Project p2'), findsNothing);
     });
 
-    testWidgets('creating supplies this organization\'s id', (tester) async {
+    testWidgets('creating supplies this organization\'s id, then navigates '
+        'straight into the new project\'s Sites — the natural next step '
+        'for a brand-new project with no sites yet', (tester) async {
       final service = _FakeAdminService();
 
       await tester.pumpWidget(wrap(service));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byTooltip('Add project'));
+      await tester.tap(
+        find.widgetWithText(ElevatedButton, 'Add Project').first,
+      );
       await tester.pumpAndSettle();
       await tester.enterText(
         find.widgetWithText(TextFormField, 'Name'),
@@ -160,13 +186,21 @@ void main() {
       expect(service.createCalls, hasLength(1));
       expect(service.createCalls.single.organizationId, 'org-alpha');
       expect(service.createCalls.single.name, 'Rosslyn Tower');
+
+      expect(find.text('Sites screen'), findsOneWidget);
+      final extra = lastManageSitesExtra;
+      expect(extra, isA<({Organization organization, Project project})>());
+      extra as ({Organization organization, Project project});
+      expect(extra.organization.id, 'org-alpha');
+      expect(extra.project.id, 'new-project-id');
+      expect(extra.project.name, 'Rosslyn Tower');
     });
 
     testWidgets('shows an empty state when there are none', (tester) async {
       await tester.pumpWidget(wrap(_FakeAdminService()));
       await tester.pumpAndSettle();
 
-      expect(find.text('No projects yet.'), findsOneWidget);
+      expect(find.text('No projects yet'), findsOneWidget);
     });
 
     testWidgets('surfaces a refused create, e.g. a deleted organization', (
@@ -179,7 +213,9 @@ void main() {
       await tester.pumpWidget(wrap(service));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byTooltip('Add project'));
+      await tester.tap(
+        find.widgetWithText(ElevatedButton, 'Add Project').first,
+      );
       await tester.pumpAndSettle();
       await tester.enterText(
         find.widgetWithText(TextFormField, 'Name'),
@@ -247,7 +283,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.byTooltip('Add project'), findsOneWidget);
+      expect(find.widgetWithText(ElevatedButton, 'Add Project'), findsWidgets);
     });
 
     testWidgets('can see the Edit action for their own organization, and can '
