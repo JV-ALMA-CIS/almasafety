@@ -205,6 +205,23 @@ class FirestorePaths {
     String meetingPointId,
   ) => '${meetingPointNotesCollection(organizationId, meetingId)}/$meetingPointId';
 
+  /// `organizations/{organizationId}/daily_safety_meetings/{meetingId}/evidence`
+  /// — a subcollection of one meeting, not a single document. Auto-id,
+  /// mirroring [meetingConcernsCollection]'s shape (many items, no natural
+  /// unique key) rather than [meetingAttendanceCollection]'s per-worker
+  /// shape.
+  static String meetingEvidenceCollection(
+    String organizationId,
+    String meetingId,
+  ) => '${dailySafetyMeeting(organizationId, meetingId)}/evidence';
+
+  /// `organizations/{organizationId}/daily_safety_meetings/{meetingId}/evidence/{id}`.
+  static String meetingEvidence(
+    String organizationId,
+    String meetingId,
+    String id,
+  ) => '${meetingEvidenceCollection(organizationId, meetingId)}/$id';
+
   /// `organizations/{organizationId}/daily_safety_meetings/{meetingId}/concerns/{id}`.
   static String meetingConcern(
     String organizationId,

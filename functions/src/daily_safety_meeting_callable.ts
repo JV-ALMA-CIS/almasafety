@@ -128,6 +128,38 @@
  * `meetingPointId` is currently on the meeting's own `meetingPointIds` — a
  * note is meaningless for a point that was never actually recorded as
  * covered. Once `completed`, both callables refuse, exactly like concerns.
+ *
+ * EVIDENCE
+ *
+ * `addMeetingEvidence`/`removeMeetingEvidence` manage supporting proof (a
+ * photo of the foreman's handwritten toolbox-talk book, a sign-in sheet, a
+ * briefing/site photo, or another document) at
+ * `daily_safety_meetings/{id}/evidence/{evidenceId}` — an auto-id
+ * subcollection, mirroring `concerns`' shape (a meeting can have many
+ * pieces of evidence, no natural unique key). The actual file bytes are
+ * uploaded to Cloud Storage by the CLIENT before calling this — see
+ * `DailySafetyMeetingService.uploadMeetingEvidence`'s doc comment for the
+ * pre-allocate-id / upload / then-call-the-callable sequencing, which
+ * mirrors `HazardService.reportHazard` exactly. This callable only writes
+ * the Firestore METADATA row (`storagePath`, `downloadUrl`, `evidenceType`,
+ * `fileType`, an optional `description`, `uploadedBy`, `createdAt`) — it
+ * never touches Storage itself.
+ *
+ * **DELIBERATE EXCEPTION to the "everything freezes at completion" rule
+ * that governs `activityIds`/`meetingPointIds`/`concerns`/point notes:
+ * `addMeetingEvidence` may still be called on a COMPLETED meeting.** A
+ * foreman may not have their physical safety book on hand at the exact
+ * moment they complete the meeting on their phone; forcing them to keep
+ * the meeting artificially `inProgress` until every photo is uploaded would
+ * be worse for real field use than allowing evidence to arrive afterward.
+ * This is why `addMeetingEvidence` calls the plain `requireOwnMeeting` (no
+ * status check), not `requireInProgressOwnMeeting` — every other write
+ * callable in this file uses the latter. Evidence METADATA is otherwise
+ * immutable once written (no `updateMeetingEvidence` exists at all — a
+ * wrong caption means delete-and-re-add, never a silent edit).
+ * `removeMeetingEvidence`, by contrast, IS gated on `inProgress` — evidence
+ * on a completed meeting may still be added to, but never removed, exactly
+ * like `corrective_actions`' own "no delete" rule for a permanent record.
  */
 
 import {FieldValue, getFirestore} from "firebase-admin/firestore";
@@ -996,4 +1028,166 @@ export const removeMeetingPointNote = onCall(async (request) => {
   await ref.delete();
 
   return {meetingId, meetingPointId, organizationId};
+});
+
+const EVIDENCE_TYPES = [
+  "handwrittenNotes",
+  "signInSheet",
+  "briefingPhoto",
+  "document",
+  "other",
+] as const;
+type EvidenceType = (typeof EVIDENCE_TYPES)[number];
+
+/**
+ * Validates and returns the `evidenceType` argument, refusing anything
+ * outside the fixed set this stage supports. Mirrors
+ * `requireConcernCategory`.
+ *
+ * @param {CallableRequest} request the incoming callable request.
+ * @return {EvidenceType} the validated evidence type.
+ */
+function requireEvidenceType(request: CallableRequest): EvidenceType {
+  const value = requireString(request, "evidenceType");
+  if (!(EVIDENCE_TYPES as readonly string[]).includes(value)) {
+    throw new HttpsError(
+      "invalid-argument",
+      "evidenceType must be one of: " + EVIDENCE_TYPES.join(", ")
+    );
+  }
+  return value as EvidenceType;
+}
+
+/**
+ * Reads an optional string argument, returning undefined (not written at
+ * all) rather than null when absent — used for `description`, which should
+ * simply be omitted from the stored document when the caller supplies
+ * nothing, not stored as an explicit null.
+ *
+ * @param {CallableRequest} request the incoming callable request.
+ * @param {string} field the argument name.
+ * @return {string | undefined} the trimmed value, or undefined.
+ */
+function optionalString(
+  request: CallableRequest,
+  field: string
+): string | undefined {
+  const value = (request.data ?? {})[field];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new HttpsError("invalid-argument", `${field} must be a string.`);
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * Records one piece of evidence's METADATA for a meeting, at
+ * `daily_safety_meetings/{id}/evidence/{evidenceId}`. The caller must have
+ * already uploaded the actual file to Cloud Storage and supplies the
+ * resulting `storagePath`/`downloadUrl` here — see this file's header note
+ * on EVIDENCE for the full client-side sequencing and why this callable
+ * accepts a completed meeting (unlike every other write callable here).
+ *
+ * `evidenceId` is CALLER-SUPPLIED (pre-allocated client-side, mirroring
+ * `HazardService.allocateHazardId`'s pattern) rather than server-generated
+ * — the client must know the id before this call, since it names the
+ * Storage upload path that happens first. Refuses if a document already
+ * exists at that id (`.create()`, not `.set()`) so a modified client cannot
+ * overwrite another piece of evidence's metadata by reusing its id.
+ */
+export const addMeetingEvidence = onCall(async (request) => {
+  const organizationId = requireString(request, "organizationId");
+  const meetingId = requireString(request, "meetingId");
+  const evidenceId = requireString(request, "evidenceId");
+  const storagePath = requireString(request, "storagePath");
+  const downloadUrl = requireString(request, "downloadUrl");
+  const fileType = requireString(request, "fileType");
+  const evidenceType = requireEvidenceType(request);
+  const description = optionalString(request, "description");
+
+  const uploaderId = request.auth?.uid;
+  if (!uploaderId) throw denied();
+
+  // Deliberately requireOwnMeeting, NOT requireInProgressOwnMeeting — see
+  // this file's header note on EVIDENCE for why a completed meeting still
+  // accepts new evidence.
+  const meeting = await requireOwnMeeting(
+    organizationId,
+    meetingId,
+    uploaderId
+  );
+
+  const expectedPathPrefix =
+    `organizations/${organizationId}/daily_safety_meetings/${meetingId}/`;
+  if (!storagePath.startsWith(expectedPathPrefix)) {
+    throw new HttpsError(
+      "failed-precondition",
+      "storagePath does not belong to this meeting."
+    );
+  }
+
+  const ref = getFirestore().doc(
+    `organizations/${organizationId}/daily_safety_meetings/${meetingId}` +
+      `/evidence/${evidenceId}`
+  );
+
+  try {
+    await ref.create({
+      meetingId,
+      organizationId,
+      siteId: meeting.siteId,
+      evidenceType,
+      storagePath,
+      downloadUrl,
+      fileType,
+      ...(description !== undefined ? {description} : {}),
+      uploadedBy: uploaderId,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+  } catch {
+    throw new HttpsError(
+      "already-exists",
+      "That evidence id has already been used."
+    );
+  }
+
+  return {id: evidenceId, organizationId, meetingId};
+});
+
+/**
+ * Removes one piece of evidence's metadata from an IN-PROGRESS meeting.
+ * Unlike `addMeetingEvidence`, this is gated on `inProgress` — evidence on
+ * a completed meeting may still be added to, but never removed, matching
+ * `corrective_actions`' "no delete" rule for a permanent record. See this
+ * file's header note on EVIDENCE.
+ *
+ * This deletes ONLY the Firestore metadata row — the underlying Storage
+ * file is left in place (mirrors how removing other records in this
+ * codebase never reaches into Storage); an orphaned file with no matching
+ * metadata is a low-severity cleanup concern, not a security issue, since
+ * nothing reads Storage independently of this metadata.
+ */
+export const removeMeetingEvidence = onCall(async (request) => {
+  const organizationId = requireString(request, "organizationId");
+  const meetingId = requireString(request, "meetingId");
+  const evidenceId = requireString(request, "evidenceId");
+
+  const foremanId = request.auth?.uid;
+  if (!foremanId) throw denied();
+
+  await requireInProgressOwnMeeting(organizationId, meetingId, foremanId);
+
+  const ref = getFirestore().doc(
+    `organizations/${organizationId}/daily_safety_meetings/${meetingId}` +
+      `/evidence/${evidenceId}`
+  );
+  const snapshot = await ref.get();
+  if (!snapshot.exists) {
+    throw new HttpsError("not-found", "That evidence no longer exists.");
+  }
+
+  await ref.delete();
+
+  return {id: evidenceId, organizationId, meetingId};
 });

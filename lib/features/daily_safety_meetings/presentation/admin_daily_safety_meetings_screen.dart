@@ -24,11 +24,13 @@ import '../../safety_meeting_points/domain/safety_meeting_point.dart';
 import '../data/daily_safety_meeting_repository.dart';
 import '../data/meeting_attendance_repository.dart';
 import '../data/meeting_concern_repository.dart';
+import '../data/meeting_evidence_repository.dart';
 import '../data/meeting_point_note_repository.dart';
 import '../domain/daily_safety_meeting.dart';
 import '../domain/meeting_attendance.dart';
 import '../domain/meeting_attendance_status.dart';
 import '../domain/meeting_concern.dart';
+import '../domain/meeting_evidence.dart';
 import '../domain/meeting_point_note.dart';
 
 /// The administrator-facing Daily Safety Meeting review list: every meeting
@@ -419,6 +421,7 @@ class DailySafetyMeetingSummaryScreen extends StatefulWidget {
     this.activityRepository,
     this.meetingPointRepository,
     this.pointNoteRepository,
+    this.evidenceRepository,
   });
 
   final Organization organization;
@@ -445,6 +448,7 @@ class DailySafetyMeetingSummaryScreen extends StatefulWidget {
   final ActivityRepository? activityRepository;
   final SafetyMeetingPointRepository? meetingPointRepository;
   final MeetingPointNoteRepository? pointNoteRepository;
+  final MeetingEvidenceRepository? evidenceRepository;
 
   @override
   State<DailySafetyMeetingSummaryScreen> createState() =>
@@ -490,6 +494,13 @@ class _DailySafetyMeetingSummaryScreenState
   late final MeetingPointNoteRepository _pointNoteRepository =
       widget.pointNoteRepository ??
       MeetingPointNoteRepository(
+        firestoreService: _firestoreService,
+        organizationId: widget.organization.id,
+        meetingId: widget.meeting.id,
+      );
+  late final MeetingEvidenceRepository _evidenceRepository =
+      widget.evidenceRepository ??
+      MeetingEvidenceRepository(
         firestoreService: _firestoreService,
         organizationId: widget.organization.id,
         meetingId: widget.meeting.id,
@@ -553,7 +564,13 @@ class _DailySafetyMeetingSummaryScreenState
                                   n.meetingPointId: n,
                               };
 
-                              return ListView(
+                              return StreamBuilder<List<MeetingEvidence>>(
+                                stream: _evidenceRepository.watchAll(),
+                                builder: (context, evidenceSnapshot) {
+                                  final evidence = evidenceSnapshot.data ??
+                                      const <MeetingEvidence>[];
+
+                                  return ListView(
                             padding: const EdgeInsets.all(AppSpacing.md),
                             children: [
                               _SummarySection(
@@ -672,8 +689,12 @@ class _DailySafetyMeetingSummaryScreenState
                                           ),
                                       ],
                               ),
+                              const SizedBox(height: AppSpacing.lg),
+                              _EvidenceSummarySection(evidence: evidence),
                             ],
                           );
+                                },
+                              );
                             },
                           );
                         },
@@ -728,6 +749,108 @@ class _InfoRow extends StatelessWidget {
           ),
           Expanded(child: Text(value, style: AppTextStyles.bodyMedium)),
         ],
+      ),
+    );
+  }
+}
+
+/// The read-only "Evidence" section of a completed meeting's summary —
+/// supporting photos/documents (a handwritten safety-book photo, a sign-in
+/// sheet, a briefing/site photo). Shows a placeholder when empty rather
+/// than omitting the section, so a Site Manager reviewing the record can
+/// tell "no evidence attached" apart from "this screen doesn't show
+/// evidence at all" — the absence itself is signal worth surfacing.
+class _EvidenceSummarySection extends StatelessWidget {
+  const _EvidenceSummarySection({required this.evidence});
+
+  final List<MeetingEvidence> evidence;
+
+  @override
+  Widget build(BuildContext context) {
+    return _SummarySection(
+      title: 'Evidence',
+      children: evidence.isEmpty
+          ? const [
+              Text(
+                'No evidence attached.',
+                style: AppTextStyles.bodyMedium,
+              ),
+            ]
+          : [
+              Wrap(
+                spacing: AppSpacing.sm,
+                runSpacing: AppSpacing.sm,
+                children: [
+                  for (final item in evidence) _EvidenceThumbnail(item: item),
+                ],
+              ),
+            ],
+    );
+  }
+}
+
+class _EvidenceThumbnail extends StatelessWidget {
+  const _EvidenceThumbnail({required this.item});
+
+  final MeetingEvidence item;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: () => showDialog<void>(
+        context: context,
+        builder: (_) => Dialog(
+          child: item.isImage
+              ? InteractiveViewer(
+                  child: Image.network(item.downloadUrl),
+                )
+              : Padding(
+                  padding: const EdgeInsets.all(AppSpacing.lg),
+                  child: Text(
+                    item.description ?? item.evidenceType.label,
+                    style: AppTextStyles.bodyMedium,
+                  ),
+                ),
+        ),
+      ),
+      child: SizedBox(
+        width: 96,
+        child: Column(
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: item.isImage
+                  ? Image.network(
+                      item.downloadUrl,
+                      width: 96,
+                      height: 96,
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) =>
+                          const Icon(
+                            Icons.broken_image_outlined,
+                            size: 96,
+                          ),
+                    )
+                  : Container(
+                      width: 96,
+                      height: 96,
+                      color: AppColors.textSecondary.withValues(alpha: 0.08),
+                      child: const Icon(
+                        Icons.description_outlined,
+                        size: 40,
+                      ),
+                    ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              item.evidenceType.label,
+              style: AppTextStyles.label,
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ),
       ),
     );
   }

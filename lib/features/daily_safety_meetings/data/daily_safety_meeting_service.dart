@@ -1,7 +1,13 @@
+import 'dart:typed_data';
+
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_core/firebase_core.dart';
+import '../../../core/constants/firestore_paths.dart';
 import '../../../core/errors/app_exception.dart';
+import '../../../core/services/firestore_service.dart';
+import '../../../core/services/storage_service.dart';
 import '../../organizations/data/organization_admin_service.dart';
+import '../domain/meeting_evidence_type.dart';
 
 /// Client for the foreman-facing meeting callables in
 /// `functions/src/daily_safety_meeting_callable.ts`.
@@ -18,10 +24,17 @@ import '../../organizations/data/organization_admin_service.dart';
 /// [SafetyMeetingPointAdminService], so it can be constructed before
 /// `Firebase.initializeApp()` has run — e.g. in widget tests.
 class DailySafetyMeetingService {
-  DailySafetyMeetingService({FirebaseFunctions? functions})
-    : _injected = functions;
+  DailySafetyMeetingService({
+    FirebaseFunctions? functions,
+    FirestoreService? firestoreService,
+    StorageService? storageService,
+  }) : _injected = functions,
+       _firestoreService = firestoreService ?? FirestoreService(),
+       _storageService = storageService ?? StorageService();
 
   final FirebaseFunctions? _injected;
+  final FirestoreService _firestoreService;
+  final StorageService _storageService;
 
   FirebaseFunctions? get _functions {
     if (_injected != null) return _injected;
@@ -123,6 +136,104 @@ class DailySafetyMeetingService {
     'organizationId': organizationId,
     'meetingId': meetingId,
     'meetingPointId': meetingPointId,
+  });
+
+  /// Pre-allocates an evidence document id, without writing anything — the
+  /// first step of [uploadMeetingEvidence], mirroring
+  /// [HazardService.allocateHazardId]'s exact pattern. Exposed separately so
+  /// a caller can start the Storage upload against a known path before
+  /// calling the metadata callable.
+  String allocateEvidenceId(String organizationId, String meetingId) {
+    return _firestoreService.require
+        .collection(
+          FirestorePaths.meetingEvidenceCollection(organizationId, meetingId),
+        )
+        .doc()
+        .id;
+  }
+
+  /// Uploads [bytes] to
+  /// `organizations/{organizationId}/daily_safety_meetings/{meetingId}/{evidenceId}/{fileName}`
+  /// and returns its download URL, mirroring
+  /// [HazardService.uploadHazardPhoto]'s exact pattern. Any org member may
+  /// upload here — see `storage.rules`' org-scoped write grant — so this
+  /// performs no separate authorization check of its own; `addMeetingEvidence`
+  /// is what authorizes the metadata write that follows.
+  Future<String> uploadEvidenceFile({
+    required String organizationId,
+    required String meetingId,
+    required String evidenceId,
+    required String fileName,
+    required Uint8List bytes,
+  }) async {
+    try {
+      final ref = _storageService
+          .orgRef(organizationId)
+          .child('daily_safety_meetings/$meetingId/$evidenceId/$fileName');
+      await ref.putData(bytes);
+      return await ref.getDownloadURL();
+    } on Object catch (e) {
+      throw DataException('Failed to upload the evidence file.', cause: e);
+    }
+  }
+
+  /// Records one piece of evidence end-to-end: pre-allocates the id,
+  /// uploads [bytes] to a path scoped to that id, then calls
+  /// `addMeetingEvidence` with the resulting `storagePath`/`downloadUrl` —
+  /// mirroring [HazardService.reportHazard]'s exact sequencing. Unlike
+  /// every other write on this meeting, this succeeds even once the
+  /// meeting is `completed` — see [MeetingEvidence]'s doc comment.
+  Future<String> uploadMeetingEvidence({
+    required String organizationId,
+    required String meetingId,
+    required String fileName,
+    required Uint8List bytes,
+    required String fileType,
+    required MeetingEvidenceType evidenceType,
+    String? description,
+  }) async {
+    final evidenceId = allocateEvidenceId(organizationId, meetingId);
+    // Matches the exact path StorageService.orgRef(...).child(...) builds in
+    // uploadEvidenceFile below — kept as a single string built here (rather
+    // than a shared helper) since it must exactly match what
+    // addMeetingEvidence's own requireOwnMeeting-adjacent path-prefix check
+    // expects: organizations/{orgId}/daily_safety_meetings/{meetingId}/...
+    final storagePath =
+        'organizations/$organizationId/daily_safety_meetings/$meetingId/'
+        '$evidenceId/$fileName';
+    final downloadUrl = await uploadEvidenceFile(
+      organizationId: organizationId,
+      meetingId: meetingId,
+      evidenceId: evidenceId,
+      fileName: fileName,
+      bytes: bytes,
+    );
+
+    await _call<Object?>('addMeetingEvidence', {
+      'organizationId': organizationId,
+      'meetingId': meetingId,
+      'evidenceId': evidenceId,
+      'storagePath': storagePath,
+      'downloadUrl': downloadUrl,
+      'fileType': fileType,
+      'evidenceType': evidenceType.id,
+      'description': ?description,
+    });
+
+    return evidenceId;
+  }
+
+  /// Removes one piece of evidence from an in-progress meeting. Refuses
+  /// once the meeting is completed — evidence may still be added
+  /// afterward, but never removed, see [MeetingEvidence]'s doc comment.
+  Future<void> removeMeetingEvidence({
+    required String organizationId,
+    required String meetingId,
+    required String evidenceId,
+  }) => _call<Object?>('removeMeetingEvidence', {
+    'organizationId': organizationId,
+    'meetingId': meetingId,
+    'evidenceId': evidenceId,
   });
 
   Future<T> _call<T>(String name, [Map<String, Object?>? data]) async {

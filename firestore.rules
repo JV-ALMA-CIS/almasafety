@@ -554,6 +554,34 @@ service cloud.firestore {
                 && get(/databases/$(database)/documents/organizations/$(organizationId)/daily_safety_meetings/$(meetingId)).data.foremanId == request.auth.uid);
           allow write: if false;
         }
+
+        // ---- .../daily_safety_meetings/{meetingId}/evidence/{evidenceId} ----
+        // Supporting proof (a photo of the foreman's handwritten toolbox-
+        // talk book, a sign-in sheet, a briefing/site photo, or another
+        // document) that the meeting happened as recorded. Read follows
+        // `concerns`'/`point_notes`' exact shape: Site Manager/Admin see
+        // every meeting's evidence; a Foreman sees only evidence on
+        // meetings they conducted; a Worker has no read access. Provisioned
+        // exclusively through `addMeetingEvidence`/`removeMeetingEvidence`
+        // (`daily_safety_meeting_callable.ts`) — this metadata write path
+        // is separate from the actual file bytes, which the client uploads
+        // directly to Cloud Storage (see `storage.rules`) before calling
+        // `addMeetingEvidence`. UNLIKE every other subcollection here,
+        // `addMeetingEvidence` deliberately accepts a COMPLETED meeting (a
+        // foreman may not have the physical evidence ready the moment they
+        // complete the meeting) — see that callable's own doc comment for
+        // why. `removeMeetingEvidence` is still `inProgress`-only, matching
+        // `corrective_actions`' "no delete once permanent" rule.
+        match /evidence/{evidenceId} {
+          allow read: if isAdmin()
+            || (belongsToOrganization(organizationId)
+              ? membershipDoc(organizationId).role == 'siteManager'
+              : false)
+            || (belongsToOrganization(organizationId)
+                && membershipDoc(organizationId).role == 'foreman'
+                && get(/databases/$(database)/documents/organizations/$(organizationId)/daily_safety_meetings/$(meetingId)).data.foremanId == request.auth.uid);
+          allow write: if false;
+        }
       }
 
       // ---- organizations/{organizationId}/hazards/{hazardId} ----
@@ -724,8 +752,8 @@ service cloud.firestore {
       // for them.
       //
       // `daily_safety_meetings` ALSO covers this wildcard matching its own
-      // SUBCOLLECTIONS (`attendance`, `concerns`, `point_notes`) via
-      // `documentId=**` — e.g.
+      // SUBCOLLECTIONS (`attendance`, `concerns`, `point_notes`,
+      // `evidence`) via `documentId=**` — e.g.
       // `daily_safety_meetings/{id}/attendance/{workerId}` matches
       // `operationalCollection == 'daily_safety_meetings'` here too, not
       // just the top-level meeting document — so excluding the one name

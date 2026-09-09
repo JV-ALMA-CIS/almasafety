@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import '../../../core/errors/app_exception.dart';
 import '../../../core/services/firestore_service.dart';
@@ -27,12 +28,15 @@ import '../data/meeting_attendance_repository.dart';
 import '../data/meeting_attendance_service.dart';
 import '../data/meeting_concern_repository.dart';
 import '../data/meeting_concern_service.dart';
+import '../data/meeting_evidence_repository.dart';
 import '../data/meeting_point_note_repository.dart';
 import '../domain/daily_safety_meeting.dart';
 import '../domain/meeting_attendance.dart';
 import '../domain/meeting_attendance_status.dart';
 import '../domain/meeting_concern.dart';
 import '../domain/meeting_concern_category.dart';
+import '../domain/meeting_evidence.dart';
+import '../domain/meeting_evidence_type.dart';
 import '../domain/meeting_point_note.dart';
 import 'daily_safety_meeting_history_screen.dart';
 
@@ -82,6 +86,8 @@ class DailySafetyMeetingScreen extends StatefulWidget {
     this.correctiveActionService,
     this.correctiveActionRepository,
     this.pointNoteRepositoryBuilder,
+    this.evidenceRepositoryBuilder,
+    this.imagePicker,
   });
 
   /// Injected in tests. Production builds pass nothing and the state
@@ -122,6 +128,15 @@ class DailySafetyMeetingScreen extends StatefulWidget {
   final MeetingPointNoteRepository Function(String meetingId)?
   pointNoteRepositoryBuilder;
 
+  /// Injected in tests: builds a [MeetingEvidenceRepository] for a given
+  /// meeting id, mirroring [pointNoteRepositoryBuilder].
+  final MeetingEvidenceRepository Function(String meetingId)?
+  evidenceRepositoryBuilder;
+
+  /// Injected in tests to avoid touching the platform camera/gallery,
+  /// mirroring [ReportHazardScreen]'s own injection.
+  final ImagePicker? imagePicker;
+
   @override
   State<DailySafetyMeetingScreen> createState() =>
       _DailySafetyMeetingScreenState();
@@ -136,6 +151,7 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
       widget.concernService ?? MeetingConcernService();
   late final CorrectiveActionService _correctiveActionService =
       widget.correctiveActionService ?? CorrectiveActionService();
+  late final ImagePicker _imagePicker = widget.imagePicker ?? ImagePicker();
 
   DailySafetyMeetingRepository? _meetingRepository;
   ActivityRepository? _activityRepository;
@@ -258,6 +274,20 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
       return widget.pointNoteRepositoryBuilder!(meetingId);
     }
     return MeetingPointNoteRepository(
+      firestoreService: FirestoreService(),
+      organizationId: organizationId,
+      meetingId: meetingId,
+    );
+  }
+
+  MeetingEvidenceRepository _evidenceRepositoryFor(
+    String organizationId,
+    String meetingId,
+  ) {
+    if (widget.evidenceRepositoryBuilder != null) {
+      return widget.evidenceRepositoryBuilder!(meetingId);
+    }
+    return MeetingEvidenceRepository(
       firestoreService: FirestoreService(),
       organizationId: organizationId,
       meetingId: meetingId,
@@ -405,6 +435,11 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
               organizationId,
               existing.id,
             ),
+            evidenceRepository: _evidenceRepositoryFor(
+              organizationId,
+              existing.id,
+            ),
+            imagePicker: _imagePicker,
             isSaving: _isSaving,
             errorMessage: _errorMessage,
             onSave: _save,
@@ -617,6 +652,8 @@ class _MeetingWorkspace extends StatefulWidget {
     required this.concernRepository,
     required this.correctiveActionRepository,
     required this.pointNoteRepository,
+    required this.evidenceRepository,
+    required this.imagePicker,
     required this.isSaving,
     required this.errorMessage,
     required this.onSave,
@@ -637,6 +674,8 @@ class _MeetingWorkspace extends StatefulWidget {
   final MeetingConcernRepository concernRepository;
   final CorrectiveActionRepository correctiveActionRepository;
   final MeetingPointNoteRepository pointNoteRepository;
+  final MeetingEvidenceRepository evidenceRepository;
+  final ImagePicker imagePicker;
   final bool isSaving;
   final String? errorMessage;
   final Future<void> Function(Future<void> Function()) onSave;
@@ -796,6 +835,62 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
     ),
   );
 
+  bool _isCapturingEvidence = false;
+  String? _evidenceError;
+
+  /// Captures a photo and uploads it as evidence of the given [type] —
+  /// deliberately reachable REGARDLESS of [canEdit] (unlike every other
+  /// action on this screen): evidence may still be added after the meeting
+  /// is completed, see [MeetingEvidence]'s doc comment. Camera-only for
+  /// this stage (matching [ReportHazardScreen]'s existing pattern) — a
+  /// general document picker is a larger dependency this pass does not
+  /// need, since a photo covers the handwritten-book/sign-in-sheet/
+  /// briefing-photo cases named in the design.
+  Future<void> _captureEvidence(MeetingEvidenceType type) async {
+    setState(() {
+      _isCapturingEvidence = true;
+      _evidenceError = null;
+    });
+    try {
+      final photo = await widget.imagePicker.pickImage(
+        source: ImageSource.camera,
+        maxWidth: 1600,
+        imageQuality: 85,
+      );
+      if (photo == null) return;
+      final bytes = await photo.readAsBytes();
+      await widget.meetingService.uploadMeetingEvidence(
+        organizationId: widget.organizationId,
+        meetingId: widget.meeting.id,
+        fileName: photo.name,
+        bytes: bytes,
+        fileType: photo.mimeType ?? 'image/jpeg',
+        evidenceType: type,
+      );
+    } on AppException catch (e) {
+      if (!mounted) return;
+      setState(() => _evidenceError = e.message);
+    } on Object catch (_) {
+      if (!mounted) return;
+      setState(
+        () => _evidenceError = 'Could not capture evidence. Please try '
+            'again.',
+      );
+    } finally {
+      if (mounted) setState(() => _isCapturingEvidence = false);
+    }
+  }
+
+  Future<void> _removeEvidence(MeetingEvidence evidence) {
+    return widget.onSave(
+      () => widget.meetingService.removeMeetingEvidence(
+        organizationId: widget.organizationId,
+        meetingId: widget.meeting.id,
+        evidenceId: evidence.id,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final meeting = widget.meeting;
@@ -954,6 +1049,24 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
                   onEdit: _editConcern,
                   onRemove: _removeConcern,
                   onCreateCorrectiveAction: _createCorrectiveAction,
+                ),
+                const SizedBox(height: AppSpacing.md),
+                Text('Evidence', style: AppTextStyles.titleLarge),
+                const SizedBox(height: AppSpacing.xs),
+                const Text(
+                  'Supporting photos — a handwritten safety-book page, a '
+                  'sign-in sheet, a briefing/site photo. Can still be added '
+                  'after the meeting is completed.',
+                  style: AppTextStyles.bodyMedium,
+                ),
+                const SizedBox(height: AppSpacing.sm),
+                _EvidenceSection(
+                  evidenceRepository: widget.evidenceRepository,
+                  canRemove: canEdit,
+                  isCapturing: _isCapturingEvidence,
+                  errorMessage: _evidenceError,
+                  onCapture: _captureEvidence,
+                  onRemove: _removeEvidence,
                 ),
                 const SizedBox(height: AppSpacing.lg),
                 if (canEdit)
@@ -1191,6 +1304,160 @@ class _MeetingPointTileState extends State<_MeetingPointTile> {
                             label: const Text('Add note'),
                           )
                         : const SizedBox.shrink()),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The Evidence step of the meeting flow: a "Capture" button per
+/// [MeetingEvidenceType], a list of what's already uploaded, and — while
+/// the meeting is still `inProgress` — a Remove control per item.
+///
+/// **Capture buttons are ALWAYS enabled, regardless of [canEdit]** — unlike
+/// every other section on this workspace. Evidence may still be added
+/// after the meeting is completed (a foreman may not have the physical
+/// safety book on hand at the exact moment they complete the meeting), so
+/// this section deliberately does not gate its add path on the meeting's
+/// own completion status — see [MeetingEvidence]'s doc comment. Only
+/// REMOVAL stays gated on `inProgress`, mirroring
+/// `corrective_actions`' "no delete once permanent" rule.
+class _EvidenceSection extends StatelessWidget {
+  const _EvidenceSection({
+    required this.evidenceRepository,
+    required this.canRemove,
+    required this.isCapturing,
+    required this.errorMessage,
+    required this.onCapture,
+    required this.onRemove,
+  });
+
+  final MeetingEvidenceRepository evidenceRepository;
+
+  /// Whether the meeting is still `inProgress` — Remove is only offered
+  /// then, matching `removeMeetingEvidence`'s own server-side gate. Add
+  /// (via [onCapture]) is offered unconditionally regardless of this flag
+  /// — see this class's own doc comment.
+  final bool canRemove;
+  final bool isCapturing;
+  final String? errorMessage;
+  final ValueChanged<MeetingEvidenceType> onCapture;
+  final ValueChanged<MeetingEvidence> onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<MeetingEvidence>>(
+      stream: evidenceRepository.watchAll(),
+      builder: (context, snapshot) {
+        final items = snapshot.data ?? const <MeetingEvidence>[];
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (items.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: AppSpacing.sm),
+                child: Text(
+                  'No evidence attached yet.',
+                  style: AppTextStyles.bodyMedium,
+                ),
+              )
+            else
+              for (final item in items)
+                _EvidenceCard(
+                  evidence: item,
+                  onRemove: canRemove ? () => onRemove(item) : null,
+                ),
+            if (errorMessage != null) ...[
+              AuthErrorBanner(message: errorMessage!),
+              const SizedBox(height: AppSpacing.sm),
+            ],
+            Wrap(
+              spacing: AppSpacing.sm,
+              runSpacing: AppSpacing.sm,
+              children: [
+                for (final type in MeetingEvidenceType.values)
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(
+                      minHeight: AppSpacing.minTouchTarget,
+                    ),
+                    child: OutlinedButton.icon(
+                      onPressed:
+                          isCapturing ? null : () => onCapture(type),
+                      icon: const Icon(Icons.camera_alt_outlined, size: 18),
+                      label: Text(type.label),
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _EvidenceCard extends StatelessWidget {
+  const _EvidenceCard({required this.evidence, required this.onRemove});
+
+  final MeetingEvidence evidence;
+
+  /// Null when the meeting is no longer `inProgress` — evidence may still
+  /// be added then, but never removed, so the Remove control simply does
+  /// not render rather than showing disabled.
+  final VoidCallback? onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: AppSpacing.sm),
+      child: Padding(
+        padding: const EdgeInsets.all(AppSpacing.sm),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (evidence.isImage)
+              ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: Image.network(
+                  evidence.downloadUrl,
+                  width: 56,
+                  height: 56,
+                  fit: BoxFit.cover,
+                  errorBuilder: (context, error, stackTrace) => const Icon(
+                    Icons.broken_image_outlined,
+                    size: 56,
+                  ),
+                ),
+              )
+            else
+              const Icon(Icons.description_outlined, size: 56),
+            const SizedBox(width: AppSpacing.sm),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    evidence.evidenceType.label,
+                    style: AppTextStyles.bodyMedium,
+                  ),
+                  if (evidence.description != null)
+                    Text(
+                      evidence.description!,
+                      style: AppTextStyles.label.copyWith(
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            if (onRemove != null)
+              IconButton(
+                tooltip: 'Remove',
+                onPressed: onRemove,
+                icon: const Icon(Icons.close),
               ),
           ],
         ),

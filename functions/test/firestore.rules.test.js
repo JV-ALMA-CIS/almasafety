@@ -2435,6 +2435,138 @@ describe("the Daily Safety Meeting foundation", () => {
       );
     });
   });
+
+  describe("evidence", () => {
+    // DESIGN NOTE. Every write is Admin-SDK-only via `addMeetingEvidence`/
+    // `removeMeetingEvidence` (`daily_safety_meeting_callable.ts`) — the
+    // actual file bytes go to Cloud Storage directly, this collection only
+    // ever holds metadata. Read follows `concerns`'/`point_notes`' EXACT
+    // shape: Site Manager/Admin see every meeting's evidence; a Foreman
+    // sees only their own meeting's evidence; a Worker has NO carve-out.
+
+    function evidencePath(organizationId, meetingId, evidenceId) {
+      return `${meetingPath(organizationId, meetingId)}/evidence/` +
+        evidenceId;
+    }
+
+    beforeEach(async () => {
+      await seed(async (db) => {
+        await db.doc(evidencePath(ORG_A, "meeting-1", "evidence-1")).set({
+          meetingId: "meeting-1",
+          organizationId: ORG_A,
+          siteId: "site-1",
+          evidenceType: "handwrittenNotes",
+          storagePath: "organizations/org-alpha/daily_safety_meetings/" +
+            "meeting-1/evidence-1/photo.jpg",
+          downloadUrl: "https://example.com/photo.jpg",
+          fileType: "image/jpeg",
+          uploadedBy: "foreman-a",
+          createdAt: new Date(),
+        });
+      });
+    });
+
+    test("an org member can read evidence for their own organization's " +
+      "meeting", async () => {
+      const db = actor("active-a", "active-a@example.com");
+
+      await assertSucceeds(
+        db.doc(evidencePath(ORG_A, "meeting-1", "evidence-1")).get()
+      );
+    });
+
+    test("an org member cannot read another organization's evidence",
+      async () => {
+        const db = actor("active-a", "active-a@example.com");
+
+        await assertFails(
+          db
+            .collection(
+              `organizations/${ORG_B}/daily_safety_meetings/meeting-1/` +
+                "evidence"
+            )
+            .get()
+        );
+      });
+
+    test("an Admin can read evidence in any organization", async () => {
+      const db = actor("sysadmin-a", "sysadmin-a@example.com");
+
+      await assertSucceeds(
+        db.doc(evidencePath(ORG_A, "meeting-1", "evidence-1")).get()
+      );
+    });
+
+    test("the meeting's own foreman can read its evidence", async () => {
+      const db = actor("foreman-a", "foreman-a@example.com");
+
+      await assertSucceeds(
+        db.doc(evidencePath(ORG_A, "meeting-1", "evidence-1")).get()
+      );
+    });
+
+    test("a DIFFERENT foreman cannot read evidence for a meeting they " +
+      "did not conduct", async () => {
+      const db = actor("foreman-b", "foreman-b@example.com");
+
+      await assertFails(
+        db.doc(evidencePath(ORG_A, "meeting-1", "evidence-1")).get()
+      );
+    });
+
+    test("a worker has no read access to evidence at all", async () => {
+      await seed(async (db) => {
+        await db
+          .doc(`users/worker-a/memberships/${ORG_A}`)
+          .set(membership("worker-a", ORG_A, {
+            role: "worker",
+            siteIds: ["site-1"],
+          }));
+      });
+      const db = actor("worker-a", "worker-a@example.com");
+
+      await assertFails(
+        db.doc(evidencePath(ORG_A, "meeting-1", "evidence-1")).get()
+      );
+    });
+
+    test("no client, including the meeting's own foreman, can create " +
+      "evidence metadata by direct write", async () => {
+      await assertFails(
+        actor("foreman-a", "foreman-a@example.com")
+          .doc(evidencePath(ORG_A, "meeting-1", "evidence-2"))
+          .set({
+            meetingId: "meeting-1",
+            organizationId: ORG_A,
+            siteId: "site-1",
+            evidenceType: "other",
+            storagePath: "forged/path.jpg",
+            downloadUrl: "https://example.com/forged.jpg",
+            fileType: "image/jpeg",
+            uploadedBy: "foreman-a",
+            createdAt: new Date(),
+          })
+      );
+    });
+
+    test("no client can update existing evidence metadata by direct write",
+      async () => {
+        await assertFails(
+          actor("foreman-a", "foreman-a@example.com")
+            .doc(evidencePath(ORG_A, "meeting-1", "evidence-1"))
+            .update({description: "Tampered description"})
+        );
+      });
+
+    test("no client can delete evidence metadata by direct write",
+      async () => {
+        await assertFails(
+          actor("foreman-a", "foreman-a@example.com")
+            .doc(evidencePath(ORG_A, "meeting-1", "evidence-1"))
+            .delete()
+        );
+      });
+  });
 });
 
 describe("the Hazards foundation", () => {

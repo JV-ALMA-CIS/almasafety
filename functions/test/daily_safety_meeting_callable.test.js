@@ -35,6 +35,8 @@ let recordMeetingAttendance;
 let addMeetingConcern;
 let setMeetingPointNote;
 let removeMeetingPointNote;
+let addMeetingEvidence;
+let removeMeetingEvidence;
 
 beforeAll(() => {
   process.env.GCLOUD_PROJECT = PROJECT_ID;
@@ -51,6 +53,8 @@ beforeAll(() => {
     addMeetingConcern,
     setMeetingPointNote,
     removeMeetingPointNote,
+    addMeetingEvidence,
+    removeMeetingEvidence,
   } = require("../lib/daily_safety_meeting_callable"));
 });
 
@@ -187,6 +191,14 @@ async function getPointNote(orgId, meetingId, meetingPointId) {
   const snapshot = await db.doc(
     `organizations/${orgId}/daily_safety_meetings/${meetingId}` +
       `/point_notes/${meetingPointId}`
+  ).get();
+  return snapshot.exists ? snapshot.data() : null;
+}
+
+async function getEvidence(orgId, meetingId, evidenceId) {
+  const snapshot = await db.doc(
+    `organizations/${orgId}/daily_safety_meetings/${meetingId}` +
+      `/evidence/${evidenceId}`
   ).get();
   return snapshot.exists ? snapshot.data() : null;
 }
@@ -749,5 +761,248 @@ describe("removeMeetingPointNote", () => {
         })
       )
     ).rejects.toThrow();
+  });
+});
+
+function evidencePath(orgId, meetingId, evidenceId) {
+  return `organizations/${orgId}/daily_safety_meetings/${meetingId}` +
+    `/evidence/${evidenceId}`;
+}
+
+describe("addMeetingEvidence", () => {
+  test("the meeting's own foreman can add evidence to an in-progress " +
+    "meeting", async () => {
+    await seedMeeting(ORG_A, "meeting-1");
+
+    await addMeetingEvidence.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        evidenceId: "evidence-1",
+        storagePath: evidencePath(ORG_A, "meeting-1", "evidence-1"),
+        downloadUrl: "https://example.com/evidence-1.jpg",
+        fileType: "image/jpeg",
+        evidenceType: "handwrittenNotes",
+        description: "Page 14 of the site safety book",
+      })
+    );
+
+    const evidence = await getEvidence(ORG_A, "meeting-1", "evidence-1");
+    expect(evidence).not.toBeNull();
+    expect(evidence.evidenceType).toBe("handwrittenNotes");
+    expect(evidence.description).toBe("Page 14 of the site safety book");
+    expect(evidence.uploadedBy).toBe("foreman-a");
+  });
+
+  test("evidence is accepted even on a COMPLETED meeting — deliberate " +
+    "exception, unlike every other write on this meeting", async () => {
+    await seedMeeting(ORG_A, "meeting-1", {status: "completed"});
+
+    await addMeetingEvidence.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        evidenceId: "evidence-1",
+        storagePath: evidencePath(ORG_A, "meeting-1", "evidence-1"),
+        downloadUrl: "https://example.com/evidence-1.jpg",
+        fileType: "image/jpeg",
+        evidenceType: "signInSheet",
+      })
+    );
+
+    const evidence = await getEvidence(ORG_A, "meeting-1", "evidence-1");
+    expect(evidence).not.toBeNull();
+  });
+
+  test("an invalid evidenceType is refused", async () => {
+    await seedMeeting(ORG_A, "meeting-1");
+
+    await expect(
+      addMeetingEvidence.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          evidenceId: "evidence-1",
+          storagePath: evidencePath(ORG_A, "meeting-1", "evidence-1"),
+          downloadUrl: "https://example.com/evidence-1.jpg",
+          fileType: "image/jpeg",
+          evidenceType: "not-a-real-type",
+        })
+      )
+    ).rejects.toThrow();
+  });
+
+  test("a storagePath outside this meeting's own path is refused",
+    async () => {
+      await seedMeeting(ORG_A, "meeting-1");
+
+      await expect(
+        addMeetingEvidence.run(
+          callRequest("foreman-a", {
+            organizationId: ORG_A,
+            meetingId: "meeting-1",
+            evidenceId: "evidence-1",
+            storagePath: evidencePath(ORG_A, "meeting-2", "evidence-1"),
+            downloadUrl: "https://example.com/evidence-1.jpg",
+            fileType: "image/jpeg",
+            evidenceType: "document",
+          })
+        )
+      ).rejects.toThrow();
+    });
+
+  test("reusing an evidenceId that already has metadata is refused",
+    async () => {
+      await seedMeeting(ORG_A, "meeting-1");
+      await addMeetingEvidence.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          evidenceId: "evidence-1",
+          storagePath: evidencePath(ORG_A, "meeting-1", "evidence-1"),
+          downloadUrl: "https://example.com/evidence-1.jpg",
+          fileType: "image/jpeg",
+          evidenceType: "document",
+        })
+      );
+
+      await expect(
+        addMeetingEvidence.run(
+          callRequest("foreman-a", {
+            organizationId: ORG_A,
+            meetingId: "meeting-1",
+            evidenceId: "evidence-1",
+            storagePath: evidencePath(ORG_A, "meeting-1", "evidence-1"),
+            downloadUrl: "https://example.com/other.jpg",
+            fileType: "image/jpeg",
+            evidenceType: "other",
+          })
+        )
+      ).rejects.toThrow();
+    });
+
+  test("a foreman from another organization cannot add evidence to an " +
+    "Org A meeting", async () => {
+    await seedMeeting(ORG_A, "meeting-1");
+    await seedForeman("foreman-b", "site-1", {organizationId: ORG_B});
+
+    await expect(
+      addMeetingEvidence.run(
+        callRequest("foreman-b", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          evidenceId: "evidence-1",
+          storagePath: evidencePath(ORG_A, "meeting-1", "evidence-1"),
+          downloadUrl: "https://example.com/evidence-1.jpg",
+          fileType: "image/jpeg",
+          evidenceType: "document",
+        })
+      )
+    ).rejects.toThrow();
+  });
+});
+
+describe("removeMeetingEvidence", () => {
+  test("the meeting's own foreman can remove evidence from an " +
+    "in-progress meeting", async () => {
+    await seedMeeting(ORG_A, "meeting-1");
+    await addMeetingEvidence.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        evidenceId: "evidence-1",
+        storagePath: evidencePath(ORG_A, "meeting-1", "evidence-1"),
+        downloadUrl: "https://example.com/evidence-1.jpg",
+        fileType: "image/jpeg",
+        evidenceType: "document",
+      })
+    );
+
+    await removeMeetingEvidence.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        evidenceId: "evidence-1",
+      })
+    );
+
+    const evidence = await getEvidence(ORG_A, "meeting-1", "evidence-1");
+    expect(evidence).toBeNull();
+  });
+
+  test("removal is refused once the meeting is completed — evidence may " +
+    "be added afterward but never removed", async () => {
+    await seedMeeting(ORG_A, "meeting-1");
+    await addMeetingEvidence.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        evidenceId: "evidence-1",
+        storagePath: evidencePath(ORG_A, "meeting-1", "evidence-1"),
+        downloadUrl: "https://example.com/evidence-1.jpg",
+        fileType: "image/jpeg",
+        evidenceType: "document",
+      })
+    );
+    await db.doc(`organizations/${ORG_A}/daily_safety_meetings/meeting-1`)
+      .update({status: "completed"});
+
+    await expect(
+      removeMeetingEvidence.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          evidenceId: "evidence-1",
+        })
+      )
+    ).rejects.toThrow();
+
+    const evidence = await getEvidence(ORG_A, "meeting-1", "evidence-1");
+    expect(evidence).not.toBeNull();
+  });
+
+  test("removing an evidence id that does not exist is refused",
+    async () => {
+      await seedMeeting(ORG_A, "meeting-1");
+
+      await expect(
+        removeMeetingEvidence.run(
+          callRequest("foreman-a", {
+            organizationId: ORG_A,
+            meetingId: "meeting-1",
+            evidenceId: "nonexistent",
+          })
+        )
+      ).rejects.toThrow();
+    });
+
+  test("a foreman from another organization cannot remove evidence from " +
+    "an Org A meeting", async () => {
+    await seedMeeting(ORG_A, "meeting-1");
+    await addMeetingEvidence.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        evidenceId: "evidence-1",
+        storagePath: evidencePath(ORG_A, "meeting-1", "evidence-1"),
+        downloadUrl: "https://example.com/evidence-1.jpg",
+        fileType: "image/jpeg",
+        evidenceType: "document",
+      })
+    );
+    await seedForeman("foreman-b", "site-1", {organizationId: ORG_B});
+
+    await expect(
+      removeMeetingEvidence.run(
+        callRequest("foreman-b", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          evidenceId: "evidence-1",
+        })
+      )
+    ).rejects.toThrow();
+
+    const evidence = await getEvidence(ORG_A, "meeting-1", "evidence-1");
+    expect(evidence).not.toBeNull();
   });
 });
