@@ -2,6 +2,7 @@
   "include": [
     ".eslintrc.js",
     "jest.rules.config.js",
+    "jest.storage.rules.config.js",
     "jest.callables.config.js",
     "test/**/*.js"
   ]

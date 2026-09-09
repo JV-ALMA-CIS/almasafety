@@ -17,16 +17,46 @@ service firebase.storage {
       return request.auth != null;
     }
 
-    function userDoc() {
-      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid));
+    // The caller's own membership document for a given organization —
+    // mirrors `firestore.rules`' `membershipDoc()`/`hasMembership()` exactly.
+    // Under the multi-organization membership model, `users/{uid}` no
+    // longer carries a scalar `organizationId` field at all; organization
+    // relationship lives at `users/{uid}/memberships/{organizationId}`
+    // instead. This function BUG-FIXED a prior version that read
+    // `users/{uid}.data.organizationId`, a field that no longer exists —
+    // that comparison was always `null == organizationId`, i.e. always
+    // false, so every Storage read/write was silently denied for every real
+    // user regardless of membership.
+    function membershipDoc(organizationId) {
+      return firestore.get(
+        /databases/(default)/documents/users/$(request.auth.uid)/memberships/$(organizationId)
+      ).data;
     }
 
-    function currentOrgId() {
-      return userDoc().data.organizationId;
+    function hasMembership(organizationId) {
+      return isSignedIn()
+        && firestore.exists(
+          /databases/(default)/documents/users/$(request.auth.uid)/memberships/$(organizationId)
+        );
     }
 
+    // An ACTIVE membership in this organization — a membership document can
+    // exist but be `suspended`, which no longer counts as belonging, exactly
+    // like `firestore.rules`' `belongsToOrganization()`. Written as a
+    // ternary rather than `hasMembership(...) &&
+    // membershipDoc(...).status == 'active'` so that when no membership
+    // document exists, evaluation stops at `false` inside the ternary's own
+    // branch selection rather than calling `membershipDoc` (whose
+    // `firestore.get(...).data` would error on an absent document) — the
+    // rules language's `&&`/`||` operators do not guarantee a false first
+    // operand skips evaluating a `get`/`exists`-calling second operand, but
+    // a ternary's untaken branch is never evaluated. Mirrors
+    // `firestore.rules`' `belongsToOrganization()` exactly.
     function belongsToOrg(organizationId) {
-      return isSignedIn() && currentOrgId() == organizationId;
+      return isSignedIn()
+        && (hasMembership(organizationId)
+          ? membershipDoc(organizationId).status == 'active'
+          : false);
     }
 
     match /{allPaths=**} {
@@ -39,8 +69,17 @@ service firebase.storage {
       // corrective-action proof, etc.) — field workflows depend on this
       // being low-friction. Size/type constraints and per-feature
       // restrictions should be added as those upload flows are built.
+      //
+      // `allow write` covers create/update AND delete — `request.resource`
+      // is null on a delete (there is no new resource to size-check), so
+      // the size condition is skipped for delete via `request.resource ==
+      // null` rather than being evaluated against a null `.size`, which
+      // errors rather than returning false. This is a narrow null-safety
+      // fix for a request kind the size check was never meant to apply to,
+      // not a loosening of upload permissions.
       allow write: if belongsToOrg(organizationId)
-        && request.resource.size < 25 * 1024 * 1024;
+        && (request.resource == null
+          || request.resource.size < 25 * 1024 * 1024);
     }
   }
 }

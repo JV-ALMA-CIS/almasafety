@@ -10,6 +10,7 @@
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log",
     "test:rules": "firebase emulators:exec --only firestore --project jva-safety-rules-test \"npx jest --config jest.rules.config.js\"",
+    "test:storage-rules": "firebase emulators:exec --only firestore,storage --project jva-safety-rules-test \"npx jest --config jest.storage.rules.config.js\"",
     "test:callables": "npm run build && firebase emulators:exec --only firestore,auth --project jva-safety-rules-test \"npx jest --config jest.callables.config.js\""
   },
   "engines": {
