@@ -33,6 +33,8 @@ let db;
 let createDailySafetyMeeting;
 let recordMeetingAttendance;
 let addMeetingConcern;
+let setMeetingPointNote;
+let removeMeetingPointNote;
 
 beforeAll(() => {
   process.env.GCLOUD_PROJECT = PROJECT_ID;
@@ -43,8 +45,13 @@ beforeAll(() => {
   app = getApps()[0] ?? initializeApp({projectId: PROJECT_ID});
   db = getFirestore(app);
 
-  ({createDailySafetyMeeting, recordMeetingAttendance, addMeetingConcern} =
-    require("../lib/daily_safety_meeting_callable"));
+  ({
+    createDailySafetyMeeting,
+    recordMeetingAttendance,
+    addMeetingConcern,
+    setMeetingPointNote,
+    removeMeetingPointNote,
+  } = require("../lib/daily_safety_meeting_callable"));
 });
 
 afterAll(async () => {
@@ -174,6 +181,14 @@ async function getMeeting(orgId, id) {
     `organizations/${orgId}/daily_safety_meetings/${id}`
   ).get();
   return snapshot.data();
+}
+
+async function getPointNote(orgId, meetingId, meetingPointId) {
+  const snapshot = await db.doc(
+    `organizations/${orgId}/daily_safety_meetings/${meetingId}` +
+      `/point_notes/${meetingPointId}`
+  ).get();
+  return snapshot.exists ? snapshot.data() : null;
 }
 
 beforeEach(async () => {
@@ -519,4 +534,220 @@ describe("addMeetingConcern", () => {
         )
       ).rejects.toThrow();
     });
+});
+
+describe("setMeetingPointNote", () => {
+  test("the meeting's own foreman can set a note on a covered point",
+    async () => {
+      await seedMeetingPoint(ORG_A, "point-1");
+      await seedMeeting(ORG_A, "meeting-1", {meetingPointIds: ["point-1"]});
+
+      await setMeetingPointNote.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          meetingPointId: "point-1",
+          note: "Reminded workers to maintain three points of contact.",
+        })
+      );
+
+      const note = await getPointNote(ORG_A, "meeting-1", "point-1");
+      expect(note).not.toBeNull();
+      expect(note.note).toBe(
+        "Reminded workers to maintain three points of contact."
+      );
+      expect(note.recordedBy).toBe("foreman-a");
+    });
+
+  test("setting a note again overwrites the previous one (deterministic " +
+    "id, one note per point)", async () => {
+    await seedMeetingPoint(ORG_A, "point-1");
+    await seedMeeting(ORG_A, "meeting-1", {meetingPointIds: ["point-1"]});
+
+    await setMeetingPointNote.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        meetingPointId: "point-1",
+        note: "First note.",
+      })
+    );
+    await setMeetingPointNote.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        meetingPointId: "point-1",
+        note: "Corrected note.",
+      })
+    );
+
+    const note = await getPointNote(ORG_A, "meeting-1", "point-1");
+    expect(note.note).toBe("Corrected note.");
+  });
+
+  test("a note is refused for a point NOT currently on the meeting",
+    async () => {
+      await seedMeetingPoint(ORG_A, "point-1");
+      await seedMeeting(ORG_A, "meeting-1", {meetingPointIds: []});
+
+      await expect(
+        setMeetingPointNote.run(
+          callRequest("foreman-a", {
+            organizationId: ORG_A,
+            meetingId: "meeting-1",
+            meetingPointId: "point-1",
+            note: "Should be refused.",
+          })
+        )
+      ).rejects.toThrow();
+    });
+
+  test("a foreman from another organization cannot set a note on an " +
+    "Org A meeting", async () => {
+    await seedMeetingPoint(ORG_A, "point-1");
+    await seedMeeting(ORG_A, "meeting-1", {meetingPointIds: ["point-1"]});
+    await seedForeman("foreman-b", "site-1", {organizationId: ORG_B});
+
+    await expect(
+      setMeetingPointNote.run(
+        callRequest("foreman-b", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          meetingPointId: "point-1",
+          note: "Should be refused.",
+        })
+      )
+    ).rejects.toThrow();
+  });
+
+  test("a note is refused once the meeting is completed", async () => {
+    await seedMeetingPoint(ORG_A, "point-1");
+    await seedMeeting(ORG_A, "meeting-1", {
+      meetingPointIds: ["point-1"],
+      status: "completed",
+    });
+
+    await expect(
+      setMeetingPointNote.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          meetingPointId: "point-1",
+          note: "Should be refused.",
+        })
+      )
+    ).rejects.toThrow();
+  });
+});
+
+describe("removeMeetingPointNote", () => {
+  test("the meeting's own foreman can remove a previously set note",
+    async () => {
+      await seedMeetingPoint(ORG_A, "point-1");
+      await seedMeeting(ORG_A, "meeting-1", {meetingPointIds: ["point-1"]});
+      await setMeetingPointNote.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          meetingPointId: "point-1",
+          note: "Will be removed.",
+        })
+      );
+
+      await removeMeetingPointNote.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          meetingPointId: "point-1",
+        })
+      );
+
+      const note = await getPointNote(ORG_A, "meeting-1", "point-1");
+      expect(note).toBeNull();
+    });
+
+  test("removing a note succeeds even if the point is no longer on " +
+    "meetingPointIds — this is how the client cleans up a note when the " +
+    "point itself is removed from the meeting", async () => {
+    await seedMeetingPoint(ORG_A, "point-1");
+    await seedMeeting(ORG_A, "meeting-1", {meetingPointIds: ["point-1"]});
+    await setMeetingPointNote.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        meetingPointId: "point-1",
+        note: "Will be removed.",
+      })
+    );
+
+    // Simulates updateDailySafetyMeeting removing the point from the
+    // meeting's own meetingPointIds, as the client does before/alongside
+    // calling removeMeetingPointNote.
+    await db.doc(`organizations/${ORG_A}/daily_safety_meetings/meeting-1`)
+      .update({meetingPointIds: []});
+
+    await removeMeetingPointNote.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        meetingPointId: "point-1",
+      })
+    );
+
+    const note = await getPointNote(ORG_A, "meeting-1", "point-1");
+    expect(note).toBeNull();
+  });
+
+  test("a foreman from another organization cannot remove a note from " +
+    "an Org A meeting", async () => {
+    await seedMeetingPoint(ORG_A, "point-1");
+    await seedMeeting(ORG_A, "meeting-1", {meetingPointIds: ["point-1"]});
+    await setMeetingPointNote.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        meetingPointId: "point-1",
+        note: "Should survive.",
+      })
+    );
+    await seedForeman("foreman-b", "site-1", {organizationId: ORG_B});
+
+    await expect(
+      removeMeetingPointNote.run(
+        callRequest("foreman-b", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          meetingPointId: "point-1",
+        })
+      )
+    ).rejects.toThrow();
+
+    const note = await getPointNote(ORG_A, "meeting-1", "point-1");
+    expect(note).not.toBeNull();
+  });
+
+  test("removal is refused once the meeting is completed", async () => {
+    await seedMeetingPoint(ORG_A, "point-1");
+    await seedMeeting(ORG_A, "meeting-1", {meetingPointIds: ["point-1"]});
+    await setMeetingPointNote.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        meetingPointId: "point-1",
+        note: "Frozen once completed.",
+      })
+    );
+    await db.doc(`organizations/${ORG_A}/daily_safety_meetings/meeting-1`)
+      .update({status: "completed"});
+
+    await expect(
+      removeMeetingPointNote.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          meetingPointId: "point-1",
+        })
+      )
+    ).rejects.toThrow();
+  });
 });

@@ -24,10 +24,12 @@ import '../../safety_meeting_points/domain/safety_meeting_point.dart';
 import '../data/daily_safety_meeting_repository.dart';
 import '../data/meeting_attendance_repository.dart';
 import '../data/meeting_concern_repository.dart';
+import '../data/meeting_point_note_repository.dart';
 import '../domain/daily_safety_meeting.dart';
 import '../domain/meeting_attendance.dart';
 import '../domain/meeting_attendance_status.dart';
 import '../domain/meeting_concern.dart';
+import '../domain/meeting_point_note.dart';
 
 /// The administrator-facing Daily Safety Meeting review list: every meeting
 /// recorded in one organization, most recent first — a read/history
@@ -416,6 +418,7 @@ class DailySafetyMeetingSummaryScreen extends StatefulWidget {
     this.correctiveActionRepository,
     this.activityRepository,
     this.meetingPointRepository,
+    this.pointNoteRepository,
   });
 
   final Organization organization;
@@ -441,6 +444,7 @@ class DailySafetyMeetingSummaryScreen extends StatefulWidget {
   final CorrectiveActionRepository? correctiveActionRepository;
   final ActivityRepository? activityRepository;
   final SafetyMeetingPointRepository? meetingPointRepository;
+  final MeetingPointNoteRepository? pointNoteRepository;
 
   @override
   State<DailySafetyMeetingSummaryScreen> createState() =>
@@ -482,6 +486,13 @@ class _DailySafetyMeetingSummaryScreenState
       SafetyMeetingPointRepository(
         firestoreService: _firestoreService,
         organizationId: widget.organization.id,
+      );
+  late final MeetingPointNoteRepository _pointNoteRepository =
+      widget.pointNoteRepository ??
+      MeetingPointNoteRepository(
+        firestoreService: _firestoreService,
+        organizationId: widget.organization.id,
+        meetingId: widget.meeting.id,
       );
 
   String? _nameFor(String uid) {
@@ -533,7 +544,16 @@ class _DailySafetyMeetingSummaryScreenState
                           final actions = actionSnapshot.data ??
                               const <CorrectiveAction>[];
 
-                          return ListView(
+                          return StreamBuilder<List<MeetingPointNote>>(
+                            stream: _pointNoteRepository.watchAll(),
+                            builder: (context, noteSnapshot) {
+                              final notesByPointId = {
+                                for (final n in noteSnapshot.data ??
+                                    const <MeetingPointNote>[])
+                                  n.meetingPointId: n,
+                              };
+
+                              return ListView(
                             padding: const EdgeInsets.all(AppSpacing.md),
                             children: [
                               _SummarySection(
@@ -589,6 +609,8 @@ class _DailySafetyMeetingSummaryScreenState
                                             in meeting.meetingPointIds)
                                           _BulletRow(
                                             pointsById[id]?.title ?? id,
+                                            subtitle:
+                                                notesByPointId[id]?.note,
                                           ),
                                       ],
                               ),
@@ -652,6 +674,8 @@ class _DailySafetyMeetingSummaryScreenState
                               ),
                             ],
                           );
+                            },
+                          );
                         },
                       );
                     },
@@ -710,9 +734,15 @@ class _InfoRow extends StatelessWidget {
 }
 
 class _BulletRow extends StatelessWidget {
-  const _BulletRow(this.text);
+  const _BulletRow(this.text, {this.subtitle});
 
   final String text;
+
+  /// An optional secondary line shown under [text] — used for a covered
+  /// meeting point's DISCUSSION CONTEXT note (what was actually explained,
+  /// kept deliberately separate from Concerns; see [MeetingPointNote]'s doc
+  /// comment). Null for every other use of this row.
+  final String? subtitle;
 
   @override
   Widget build(BuildContext context) {
@@ -723,7 +753,24 @@ class _BulletRow extends StatelessWidget {
         children: [
           const Icon(Icons.check, size: 16, color: AppColors.success),
           const SizedBox(width: AppSpacing.sm),
-          Expanded(child: Text(text, style: AppTextStyles.bodyMedium)),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(text, style: AppTextStyles.bodyMedium),
+                if (subtitle != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      subtitle!,
+                      style: AppTextStyles.label.copyWith(
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
         ],
       ),
     );

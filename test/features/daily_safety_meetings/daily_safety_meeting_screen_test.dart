@@ -19,6 +19,7 @@ import 'package:jva_safety/features/daily_safety_meetings/data/daily_safety_meet
 import 'package:jva_safety/features/daily_safety_meetings/data/meeting_attendance_repository.dart';
 import 'package:jva_safety/features/daily_safety_meetings/data/meeting_attendance_service.dart';
 import 'package:jva_safety/features/daily_safety_meetings/data/meeting_concern_repository.dart';
+import 'package:jva_safety/features/daily_safety_meetings/data/meeting_point_note_repository.dart';
 import 'package:jva_safety/features/daily_safety_meetings/data/meeting_concern_service.dart';
 import 'package:jva_safety/features/daily_safety_meetings/presentation/daily_safety_meeting_screen.dart';
 import 'package:jva_safety/features/organizations/data/site_repository.dart';
@@ -254,6 +255,12 @@ void main() {
               firestoreService: FirestoreService(firestore: firestore),
               organizationId: 'org-alpha',
             ),
+            pointNoteRepositoryBuilder: (meetingId) =>
+                MeetingPointNoteRepository(
+                  firestoreService: FirestoreService(firestore: firestore),
+                  organizationId: 'org-alpha',
+                  meetingId: meetingId,
+                ),
           ),
         ),
       ),
@@ -572,7 +579,7 @@ void main() {
 
       await tester.scrollUntilVisible(
         find.text('Complete Meeting'),
-        200,
+        500,
         scrollable: find.byType(Scrollable).first,
       );
       await tester.tap(find.widgetWithText(ElevatedButton, 'Complete Meeting'));

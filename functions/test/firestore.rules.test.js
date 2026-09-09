@@ -2301,6 +2301,140 @@ describe("the Daily Safety Meeting foundation", () => {
       );
     });
   });
+
+  describe("point_notes", () => {
+    // DESIGN NOTE. Every write is Admin-SDK-only via `setMeetingPointNote`/
+    // `removeMeetingPointNote` (`daily_safety_meeting_callable.ts`), which
+    // additionally verify server-side that the caller is the meeting's own
+    // foreman and that the meeting is still `inProgress` — once
+    // `completed`, both refuse.
+    //
+    // Read follows `concerns`' EXACT shape, not `attendance`'s: Site
+    // Manager/Admin see every meeting's notes; a Foreman sees only their
+    // own meeting's notes; a Worker has NO carve-out — a discussion note is
+    // not "this worker's own data" the way their attendance record is,
+    // same reasoning already applied to concerns.
+
+    function pointNotePath(organizationId, meetingId, meetingPointId) {
+      return `${meetingPath(organizationId, meetingId)}/point_notes/` +
+        meetingPointId;
+    }
+
+    beforeEach(async () => {
+      await seed(async (db) => {
+        await db.doc(pointNotePath(ORG_A, "meeting-1", "point-1")).set({
+          meetingId: "meeting-1",
+          organizationId: ORG_A,
+          siteId: "site-1",
+          meetingPointId: "point-1",
+          note: "Reminded workers to maintain three points of contact.",
+          recordedBy: "foreman-a",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      });
+    });
+
+    test("an org member can read point notes for their own organization's " +
+      "meeting", async () => {
+      const db = actor("active-a", "active-a@example.com");
+
+      await assertSucceeds(
+        db.doc(pointNotePath(ORG_A, "meeting-1", "point-1")).get()
+      );
+    });
+
+    test("an org member cannot read another organization's point notes",
+      async () => {
+        const db = actor("active-a", "active-a@example.com");
+
+        await assertFails(
+          db
+            .collection(
+              `organizations/${ORG_B}/daily_safety_meetings/meeting-1/` +
+                "point_notes"
+            )
+            .get()
+        );
+      });
+
+    test("an Admin can read point notes in any organization", async () => {
+      const db = actor("sysadmin-a", "sysadmin-a@example.com");
+
+      await assertSucceeds(
+        db.doc(pointNotePath(ORG_A, "meeting-1", "point-1")).get()
+      );
+    });
+
+    test("the meeting's own foreman can read its point notes", async () => {
+      const db = actor("foreman-a", "foreman-a@example.com");
+
+      await assertSucceeds(
+        db.doc(pointNotePath(ORG_A, "meeting-1", "point-1")).get()
+      );
+    });
+
+    test("a DIFFERENT foreman cannot read point notes for a meeting they " +
+      "did not conduct", async () => {
+      const db = actor("foreman-b", "foreman-b@example.com");
+
+      await assertFails(
+        db.doc(pointNotePath(ORG_A, "meeting-1", "point-1")).get()
+      );
+    });
+
+    test("a worker has no read access to point notes at all — unlike " +
+      "attendance, there is no own-record carve-out here", async () => {
+      await seed(async (db) => {
+        await db
+          .doc(`users/worker-a/memberships/${ORG_A}`)
+          .set(membership("worker-a", ORG_A, {
+            role: "worker",
+            siteIds: ["site-1"],
+          }));
+      });
+      const db = actor("worker-a", "worker-a@example.com");
+
+      await assertFails(
+        db.doc(pointNotePath(ORG_A, "meeting-1", "point-1")).get()
+      );
+    });
+
+    test("no client, including the meeting's own foreman, can create a " +
+      "point note by direct write", async () => {
+      await assertFails(
+        actor("foreman-a", "foreman-a@example.com")
+          .doc(pointNotePath(ORG_A, "meeting-1", "point-2"))
+          .set({
+            meetingId: "meeting-1",
+            organizationId: ORG_A,
+            siteId: "site-1",
+            meetingPointId: "point-2",
+            note: "Forged note",
+            recordedBy: "foreman-a",
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          })
+      );
+    });
+
+    test("no client can update an existing point note by direct write",
+      async () => {
+        await assertFails(
+          actor("foreman-a", "foreman-a@example.com")
+            .doc(pointNotePath(ORG_A, "meeting-1", "point-1"))
+            .update({note: "Tampered note"})
+        );
+      });
+
+    test("no client can delete a point note by direct write", async () => {
+      await assertFails(
+        actor("foreman-a", "foreman-a@example.com")
+          .doc(pointNotePath(ORG_A, "meeting-1", "point-1"))
+          .delete()
+      );
+    });
+  });
 });
 
 describe("the Hazards foundation", () => {

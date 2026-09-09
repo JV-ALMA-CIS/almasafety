@@ -91,6 +91,40 @@ class DailySafetyMeetingService {
     'id': id,
   });
 
+  /// Sets (creates or overwrites) the discussion note for one meeting point
+  /// on an in-progress meeting — what was actually explained/discussed
+  /// about it, kept deliberately separate from Concerns (see
+  /// [MeetingPointNote]'s doc comment). Refuses if [meetingPointId] is not
+  /// currently on the meeting's own `meetingPointIds`, or once the meeting
+  /// is completed.
+  Future<void> setMeetingPointNote({
+    required String organizationId,
+    required String meetingId,
+    required String meetingPointId,
+    required String note,
+  }) => _call<Object?>('setMeetingPointNote', {
+    'organizationId': organizationId,
+    'meetingId': meetingId,
+    'meetingPointId': meetingPointId,
+    'note': note,
+  });
+
+  /// Removes a meeting point's discussion note from an in-progress meeting.
+  /// Succeeds even if the point itself was already removed from
+  /// `meetingPointIds` — this is how the client cleans up a note when the
+  /// point is removed from the meeting entirely, see
+  /// `functions/src/daily_safety_meeting_callable.ts`'s doc comment on
+  /// `removeMeetingPointNote`.
+  Future<void> removeMeetingPointNote({
+    required String organizationId,
+    required String meetingId,
+    required String meetingPointId,
+  }) => _call<Object?>('removeMeetingPointNote', {
+    'organizationId': organizationId,
+    'meetingId': meetingId,
+    'meetingPointId': meetingPointId,
+  });
+
   Future<T> _call<T>(String name, [Map<String, Object?>? data]) async {
     try {
       final callable = _require().httpsCallable(name);

@@ -187,6 +187,24 @@ class FirestorePaths {
     String meetingId,
   ) => '${dailySafetyMeeting(organizationId, meetingId)}/concerns';
 
+  /// `organizations/{organizationId}/daily_safety_meetings/{meetingId}/point_notes`
+  /// — a subcollection of one meeting, one optional note per covered
+  /// safety meeting point (deterministic id = the point's own id, matching
+  /// [meetingAttendanceCollection]'s per-worker shape rather than
+  /// [meetingConcernsCollection]'s auto-id shape — a point can only ever
+  /// have one current note).
+  static String meetingPointNotesCollection(
+    String organizationId,
+    String meetingId,
+  ) => '${dailySafetyMeeting(organizationId, meetingId)}/point_notes';
+
+  /// `organizations/{organizationId}/daily_safety_meetings/{meetingId}/point_notes/{meetingPointId}`.
+  static String meetingPointNote(
+    String organizationId,
+    String meetingId,
+    String meetingPointId,
+  ) => '${meetingPointNotesCollection(organizationId, meetingId)}/$meetingPointId';
+
   /// `organizations/{organizationId}/daily_safety_meetings/{meetingId}/concerns/{id}`.
   static String meetingConcern(
     String organizationId,

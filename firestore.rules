@@ -530,6 +530,30 @@ service cloud.firestore {
                 && get(/databases/$(database)/documents/organizations/$(organizationId)/daily_safety_meetings/$(meetingId)).data.foremanId == request.auth.uid);
           allow write: if false;
         }
+
+        // ---- .../daily_safety_meetings/{meetingId}/point_notes/{meetingPointId} ----
+        // A discussion note per covered meeting point — what was actually
+        // explained/discussed, kept deliberately separate from `concerns`
+        // (an issue/status record, never discussion context). Read follows
+        // `concerns`' exact shape: Site Manager/Admin see every meeting's
+        // notes; a Foreman sees only notes on meetings they conducted; a
+        // Worker has no read access — a note is not "the worker's own
+        // data" the way attendance is, same reasoning already applied to
+        // concerns. Provisioned exclusively through `setMeetingPointNote`/
+        // `removeMeetingPointNote` (`daily_safety_meeting_callable.ts`),
+        // which additionally verify server-side that the caller is the
+        // meeting's own foreman and that the meeting is still
+        // `inProgress` — once `completed`, both refuse.
+        match /point_notes/{meetingPointId} {
+          allow read: if isAdmin()
+            || (belongsToOrganization(organizationId)
+              ? membershipDoc(organizationId).role == 'siteManager'
+              : false)
+            || (belongsToOrganization(organizationId)
+                && membershipDoc(organizationId).role == 'foreman'
+                && get(/databases/$(database)/documents/organizations/$(organizationId)/daily_safety_meetings/$(meetingId)).data.foremanId == request.auth.uid);
+          allow write: if false;
+        }
       }
 
       // ---- organizations/{organizationId}/hazards/{hazardId} ----
@@ -700,11 +724,12 @@ service cloud.firestore {
       // for them.
       //
       // `daily_safety_meetings` ALSO covers this wildcard matching its own
-      // SUBCOLLECTIONS (`attendance`, `concerns`) via `documentId=**` — e.g.
+      // SUBCOLLECTIONS (`attendance`, `concerns`, `point_notes`) via
+      // `documentId=**` — e.g.
       // `daily_safety_meetings/{id}/attendance/{workerId}` matches
       // `operationalCollection == 'daily_safety_meetings'` here too, not
       // just the top-level meeting document — so excluding the one name
-      // covers all three PHASE 3-scoped blocks in one exclusion. Likewise
+      // covers every PHASE 3-scoped block in one exclusion. Likewise
       // `activities` covers its own `assignments/{uid}` subcollection —
       // that subcollection is intentionally NOT site-scoped in this pass
       // (see its own doc comment), so excluding `activities` here does not

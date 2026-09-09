@@ -27,11 +27,13 @@ import '../data/meeting_attendance_repository.dart';
 import '../data/meeting_attendance_service.dart';
 import '../data/meeting_concern_repository.dart';
 import '../data/meeting_concern_service.dart';
+import '../data/meeting_point_note_repository.dart';
 import '../domain/daily_safety_meeting.dart';
 import '../domain/meeting_attendance.dart';
 import '../domain/meeting_attendance_status.dart';
 import '../domain/meeting_concern.dart';
 import '../domain/meeting_concern_category.dart';
+import '../domain/meeting_point_note.dart';
 import 'daily_safety_meeting_history_screen.dart';
 
 String _today() {
@@ -79,6 +81,7 @@ class DailySafetyMeetingScreen extends StatefulWidget {
     this.concernRepositoryBuilder,
     this.correctiveActionService,
     this.correctiveActionRepository,
+    this.pointNoteRepositoryBuilder,
   });
 
   /// Injected in tests. Production builds pass nothing and the state
@@ -112,6 +115,12 @@ class DailySafetyMeetingScreen extends StatefulWidget {
   /// corrective actions are stored flat — see
   /// [CorrectiveActionRepository]'s doc comment.
   final CorrectiveActionRepository? correctiveActionRepository;
+
+  /// Injected in tests: builds a [MeetingPointNoteRepository] for a given
+  /// meeting id, mirroring [attendanceRepositoryBuilder]/
+  /// [concernRepositoryBuilder].
+  final MeetingPointNoteRepository Function(String meetingId)?
+  pointNoteRepositoryBuilder;
 
   @override
   State<DailySafetyMeetingScreen> createState() =>
@@ -235,6 +244,20 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
       return widget.concernRepositoryBuilder!(meetingId);
     }
     return MeetingConcernRepository(
+      firestoreService: FirestoreService(),
+      organizationId: organizationId,
+      meetingId: meetingId,
+    );
+  }
+
+  MeetingPointNoteRepository _pointNoteRepositoryFor(
+    String organizationId,
+    String meetingId,
+  ) {
+    if (widget.pointNoteRepositoryBuilder != null) {
+      return widget.pointNoteRepositoryBuilder!(meetingId);
+    }
+    return MeetingPointNoteRepository(
       firestoreService: FirestoreService(),
       organizationId: organizationId,
       meetingId: meetingId,
@@ -377,6 +400,10 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
             ),
             correctiveActionRepository: _correctiveActionRepositoryFor(
               organizationId,
+            ),
+            pointNoteRepository: _pointNoteRepositoryFor(
+              organizationId,
+              existing.id,
             ),
             isSaving: _isSaving,
             errorMessage: _errorMessage,
@@ -589,6 +616,7 @@ class _MeetingWorkspace extends StatefulWidget {
     required this.attendanceRepository,
     required this.concernRepository,
     required this.correctiveActionRepository,
+    required this.pointNoteRepository,
     required this.isSaving,
     required this.errorMessage,
     required this.onSave,
@@ -608,6 +636,7 @@ class _MeetingWorkspace extends StatefulWidget {
   final MeetingAttendanceRepository attendanceRepository;
   final MeetingConcernRepository concernRepository;
   final CorrectiveActionRepository correctiveActionRepository;
+  final MeetingPointNoteRepository pointNoteRepository;
   final bool isSaving;
   final String? errorMessage;
   final Future<void> Function(Future<void> Function()) onSave;
@@ -631,11 +660,41 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
 
   Future<void> _removePoint(SafetyMeetingPoint point) {
     final ids = {...widget.meeting.meetingPointIds}..remove(point.id);
-    return widget.onSave(
-      () => widget.meetingService.updateDailySafetyMeeting(
+    return widget.onSave(() async {
+      await widget.meetingService.updateDailySafetyMeeting(
         widget.organizationId,
         widget.meeting.id,
         meetingPointIds: ids.toList(),
+      );
+      // A note is meaningless once its point is no longer on the meeting —
+      // removed alongside it rather than left orphaned. Succeeds even if
+      // there was never a note to remove — see
+      // DailySafetyMeetingService.removeMeetingPointNote's doc comment.
+      await widget.meetingService.removeMeetingPointNote(
+        organizationId: widget.organizationId,
+        meetingId: widget.meeting.id,
+        meetingPointId: point.id,
+      );
+    });
+  }
+
+  Future<void> _setNote(SafetyMeetingPoint point, String note) {
+    return widget.onSave(
+      () => widget.meetingService.setMeetingPointNote(
+        organizationId: widget.organizationId,
+        meetingId: widget.meeting.id,
+        meetingPointId: point.id,
+        note: note,
+      ),
+    );
+  }
+
+  Future<void> _removeNote(SafetyMeetingPoint point) {
+    return widget.onSave(
+      () => widget.meetingService.removeMeetingPointNote(
+        organizationId: widget.organizationId,
+        meetingId: widget.meeting.id,
+        meetingPointId: point.id,
       ),
     );
   }
@@ -820,41 +879,52 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
                 // meeting entirely. There is no separate "covered" flag: a
                 // point on the meeting IS the covered set, matching
                 // `meetingPointIds`'s single source of truth.
-                for (final pointId in meeting.meetingPointIds)
-                  Builder(
-                    builder: (context) {
-                      final point = allPoints
-                          .where((p) => p.id == pointId)
-                          .cast<SafetyMeetingPoint?>()
-                          .firstWhere((_) => true, orElse: () => null);
-                      if (point == null) return const SizedBox.shrink();
-                      return CheckboxListTile(
-                        value: true,
-                        onChanged: canEdit && !widget.isSaving
-                            ? (_) => _removePoint(point)
-                            : null,
-                        title: Text(point.title),
-                        subtitle: Text(point.category),
-                        secondary: canEdit
-                            ? IconButton(
-                                tooltip: 'Remove',
-                                onPressed: widget.isSaving
-                                    ? null
-                                    : () => _removePoint(point),
-                                icon: const Icon(Icons.close),
-                              )
-                            : null,
-                        controlAffinity: ListTileControlAffinity.leading,
-                        contentPadding: EdgeInsets.zero,
-                      );
-                    },
-                  ),
-                if (meeting.meetingPointIds.isEmpty)
-                  const Text(
-                    'No safety meeting points recorded yet. Use "Add '
-                    'Safety Point" above.',
-                    style: AppTextStyles.bodyMedium,
-                  ),
+                //
+                // Each point also carries an optional DISCUSSION NOTE — what
+                // was actually explained/covered about it, kept deliberately
+                // separate from Concerns (an issue record, not discussion
+                // context) — see MeetingPointNote's doc comment.
+                StreamBuilder<List<MeetingPointNote>>(
+                  stream: widget.pointNoteRepository.watchAll(),
+                  builder: (context, noteSnapshot) {
+                    final notesByPointId = {
+                      for (final n
+                          in noteSnapshot.data ?? const <MeetingPointNote>[])
+                        n.meetingPointId: n,
+                    };
+
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        for (final pointId in meeting.meetingPointIds)
+                          Builder(
+                            builder: (context) {
+                              final point = allPoints
+                                  .where((p) => p.id == pointId)
+                                  .cast<SafetyMeetingPoint?>()
+                                  .firstWhere((_) => true, orElse: () => null);
+                              if (point == null) return const SizedBox.shrink();
+                              return _MeetingPointTile(
+                                point: point,
+                                note: notesByPointId[pointId]?.note,
+                                canEdit: canEdit,
+                                isSaving: widget.isSaving,
+                                onRemovePoint: () => _removePoint(point),
+                                onSetNote: (note) => _setNote(point, note),
+                                onRemoveNote: () => _removeNote(point),
+                              );
+                            },
+                          ),
+                        if (meeting.meetingPointIds.isEmpty)
+                          const Text(
+                            'No safety meeting points recorded yet. Use '
+                            '"Add Safety Point" above.',
+                            style: AppTextStyles.bodyMedium,
+                          ),
+                      ],
+                    );
+                  },
+                ),
                 const SizedBox(height: AppSpacing.md),
                 Text('Attendance', style: AppTextStyles.titleLarge),
                 const SizedBox(height: AppSpacing.sm),
@@ -933,6 +1003,198 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
           },
         );
       },
+    );
+  }
+}
+
+/// One covered meeting point: the checkbox/remove row (unchanged shape),
+/// plus an inline "Add note"/"Edit note" affordance for its DISCUSSION
+/// CONTEXT — what was actually explained/covered, kept deliberately
+/// separate from Concerns. Sized and laid out for field use (large touch
+/// targets, no separate dialog to open), matching the inline text field
+/// already established for Concerns in [_ConcernsSection].
+class _MeetingPointTile extends StatefulWidget {
+  const _MeetingPointTile({
+    required this.point,
+    required this.note,
+    required this.canEdit,
+    required this.isSaving,
+    required this.onRemovePoint,
+    required this.onSetNote,
+    required this.onRemoveNote,
+  });
+
+  final SafetyMeetingPoint point;
+
+  /// The point's current discussion note, or null if none has been
+  /// recorded — optional, matching every other field on this workspace.
+  final String? note;
+  final bool canEdit;
+  final bool isSaving;
+  final VoidCallback onRemovePoint;
+  final ValueChanged<String> onSetNote;
+  final VoidCallback onRemoveNote;
+
+  @override
+  State<_MeetingPointTile> createState() => _MeetingPointTileState();
+}
+
+class _MeetingPointTileState extends State<_MeetingPointTile> {
+  bool _isEditingNote = false;
+  late final _noteController = TextEditingController(text: widget.note);
+
+  @override
+  void didUpdateWidget(covariant _MeetingPointTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Keep the field in sync with a note change that came from elsewhere
+    // (e.g. another device) while this tile isn't mid-edit — avoids
+    // clobbering text the foreman is actively typing.
+    if (!_isEditingNote && widget.note != oldWidget.note) {
+      _noteController.text = widget.note ?? '';
+    }
+  }
+
+  @override
+  void dispose() {
+    _noteController.dispose();
+    super.dispose();
+  }
+
+  void _submitNote() {
+    final text = _noteController.text.trim();
+    if (text.isEmpty) {
+      if (widget.note != null) widget.onRemoveNote();
+    } else {
+      widget.onSetNote(text);
+    }
+    setState(() => _isEditingNote = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hasNote = widget.note != null && widget.note!.isNotEmpty;
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: AppSpacing.sm),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            CheckboxListTile(
+              value: true,
+              onChanged: widget.canEdit && !widget.isSaving
+                  ? (_) => widget.onRemovePoint()
+                  : null,
+              title: Text(widget.point.title),
+              subtitle: Text(widget.point.category),
+              secondary: widget.canEdit
+                  ? IconButton(
+                      tooltip: 'Remove',
+                      onPressed:
+                          widget.isSaving ? null : widget.onRemovePoint,
+                      icon: const Icon(Icons.close),
+                    )
+                  : null,
+              controlAffinity: ListTileControlAffinity.leading,
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: AppSpacing.md,
+              ),
+            ),
+            if (_isEditingNote)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  AppSpacing.md,
+                  0,
+                  AppSpacing.md,
+                  AppSpacing.sm,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    TextField(
+                      controller: _noteController,
+                      decoration: const InputDecoration(
+                        labelText: 'What was discussed',
+                        hintText: 'e.g. Reminded workers to maintain three '
+                            'points of contact; team confirmed '
+                            'understanding.',
+                      ),
+                      enabled: !widget.isSaving,
+                      minLines: 1,
+                      maxLines: 4,
+                      autofocus: true,
+                      onSubmitted: (_) => _submitNote(),
+                    ),
+                    const SizedBox(height: AppSpacing.xs),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        TextButton(
+                          onPressed: widget.isSaving
+                              ? null
+                              : () => setState(() {
+                                    _noteController.text = widget.note ?? '';
+                                    _isEditingNote = false;
+                                  }),
+                          child: const Text('Cancel'),
+                        ),
+                        const SizedBox(width: AppSpacing.xs),
+                        FilledButton(
+                          onPressed: widget.isSaving ? null : _submitNote,
+                          child: const Text('Save note'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  AppSpacing.md,
+                  0,
+                  AppSpacing.md,
+                  AppSpacing.sm,
+                ),
+                child: hasNote
+                    ? InkWell(
+                        onTap: widget.canEdit && !widget.isSaving
+                            ? () => setState(() => _isEditingNote = true)
+                            : null,
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Icon(
+                              Icons.notes_outlined,
+                              size: 16,
+                              color: AppColors.textSecondary,
+                            ),
+                            const SizedBox(width: AppSpacing.xs),
+                            Expanded(
+                              child: Text(
+                                widget.note!,
+                                style: AppTextStyles.bodyMedium,
+                              ),
+                            ),
+                            if (widget.canEdit)
+                              const Icon(Icons.edit_outlined, size: 16),
+                          ],
+                        ),
+                      )
+                    : (widget.canEdit
+                        ? TextButton.icon(
+                            onPressed: widget.isSaving
+                                ? null
+                                : () => setState(() => _isEditingNote = true),
+                            icon: const Icon(Icons.notes_outlined, size: 16),
+                            label: const Text('Add note'),
+                          )
+                        : const SizedBox.shrink()),
+              ),
+          ],
+        ),
+      ),
     );
   }
 }

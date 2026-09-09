@@ -106,6 +106,28 @@
  * what "prevent silently altering historical meeting data" means at the data
  * layer: the callable itself is the only write path, and it hard-stops once
  * `status !== "inProgress"`.
+ *
+ * DISCUSSION CONTEXT (point notes)
+ *
+ * `setMeetingPointNote`/`removeMeetingPointNote` manage a discussion note per
+ * COVERED meeting point at
+ * `daily_safety_meetings/{id}/point_notes/{meetingPointId}` — a
+ * DETERMINISTIC id keyed by the meeting point itself, mirroring
+ * `attendance/{workerId}`'s shape (one current record per key), unlike
+ * `concerns`' auto-id subcollection. **This is deliberately NOT a Concern.**
+ * A note is plain free text describing what was actually explained/
+ * discussed/decided about a covered point — e.g. "reminded workers to
+ * maintain three points of contact on ladders; team confirmed
+ * understanding" — never an issue with a category or status. It exists to
+ * close the specific evidentiary gap where checking a meeting point's
+ * checkbox alone proves nothing about whether it was genuinely discussed.
+ * Optional: a meeting completes with or without notes on any given point.
+ *
+ * Authorization is the SAME `requireInProgressOwnMeeting` chain as
+ * concerns/attendance. `setMeetingPointNote` additionally confirms the named
+ * `meetingPointId` is currently on the meeting's own `meetingPointIds` — a
+ * note is meaningless for a point that was never actually recorded as
+ * covered. Once `completed`, both callables refuse, exactly like concerns.
  */
 
 import {FieldValue, getFirestore} from "firebase-admin/firestore";
@@ -856,4 +878,122 @@ export const removeMeetingConcern = onCall(async (request) => {
   await ref.delete();
 
   return {id: concernId, organizationId, meetingId};
+});
+
+/**
+ * Confirms [meetingPointId] is currently on [meeting]'s own
+ * `meetingPointIds` — the discussion note is meaningless (and could
+ * otherwise reference a point that was never actually on this meeting, or
+ * was already removed) for anything outside that set.
+ *
+ * @param {FirebaseFirestore.DocumentData} meeting the freshly-fetched
+ * meeting document.
+ * @param {string} meetingPointId the point id to check.
+ * @return {void}
+ */
+function requireMeetingPointOnMeeting(
+  meeting: FirebaseFirestore.DocumentData,
+  meetingPointId: string
+): void {
+  const meetingPointIds: unknown = meeting.meetingPointIds;
+  const isOnMeeting =
+    Array.isArray(meetingPointIds) && meetingPointIds.includes(meetingPointId);
+  if (!isOnMeeting) {
+    throw new HttpsError(
+      "failed-precondition",
+      "That safety meeting point is not on this meeting."
+    );
+  }
+}
+
+/**
+ * Sets (creates or overwrites) the discussion note for one meeting point on
+ * an in-progress meeting, at
+ * `daily_safety_meetings/{id}/point_notes/{meetingPointId}` — a
+ * DETERMINISTIC id keyed by the meeting point itself (mirrors
+ * `attendance/{workerId}`'s one-record-per-key shape, unlike `concerns`'
+ * auto-id subcollection), since a meeting point can only ever have one
+ * current note, not many.
+ *
+ * DISCUSSION CONTEXT vs. CONCERNS: this is deliberately a separate concept
+ * from `MeetingConcern` — see this file's header note. A note is plain free
+ * text describing what was actually explained/discussed about a covered
+ * safety meeting point (e.g. "reminded workers to maintain three points of
+ * contact on ladders; team confirmed understanding"), never an issue with a
+ * category or status. Optional: a meeting completes with or without notes
+ * on any given point, exactly like meeting points themselves are optional
+ * beyond the one-activity-one-point completion gate.
+ *
+ * Authorization is the SAME `requireInProgressOwnMeeting` chain as
+ * concerns/attendance: only the meeting's own foreman, only while the
+ * meeting is still `inProgress`. Once `completed`, this callable refuses —
+ * notes become part of the permanent meeting record at that point, exactly
+ * like concerns.
+ */
+export const setMeetingPointNote = onCall(async (request) => {
+  const organizationId = requireString(request, "organizationId");
+  const meetingId = requireString(request, "meetingId");
+  const meetingPointId = requireString(request, "meetingPointId");
+  const note = requireString(request, "note");
+
+  const foremanId = request.auth?.uid;
+  if (!foremanId) throw denied();
+
+  const meeting = await requireInProgressOwnMeeting(
+    organizationId,
+    meetingId,
+    foremanId
+  );
+  requireMeetingPointOnMeeting(meeting, meetingPointId);
+
+  const ref = getFirestore().doc(
+    `organizations/${organizationId}/daily_safety_meetings/${meetingId}` +
+      `/point_notes/${meetingPointId}`
+  );
+  await ref.set({
+    meetingId,
+    organizationId,
+    siteId: meeting.siteId,
+    meetingPointId,
+    note,
+    recordedBy: foremanId,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  return {meetingId, meetingPointId, organizationId};
+});
+
+/**
+ * Removes a meeting point's discussion note from an in-progress meeting.
+ * Only the meeting's own foreman may call this. A no-op-shaped success (not
+ * a `not-found` error) if no note currently exists for that point — clearing
+ * an already-empty note is not an error condition worth surfacing to the
+ * caller, matching how the UI offers this as "clear note" rather than a
+ * delete-a-specific-record action.
+ *
+ * Note removal is NOT gated on `requireMeetingPointOnMeeting`: unlike
+ * `setMeetingPointNote`, this also runs as a side effect of REMOVING a
+ * meeting point from the meeting entirely (see `updateDailySafetyMeeting`'s
+ * own doc comment) — at that moment the point is no longer on
+ * `meetingPointIds`, so gating removal on membership would make the note
+ * un-removable exactly when it needs removing.
+ */
+export const removeMeetingPointNote = onCall(async (request) => {
+  const organizationId = requireString(request, "organizationId");
+  const meetingId = requireString(request, "meetingId");
+  const meetingPointId = requireString(request, "meetingPointId");
+
+  const foremanId = request.auth?.uid;
+  if (!foremanId) throw denied();
+
+  await requireInProgressOwnMeeting(organizationId, meetingId, foremanId);
+
+  const ref = getFirestore().doc(
+    `organizations/${organizationId}/daily_safety_meetings/${meetingId}` +
+      `/point_notes/${meetingPointId}`
+  );
+  await ref.delete();
+
+  return {meetingId, meetingPointId, organizationId};
 });
