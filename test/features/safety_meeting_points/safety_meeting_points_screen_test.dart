@@ -9,6 +9,7 @@ import 'package:jva_safety/features/activities/data/activity_repository.dart';
 import 'package:jva_safety/features/authentication/domain/account_status.dart';
 import 'package:jva_safety/features/authentication/domain/app_role.dart';
 import 'package:jva_safety/features/authentication/domain/user_profile.dart';
+import 'package:jva_safety/features/organizations/data/project_repository.dart';
 import 'package:jva_safety/features/organizations/domain/organization_record_status.dart';
 import 'package:jva_safety/features/safety_meeting_points/data/safety_meeting_point_admin_service.dart';
 import 'package:jva_safety/features/safety_meeting_points/data/safety_meeting_point_repository.dart';
@@ -99,6 +100,10 @@ void main() {
               organizationId: 'org-alpha',
             ),
             activityRepository: ActivityRepository(
+              firestoreService: FirestoreService(firestore: firestore),
+              organizationId: 'org-alpha',
+            ),
+            projectRepository: ProjectRepository(
               firestoreService: FirestoreService(firestore: firestore),
               organizationId: 'org-alpha',
             ),

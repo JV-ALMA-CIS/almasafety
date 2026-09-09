@@ -9,7 +9,9 @@ import '../../../core/theme/app_text_styles.dart';
 import '../../activities/data/activity_repository.dart';
 import '../../activities/domain/activity.dart';
 import '../../authentication/presentation/auth_error_banner.dart';
+import '../../organizations/data/project_repository.dart';
 import '../../organizations/domain/organization_record_status.dart';
+import '../../organizations/domain/project.dart';
 import '../data/safety_meeting_point_admin_service.dart';
 import '../data/safety_meeting_point_repository.dart';
 import '../domain/safety_meeting_point.dart';
@@ -39,6 +41,7 @@ class SafetyMeetingPointsScreen extends StatefulWidget {
     this.repository,
     this.adminService,
     this.activityRepository,
+    this.projectRepository,
   });
 
   /// The organization whose meeting points to show. When null, falls back to
@@ -55,6 +58,14 @@ class SafetyMeetingPointsScreen extends StatefulWidget {
   /// [_activityRepositoryFor].
   final ActivityRepository? activityRepository;
 
+  /// Injected in tests. Groups the "Applicable activities" picker by
+  /// project, so a Site Manager running several projects at once can tell
+  /// apart two activities that happen to share a name (e.g. "Excavation" at
+  /// both Rosslyn Ridge and Italian Ambassador's Residence) instead of
+  /// picking blind from one flat organization-wide list — see
+  /// [_activityRepositoryFor].
+  final ProjectRepository? projectRepository;
+
   @override
   State<SafetyMeetingPointsScreen> createState() =>
       _SafetyMeetingPointsScreenState();
@@ -66,6 +77,7 @@ class _SafetyMeetingPointsScreenState extends State<SafetyMeetingPointsScreen> {
 
   SafetyMeetingPointRepository? _repository;
   ActivityRepository? _activityRepository;
+  ProjectRepository? _projectRepository;
   String? _errorMessage;
   bool _isSaving = false;
 
@@ -105,13 +117,32 @@ class _SafetyMeetingPointsScreenState extends State<SafetyMeetingPointsScreen> {
     return created;
   }
 
+  /// Builds (once) the repository backing the "Applicable activities"
+  /// picker's project grouping — see [projectRepository]'s doc comment.
+  /// Unlike the other `_xFor` builders here, [ProjectRepository] carries no
+  /// `organizationId` getter to compare against, so this only ever builds
+  /// once per screen instance — matching the fact that this screen's own
+  /// `organizationId` never changes after the first build.
+  ProjectRepository _projectRepositoryFor(String organizationId) {
+    return _projectRepository ??=
+        widget.projectRepository ??
+        ProjectRepository(
+          firestoreService: FirestoreService(),
+          organizationId: organizationId,
+        );
+  }
+
   Future<void> _openCreateDialog(
     String organizationId,
     List<Activity> activities,
+    List<Project> projects,
   ) async {
     final result = await showDialog<_SafetyMeetingPointFormResult>(
       context: context,
-      builder: (_) => _SafetyMeetingPointFormDialog(activities: activities),
+      builder: (_) => _SafetyMeetingPointFormDialog(
+        activities: activities,
+        projects: projects,
+      ),
     );
     if (result == null || !mounted) return;
     await _save(
@@ -131,12 +162,14 @@ class _SafetyMeetingPointsScreenState extends State<SafetyMeetingPointsScreen> {
     String organizationId,
     SafetyMeetingPoint point,
     List<Activity> activities,
+    List<Project> projects,
   ) async {
     final result = await showDialog<_SafetyMeetingPointFormResult>(
       context: context,
       builder: (_) => _SafetyMeetingPointFormDialog(
         existing: point,
         activities: activities,
+        projects: projects,
       ),
     );
     if (result == null || !mounted) return;
@@ -219,78 +252,99 @@ class _SafetyMeetingPointsScreenState extends State<SafetyMeetingPointsScreen> {
       builder: (context, activitySnapshot) {
         final activities = activitySnapshot.data ?? const <Activity>[];
 
-        return StreamBuilder<List<SafetyMeetingPoint>>(
-          stream: _repositoryFor(organizationId).watchAll(),
-          builder: (context, snapshot) {
-            final items = snapshot.data ?? const <SafetyMeetingPoint>[];
-            final isLoading =
-                snapshot.connectionState == ConnectionState.waiting;
-            final streamError = snapshot.hasError
-                ? 'Could not load safety meeting points. Please try again.'
-                : null;
+        return StreamBuilder<List<Project>>(
+          stream: _projectRepositoryFor(organizationId).watchAll(),
+          builder: (context, projectSnapshot) {
+            final projects = projectSnapshot.data ?? const <Project>[];
 
-            return ListView(
-              physics: const AlwaysScrollableScrollPhysics(),
-              padding: const EdgeInsets.all(AppSpacing.md),
-              children: [
-                Row(
+            return StreamBuilder<List<SafetyMeetingPoint>>(
+              stream: _repositoryFor(organizationId).watchAll(),
+              builder: (context, snapshot) {
+                final items = snapshot.data ?? const <SafetyMeetingPoint>[];
+                final isLoading =
+                    snapshot.connectionState == ConnectionState.waiting;
+                final streamError = snapshot.hasError
+                    ? 'Could not load safety meeting points. Please try '
+                          'again.'
+                    : null;
+
+                return ListView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  padding: const EdgeInsets.all(AppSpacing.md),
                   children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Safety Meeting Points',
-                            style: AppTextStyles.headlineMedium,
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Safety Meeting Points',
+                                style: AppTextStyles.headlineMedium,
+                              ),
+                              const Text(
+                                'Reusable topics and locations available '
+                                "for this organization's safety meetings.",
+                                style: AppTextStyles.bodyMedium,
+                              ),
+                            ],
                           ),
-                          const Text(
-                            'Reusable topics and locations available for this '
-                            "organization's safety meetings.",
-                            style: AppTextStyles.bodyMedium,
-                          ),
-                        ],
+                        ),
+                        IconButton(
+                          tooltip: 'Add meeting point',
+                          onPressed: _isSaving
+                              ? null
+                              : () => _openCreateDialog(
+                                  organizationId,
+                                  activities,
+                                  projects,
+                                ),
+                          icon: const Icon(Icons.add_circle_outline),
+                        ),
+                      ],
+                    ),
+                    if ((_errorMessage ?? streamError) != null) ...[
+                      const SizedBox(height: AppSpacing.md),
+                      AuthErrorBanner(message: _errorMessage ?? streamError!),
+                    ],
+                    const SizedBox(height: AppSpacing.md),
+                    if (isLoading && items.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(
+                          vertical: AppSpacing.xl,
+                        ),
+                        child: Center(child: CircularProgressIndicator()),
                       ),
-                    ),
-                    IconButton(
-                      tooltip: 'Add meeting point',
-                      onPressed: _isSaving
-                          ? null
-                          : () => _openCreateDialog(organizationId, activities),
-                      icon: const Icon(Icons.add_circle_outline),
-                    ),
+                    if (!isLoading && items.isEmpty && streamError == null)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(
+                          vertical: AppSpacing.xl,
+                        ),
+                        child: Text(
+                          'No safety meeting points yet.',
+                          style: AppTextStyles.bodyMedium,
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    for (final item in items) ...[
+                      _SafetyMeetingPointCard(
+                        point: item,
+                        isBusy: _isSaving,
+                        activities: activities,
+                        onEdit: () => _openEditDialog(
+                          organizationId,
+                          item,
+                          activities,
+                          projects,
+                        ),
+                        onToggleStatus: () =>
+                            _toggleStatus(organizationId, item),
+                      ),
+                      const SizedBox(height: AppSpacing.md),
+                    ],
                   ],
-                ),
-                if ((_errorMessage ?? streamError) != null) ...[
-                  const SizedBox(height: AppSpacing.md),
-                  AuthErrorBanner(message: _errorMessage ?? streamError!),
-                ],
-                const SizedBox(height: AppSpacing.md),
-                if (isLoading && items.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: AppSpacing.xl),
-                    child: Center(child: CircularProgressIndicator()),
-                  ),
-                if (!isLoading && items.isEmpty && streamError == null)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: AppSpacing.xl),
-                    child: Text(
-                      'No safety meeting points yet.',
-                      style: AppTextStyles.bodyMedium,
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                for (final item in items) ...[
-                  _SafetyMeetingPointCard(
-                    point: item,
-                    isBusy: _isSaving,
-                    activities: activities,
-                    onEdit: () =>
-                        _openEditDialog(organizationId, item, activities),
-                    onToggleStatus: () => _toggleStatus(organizationId, item),
-                  ),
-                  const SizedBox(height: AppSpacing.md),
-                ],
-              ],
+                );
+              },
             );
           },
         );
@@ -418,6 +472,7 @@ class _SafetyMeetingPointFormResult {
 class _SafetyMeetingPointFormDialog extends StatefulWidget {
   const _SafetyMeetingPointFormDialog({
     required this.activities,
+    required this.projects,
     this.existing,
   });
 
@@ -435,6 +490,16 @@ class _SafetyMeetingPointFormDialog extends StatefulWidget {
   /// "display name, store the Firestore document id" principle already
   /// applied to Organization selection during account approval.
   final List<Activity> activities;
+
+  /// The organization's projects, used only to GROUP [activities] by
+  /// project in the checklist below (a heading per project, its activities
+  /// listed underneath) — an organization running several projects at once
+  /// can have two activities that share a name (e.g. "Excavation" at both
+  /// Rosslyn Ridge and Italian Ambassador's Residence, two different
+  /// documents with different ids), and a flat unlabelled list gave no way
+  /// to tell them apart. Stored, never written back — [_SafetyMeetingPointFormResult]
+  /// still only carries activity ids.
+  final List<Project> projects;
 
   @override
   State<_SafetyMeetingPointFormDialog> createState() =>
@@ -479,6 +544,60 @@ class _SafetyMeetingPointFormDialogState
 
   List<String> _parseCsv(String value) =>
       value.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+
+  /// Builds the "Applicable activities" checklist GROUPED by project — a
+  /// heading per project (its activities listed underneath, sorted by
+  /// name), plus a trailing "Other" group for any activity whose
+  /// `projectId` matches no known [Project] (a project deleted/renamed out
+  /// from under an existing activity — kept visible rather than silently
+  /// dropped from the picker). See [_SafetyMeetingPointFormDialog.projects]'
+  /// doc comment for why this grouping exists at all.
+  List<Widget> _groupedActivityTiles() {
+    final projectsById = {for (final p in widget.projects) p.id: p};
+    final byProject = <String?, List<Activity>>{};
+    for (final activity in widget.activities) {
+      final projectId = projectsById.containsKey(activity.projectId)
+          ? activity.projectId
+          : null;
+      (byProject[projectId] ??= []).add(activity);
+    }
+
+    final projectIds = byProject.keys.whereType<String>().toList()
+      ..sort((a, b) => projectsById[a]!.name.compareTo(projectsById[b]!.name));
+
+    final tiles = <Widget>[];
+    for (final projectId in projectIds) {
+      tiles.add(_ActivityGroupHeading(title: projectsById[projectId]!.name));
+      tiles.addAll(_activityTilesFor(byProject[projectId]!));
+    }
+    final ungrouped = byProject[null];
+    if (ungrouped != null && ungrouped.isNotEmpty) {
+      tiles.add(const _ActivityGroupHeading(title: 'Other'));
+      tiles.addAll(_activityTilesFor(ungrouped));
+    }
+    return tiles;
+  }
+
+  List<Widget> _activityTilesFor(List<Activity> activities) {
+    final sorted = [...activities]..sort((a, b) => a.name.compareTo(b.name));
+    return [
+      for (final activity in sorted)
+        CheckboxListTile(
+          value: _selectedActivityIds.contains(activity.id),
+          onChanged: (checked) => setState(() {
+            if (checked ?? false) {
+              _selectedActivityIds.add(activity.id);
+            } else {
+              _selectedActivityIds.remove(activity.id);
+            }
+          }),
+          title: Text(activity.name),
+          controlAffinity: ListTileControlAffinity.leading,
+          contentPadding: EdgeInsets.zero,
+          dense: true,
+        ),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -528,22 +647,7 @@ class _SafetyMeetingPointFormDialogState
                     style: AppTextStyles.bodyMedium,
                   )
                 else
-                  ...widget.activities.map(
-                    (activity) => CheckboxListTile(
-                      value: _selectedActivityIds.contains(activity.id),
-                      onChanged: (checked) => setState(() {
-                        if (checked ?? false) {
-                          _selectedActivityIds.add(activity.id);
-                        } else {
-                          _selectedActivityIds.remove(activity.id);
-                        }
-                      }),
-                      title: Text(activity.name),
-                      controlAffinity: ListTileControlAffinity.leading,
-                      contentPadding: EdgeInsets.zero,
-                      dense: true,
-                    ),
-                  ),
+                  ..._groupedActivityTiles(),
                 const SizedBox(height: AppSpacing.sm),
                 TextFormField(
                   controller: _risksController,
@@ -595,6 +699,25 @@ class _SafetyMeetingPointFormDialogState
           child: Text(isEditing ? 'Save' : 'Create'),
         ),
       ],
+    );
+  }
+}
+
+/// A small project-name heading inside the "Applicable activities"
+/// checklist — see [_SafetyMeetingPointFormDialogState._groupedActivityTiles].
+class _ActivityGroupHeading extends StatelessWidget {
+  const _ActivityGroupHeading({required this.title});
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: AppSpacing.sm, bottom: 2),
+      child: Text(
+        title,
+        style: AppTextStyles.label.copyWith(color: AppColors.textSecondary),
+      ),
     );
   }
 }

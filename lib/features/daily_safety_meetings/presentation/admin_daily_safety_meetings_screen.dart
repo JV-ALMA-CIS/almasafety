@@ -114,6 +114,16 @@ class _AdminDailySafetyMeetingsScreenState
   /// [SiteWorkersScreen]/[ActivityWorkersScreen]'s established pattern.
   List<OrganizationUser> _members = const [];
 
+  /// The project this list is filtered to, or null for "All projects" (the
+  /// default). An organization running several projects at once otherwise
+  /// blends every project's meetings into one list with only a small text
+  /// line noting which project each card belongs to — this filter lets a
+  /// Site Manager pull one project's meetings (and therefore its Foremen's
+  /// dailies) on their own, e.g. to review Rosslyn Ridge separately from
+  /// Italian Ambassador's Residence. Client-side only: [DailySafetyMeeting]
+  /// already carries its own `projectId`, so no new query/index is needed.
+  String? _selectedProjectId;
+
   @override
   void initState() {
     super.initState();
@@ -188,10 +198,14 @@ class _AdminDailySafetyMeetingsScreenState
         return StreamBuilder<List<Project>>(
           stream: _projectRepository.watchAll(),
           builder: (context, projectSnapshot) {
-            final projectsById = {
-              for (final p in projectSnapshot.data ?? const <Project>[])
-                p.id: p,
-            };
+            final projects = projectSnapshot.data ?? const <Project>[];
+            final projectsById = {for (final p in projects) p.id: p};
+            final selectedProjectId = _selectedProjectId;
+            final filteredMeetings = selectedProjectId == null
+                ? meetings
+                : meetings
+                      .where((m) => m.projectId == selectedProjectId)
+                      .toList();
 
             return StreamBuilder<List<Site>>(
               stream: _siteRepository.watchAll(),
@@ -214,7 +228,29 @@ class _AdminDailySafetyMeetingsScreenState
                       style: AppTextStyles.bodyMedium,
                     ),
                     const SizedBox(height: AppSpacing.md),
-                    if (isLoading && !hasError && meetings.isEmpty)
+                    if (projects.isNotEmpty)
+                      DropdownButtonFormField<String?>(
+                        initialValue: selectedProjectId,
+                        decoration: const InputDecoration(
+                          labelText: 'Project',
+                        ),
+                        items: [
+                          const DropdownMenuItem<String?>(
+                            value: null,
+                            child: Text('All projects'),
+                          ),
+                          for (final project in projects)
+                            DropdownMenuItem<String?>(
+                              value: project.id,
+                              child: Text(project.name),
+                            ),
+                        ],
+                        onChanged: (value) =>
+                            setState(() => _selectedProjectId = value),
+                      ),
+                    if (projects.isNotEmpty)
+                      const SizedBox(height: AppSpacing.md),
+                    if (isLoading && !hasError && filteredMeetings.isEmpty)
                       const Padding(
                         padding: EdgeInsets.symmetric(vertical: AppSpacing.xl),
                         child: Center(child: CircularProgressIndicator()),
@@ -227,16 +263,21 @@ class _AdminDailySafetyMeetingsScreenState
                               'Please try again.',
                         ),
                       ),
-                    if (!isLoading && !hasError && meetings.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.symmetric(vertical: AppSpacing.xl),
+                    if (!isLoading && !hasError && filteredMeetings.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                          vertical: AppSpacing.xl,
+                        ),
                         child: Text(
-                          'No daily safety meetings recorded yet.',
+                          selectedProjectId == null
+                              ? 'No daily safety meetings recorded yet.'
+                              : 'No daily safety meetings recorded yet for '
+                                    'this project.',
                           style: AppTextStyles.bodyMedium,
                           textAlign: TextAlign.center,
                         ),
                       ),
-                    for (final meeting in meetings) ...[
+                    for (final meeting in filteredMeetings) ...[
                       _AdminMeetingCard(
                         meeting: meeting,
                         siteName: sitesById[meeting.siteId]?.name ??
