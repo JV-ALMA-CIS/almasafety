@@ -114,6 +114,10 @@ export {
   addMeetingConcern,
   updateMeetingConcern,
   removeMeetingConcern,
+  setMeetingPointNote,
+  removeMeetingPointNote,
+  addMeetingEvidence,
+  removeMeetingEvidence,
 } from "./daily_safety_meeting_callable";
 
 export {
