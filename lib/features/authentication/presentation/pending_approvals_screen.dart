@@ -486,16 +486,24 @@ class _RoleAssignmentSelection {
 ///    server independently re-verifies it is one of their own authorized
 ///    memberships regardless (`requireApprover`/`requireGrantWithinScope`).
 ///
-/// SITE PICKER — shown only once the selected role is [AppRole.foreman],
-/// listing every site in the currently-selected organization
-/// ([SiteRepository.watchAll]) as checkboxes. Without at least one assigned
-/// site, a Foreman cannot run Daily Safety Meetings at all
-/// (`DailySafetyMeetingScreen` requires a non-empty `membership.siteIds`),
-/// so this lets the Site Manager set it in the same step as approval rather
-/// than a separate, easy-to-forget visit to Organizations → Project → Site
-/// → Workers afterward. Optional, not required: a Site Manager who does not
-/// yet know which site to assign can still approve and assign the site
-/// later via that same screen.
+/// SITE PICKER — shown once the selected role is [AppRole.foreman] or
+/// [AppRole.worker], as checkboxes. Without at least one assigned site, a
+/// Foreman cannot run Daily Safety Meetings at all (`DailySafetyMeetingScreen`
+/// requires a non-empty `membership.siteIds`), and a Worker cannot be
+/// assigned to any activity (`assignWorkerToActivity` requires the worker's
+/// own `siteIds` to already contain the activity's site) — so this lets the
+/// reviewer set it in the same step as approval rather than a separate,
+/// easy-to-forget visit to Workforce afterward. Optional, not required: a
+/// reviewer who does not yet know which site to assign can still approve
+/// and assign the site later via that same screen.
+///
+/// Listed sites differ by WHO is reviewing, matching PROJECT_CONTEXT.md
+/// §16's "a Site Manager places a Foreman; a Foreman places the Workers they
+/// deal with daily": a Site Manager or Admin approving a Foreman sees every
+/// site in the selected organization ([SiteRepository.watchAll]); a Foreman
+/// approving a Worker sees ONLY their own site(s) — see
+/// [_reviewerOwnSiteIds] — never the whole organization's, since a Foreman
+/// has no standing to place a Worker somewhere they do not themselves work.
 class _RoleAssignmentDialog extends StatefulWidget {
   const _RoleAssignmentDialog({
     required this.account,
@@ -580,9 +588,36 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
       ? _selectedOrganization?.id
       : _selectedMembershipOrganizationId;
 
-  /// Only [AppRole.foreman] needs a site assignment at approval time — see
-  /// this dialog's class doc comment.
-  bool get _needsSiteField => _role == AppRole.foreman;
+  /// [AppRole.foreman] and [AppRole.worker] both need a site assignment at
+  /// approval time — see this dialog's class doc comment. Without at least
+  /// one assigned site, a Worker cannot be assigned to any activity either
+  /// (`assignWorkerToActivity` requires the worker's own membership
+  /// `siteIds` to already contain the activity's site — see
+  /// `site_assignment_callable.ts`), so this closes the same gap for a
+  /// Worker that the Foreman site picker already closed for a Foreman.
+  bool get _needsSiteField =>
+      _role == AppRole.foreman || _role == AppRole.worker;
+
+  /// A Foreman reviewer approving a Worker only ever manages their OWN
+  /// site(s) (PROJECT_CONTEXT.md §16: "a foreman places workers since he
+  /// deals with them daily") — unlike a Site Manager placing a Foreman
+  /// anywhere in the organization, a Foreman must not be offered every site
+  /// in the organization to place a Worker at, only the site(s) their own
+  /// membership already carries. Unused (returns null) for every other
+  /// reviewer shape, which sees every site in the selected organization.
+  List<String>? get _reviewerOwnSiteIds => widget.reviewerRole ==
+          AppRole.foreman
+      ? widget.reviewerMemberships
+            .firstWhere(
+              (m) => m.organizationId == _effectiveOrganizationId,
+              orElse: () => const Membership(
+                organizationId: '',
+                role: AppRole.foreman,
+                status: MembershipStatus.active,
+              ),
+            )
+            .siteIds
+      : null;
 
   /// An Admin may grant [AppRole.siteManager] (or reinstate any role); a
   /// [AppRole.siteManager] may grant [AppRole.foreman]; a [AppRole.foreman]
@@ -677,7 +712,16 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
           .watchAll()
           .first;
       if (!mounted) return;
-      setState(() => _sites = sites);
+      // A Foreman reviewer only ever places a Worker at their OWN site(s)
+      // — see [_reviewerOwnSiteIds]'s doc comment. Every other reviewer
+      // shape (Admin, Site Manager) sees every site in the organization,
+      // matching the existing Foreman-placement picker.
+      final ownSiteIds = _reviewerOwnSiteIds;
+      setState(
+        () => _sites = ownSiteIds == null
+            ? sites
+            : sites.where((s) => ownSiteIds.contains(s.id)).toList(),
+      );
     } catch (_) {
       if (!mounted) return;
       setState(() => _sitesError = 'Could not load sites. Please try again.');
@@ -687,15 +731,16 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
   }
 
   /// Called whenever the granted role changes: loads sites the first time
-  /// it becomes [AppRole.foreman] with an organization already selected,
-  /// and clears any previously picked site(s) when it stops being
-  /// [AppRole.foreman] (a picked site is meaningless for any other role).
+  /// it becomes [AppRole.foreman] or [AppRole.worker] with an organization
+  /// already selected, and clears any previously picked site(s) when it
+  /// stops needing one (a picked site is meaningless for any other role).
   void _onRoleChanged(AppRole role) {
+    final needsSites = role == AppRole.foreman || role == AppRole.worker;
     setState(() {
       _role = role;
-      if (role != AppRole.foreman) _selectedSiteIds.clear();
+      if (!needsSites) _selectedSiteIds.clear();
     });
-    if (role == AppRole.foreman && _sites.isEmpty && !_isLoadingSites) {
+    if (needsSites && _sites.isEmpty && !_isLoadingSites) {
       _loadSites();
     }
   }

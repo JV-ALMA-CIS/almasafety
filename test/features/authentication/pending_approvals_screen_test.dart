@@ -100,6 +100,7 @@ class _FakeSession extends SessionController {
     required AppRole? role,
     bool noActiveOrganization = false,
     List<String>? extraOrganizationIds,
+    List<String> reviewerSiteIds = const [],
   }) : _profile = UserProfile(
          uid: 'approver-uid',
          name: 'Approver',
@@ -129,6 +130,7 @@ class _FakeSession extends SessionController {
                  organizationId: 'jv-alma-cis',
                  role: role,
                  status: MembershipStatus.active,
+                 siteIds: reviewerSiteIds,
                ),
                // Simulates a reviewer holding the same authorized role in a
                // second organization, for the org-picker's "which of my
@@ -221,12 +223,14 @@ void main() {
     AppRole? reviewerRole = AppRole.siteManager,
     bool noActiveOrganization = false,
     List<String>? extraOrganizationIds,
+    List<String> reviewerSiteIds = const [],
   }) {
     return ChangeNotifierProvider<SessionController>(
       create: (_) => _FakeSession(
         role: reviewerRole,
         noActiveOrganization: noActiveOrganization,
         extraOrganizationIds: extraOrganizationIds,
+        reviewerSiteIds: reviewerSiteIds,
       ),
       child: MaterialApp(
         home: Scaffold(
@@ -424,6 +428,47 @@ void main() {
         // be showing without any extra interaction.
         expect(find.text('North Yard'), findsOneWidget);
         expect(find.text('South Yard'), findsOneWidget);
+
+        await tester.tap(find.text('North Yard'));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').last);
+        await tester.pumpAndSettle();
+
+        expect(service.approvedCalls.single.siteIds, ['site-1']);
+      },
+    );
+
+    testWidgets(
+      'a Foreman approving a Worker is offered a site picker scoped to '
+      'the Foreman\'s OWN site(s) only, never every site in the '
+      'organization — regression test for a Worker approved with no '
+      'site, who could never be assigned to any activity '
+      '(assignWorkerToActivity requires the worker\'s own siteIds to '
+      'already contain the activity\'s site)',
+      (tester) async {
+        await seedOrg('jv-alma-cis', name: 'JV Alma CIS', code: 'JV-1');
+        await seedSite('jv-alma-cis', 'site-1', name: 'North Yard');
+        await seedSite('jv-alma-cis', 'site-2', name: 'South Yard');
+        final service = _FakeApprovalService(accounts: [account('alice')]);
+
+        await tester.pumpWidget(
+          wrap(
+            service,
+            reviewerRole: AppRole.foreman,
+            reviewerSiteIds: ['site-1'],
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
+        await tester.pumpAndSettle();
+
+        // The role dropdown already defaults to the only grantable role
+        // (Worker) for a Foreman, so the site picker should already be
+        // showing without any extra interaction — scoped to only the
+        // Foreman's own site, never South Yard.
+        expect(find.text('North Yard'), findsOneWidget);
+        expect(find.text('South Yard'), findsNothing);
 
         await tester.tap(find.text('North Yard'));
         await tester.pumpAndSettle();
