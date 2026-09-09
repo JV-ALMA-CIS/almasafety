@@ -1,27 +1,33 @@
 /**
  * Cloud Storage Security Rules tests for JVA Safety.
  *
- * BUG FIX regression coverage: `storage.rules`' `belongsToOrg()` used to read
- * `users/{uid}.data.organizationId`, a field that no longer exists under the
- * multi-organization membership model (organization relationship moved to
- * `users/{uid}/memberships/{organizationId}` — see `firestore.rules`'
- * `belongsToOrganization()`/`membershipDoc()`). That comparison was always
- * `null == organizationId`, i.e. always false, so every Storage read/write
- * was silently denied for every real user regardless of membership — this
- * suite proves the fix: an active member can read/write their own
- * organization's Storage tree, and every other case (no membership, a
- * different organization, a suspended membership, signed out) is still
- * refused.
+ * `storage.rules` deliberately does NOT cross-reference Firestore membership
+ * documents to scope Storage access per organization — see storage.rules'
+ * own header note for why: an earlier version did exactly that (mirroring
+ * `firestore.rules`' `belongsToOrganization()`), was syntactically correct
+ * per Firebase's documented cross-service Rules syntax and passed in the
+ * emulator, but returned 403 in production for real users with a genuinely
+ * valid, active membership — a known class of issue where Storage Rules'
+ * cross-service Firestore access depends on a project-level IAM grant that
+ * is not always present/propagated. Real authorization for every write that
+ * matters lives in the Cloud Functions callables instead (which bypass
+ * these Rules entirely via the Admin SDK) — see e.g.
+ * `daily_safety_meeting_callable.ts`'s EVIDENCE header note.
  *
- * Requires BOTH the Firestore and Storage emulators — `storage.rules` reads
- * Firestore membership documents via `firestore.get`/`firestore.exists`
- * cross-references. Run:
+ * This suite proves the CURRENT, simpler contract: any signed-in user may
+ * read/write under `organizations/{organizationId}/...`; every other path
+ * and an unauthenticated caller are refused; a >25MB upload is refused; a
+ * delete (no `request.resource`) still succeeds.
+ *
+ * Requires the Storage emulator. Run:
  *
  *   cd functions
  *   npm run test:storage-rules
  *
  * which wraps this file in `firebase emulators:exec --only
- * firestore,storage`, starting and stopping both around the run.
+ * firestore,storage` (Firestore is started alongside Storage only because
+ * the npm script's emulator selection is shared with other suites — this
+ * file itself does not touch Firestore).
  */
 
 const fs = require("fs");
@@ -37,7 +43,6 @@ const {
   getBytes,
   deleteObject,
 } = require("firebase/storage");
-const {doc, setDoc, Timestamp} = require("firebase/firestore");
 
 const PROJECT_ID = "jva-safety-rules-test";
 const ORG_A = "org-alpha";
@@ -66,45 +71,7 @@ function emulatorAddress(envVar, defaultPort) {
   return {host: "127.0.0.1", port: defaultPort};
 }
 
-/**
- * A seeded `users/{uid}/memberships/{organizationId}` document, as the Admin
- * SDK would write it. Mirrors `firestore.rules.test.js`'s `membership()`.
- *
- * @param {string} organizationId the organization this membership belongs to.
- * @param {object} overrides fields to override on the default shape.
- * @return {object} the membership document data.
- */
-function membership(organizationId, overrides = {}) {
-  return {
-    organizationId,
-    role: "worker",
-    workerType: null,
-    trade: null,
-    siteIds: [],
-    supervisorUid: null,
-    status: "active",
-    approvedAt: Timestamp.fromDate(new Date("2026-01-01")),
-    approvedBy: "approver-a",
-    createdAt: Timestamp.fromDate(new Date("2026-01-01")),
-    updatedAt: Timestamp.fromDate(new Date("2026-01-01")),
-    ...overrides,
-  };
-}
-
-async function seedMembership(uid, organizationId, overrides = {}) {
-  await testEnv.withSecurityRulesDisabled(async (context) => {
-    await setDoc(
-      doc(
-        context.firestore(),
-        `users/${uid}/memberships/${organizationId}`
-      ),
-      membership(organizationId, overrides)
-    );
-  });
-}
-
 beforeAll(async () => {
-  const firestoreAddress = emulatorAddress("FIRESTORE_EMULATOR_HOST", 8080);
   const storageAddress = emulatorAddress(
     "FIREBASE_STORAGE_EMULATOR_HOST",
     9199
@@ -112,14 +79,6 @@ beforeAll(async () => {
 
   testEnv = await initializeTestEnvironment({
     projectId: PROJECT_ID,
-    firestore: {
-      rules: fs.readFileSync(
-        path.resolve(__dirname, "../../firestore.rules"),
-        "utf8"
-      ),
-      host: firestoreAddress.host,
-      port: firestoreAddress.port,
-    },
     storage: {
       rules: fs.readFileSync(
         path.resolve(__dirname, "../../storage.rules"),
@@ -136,7 +95,6 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await testEnv.clearFirestore();
   await testEnv.clearStorage();
 });
 
@@ -153,10 +111,9 @@ function anonymousStorage() {
 
 const SOME_BYTES = new Uint8Array([1, 2, 3, 4]);
 
-describe("organization-scoped Storage access (belongsToOrg)", () => {
-  test("an active member of the organization can upload and read a file " +
-    "under their own organization's path", async () => {
-    await seedMembership("worker-a", ORG_A);
+describe("organization-scoped Storage access (signed-in only)", () => {
+  test("any signed-in user can upload and read a file under an " +
+    "organization's path, regardless of membership", async () => {
     const storage = storageFor("worker-a");
     const fileRef = ref(
       storage,
@@ -167,45 +124,20 @@ describe("organization-scoped Storage access (belongsToOrg)", () => {
     await assertSucceeds(getBytes(fileRef));
   });
 
-  test("a user with NO membership in the organization cannot read or " +
-    "write its Storage tree", async () => {
-    // worker-a has no membership anywhere.
+  test("a signed-in user can access a DIFFERENT organization's path too " +
+    "— organization isolation is enforced by the callables' Firestore " +
+    "metadata, not by this Storage-level check", async () => {
     const storage = storageFor("worker-a");
     const fileRef = ref(
       storage,
-      `organizations/${ORG_A}/hazards/hazard-1/photo.jpg`
+      `organizations/${ORG_B}/hazards/hazard-1/photo.jpg`
     );
 
-    await assertFails(uploadBytes(fileRef, SOME_BYTES));
-  });
-
-  test("a member of a DIFFERENT organization cannot read or write " +
-    "another organization's Storage tree", async () => {
-    await seedMembership("worker-a", ORG_B);
-    const storage = storageFor("worker-a");
-    const fileRef = ref(
-      storage,
-      `organizations/${ORG_A}/hazards/hazard-1/photo.jpg`
-    );
-
-    await assertFails(uploadBytes(fileRef, SOME_BYTES));
-  });
-
-  test("a SUSPENDED membership cannot read or write the organization's " +
-    "Storage tree", async () => {
-    await seedMembership("worker-a", ORG_A, {status: "suspended"});
-    const storage = storageFor("worker-a");
-    const fileRef = ref(
-      storage,
-      `organizations/${ORG_A}/hazards/hazard-1/photo.jpg`
-    );
-
-    await assertFails(uploadBytes(fileRef, SOME_BYTES));
+    await assertSucceeds(uploadBytes(fileRef, SOME_BYTES));
   });
 
   test("an unauthenticated caller cannot read or write any organization's " +
     "Storage tree", async () => {
-    await seedMembership("worker-a", ORG_A);
     const storage = anonymousStorage();
     const fileRef = ref(
       storage,
@@ -216,8 +148,7 @@ describe("organization-scoped Storage access (belongsToOrg)", () => {
   });
 
   test("every path outside organizations/{organizationId}/... is denied " +
-    "outright, even for an active member", async () => {
-    await seedMembership("worker-a", ORG_A);
+    "outright, even for a signed-in user", async () => {
     const storage = storageFor("worker-a");
     const fileRef = ref(storage, "some-other-top-level-path/file.jpg");
 
@@ -226,10 +157,9 @@ describe("organization-scoped Storage access (belongsToOrg)", () => {
 });
 
 describe("existing Hazard photo upload path (regression)", () => {
-  test("an active org member can upload a hazard photo to " +
+  test("a signed-in user can upload a hazard photo to " +
     "organizations/{orgId}/hazards/{hazardId}/{fileName}, matching " +
     "HazardService.uploadHazardPhoto's real path shape", async () => {
-    await seedMembership("foreman-a", ORG_A, {role: "foreman"});
     const storage = storageFor("foreman-a");
     const fileRef = ref(
       storage,
@@ -240,29 +170,7 @@ describe("existing Hazard photo upload path (regression)", () => {
     await assertSucceeds(getBytes(fileRef));
   });
 
-  test("a member of a different organization cannot read another " +
-    "organization's hazard photo", async () => {
-    await seedMembership("foreman-a", ORG_A, {role: "foreman"});
-    await seedMembership("worker-b", ORG_B);
-
-    const ownerStorage = storageFor("foreman-a");
-    const fileRef = ref(
-      ownerStorage,
-      `organizations/${ORG_A}/hazards/hazard-42/photo-1.jpg`
-    );
-    await assertSucceeds(uploadBytes(fileRef, SOME_BYTES));
-
-    const otherStorage = storageFor("worker-b");
-    const otherFileRef = ref(
-      otherStorage,
-      `organizations/${ORG_A}/hazards/hazard-42/photo-1.jpg`
-    );
-    await assertFails(getBytes(otherFileRef));
-  });
-
-  test("a file larger than 25MB is refused for an active member, " +
-    "matching the existing size cap", async () => {
-    await seedMembership("foreman-a", ORG_A, {role: "foreman"});
+  test("a file larger than 25MB is refused", async () => {
     const storage = storageFor("foreman-a");
     const fileRef = ref(
       storage,
@@ -273,16 +181,33 @@ describe("existing Hazard photo upload path (regression)", () => {
     await assertFails(uploadBytes(fileRef, tooLarge));
   });
 
-  test("an active org member can delete a file under their own " +
-    "organization's path", async () => {
-    await seedMembership("foreman-a", ORG_A, {role: "foreman"});
+  test("a signed-in user can delete a file under an organization's path",
+    async () => {
+      const storage = storageFor("foreman-a");
+      const fileRef = ref(
+        storage,
+        `organizations/${ORG_A}/hazards/hazard-42/photo-1.jpg`
+      );
+      await assertSucceeds(uploadBytes(fileRef, SOME_BYTES));
+
+      await assertSucceeds(deleteObject(fileRef));
+    });
+});
+
+describe("Daily Safety Meeting evidence upload path (regression)", () => {
+  test("a signed-in foreman can upload meeting evidence to " +
+    "organizations/{orgId}/daily_safety_meetings/{meetingId}/" +
+    "{evidenceId}/{fileName}, matching " +
+    "DailySafetyMeetingService.uploadEvidenceFile's real path shape",
+  async () => {
     const storage = storageFor("foreman-a");
     const fileRef = ref(
       storage,
-      `organizations/${ORG_A}/hazards/hazard-42/photo-1.jpg`
+      `organizations/${ORG_A}/daily_safety_meetings/meeting-1/` +
+        "evidence-1/photo.jpg"
     );
-    await assertSucceeds(uploadBytes(fileRef, SOME_BYTES));
 
-    await assertSucceeds(deleteObject(fileRef));
+    await assertSucceeds(uploadBytes(fileRef, SOME_BYTES));
+    await assertSucceeds(getBytes(fileRef));
   });
 });

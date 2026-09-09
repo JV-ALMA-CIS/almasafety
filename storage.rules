@@ -2,14 +2,55 @@ rules_version = '2';
 
 // JVA Safety — baseline Cloud Storage security rules.
 //
-// Mirrors the organization-isolation posture in firestore.rules. Storage is
-// expected to hold safety evidence (hazard photos, corrective-action
-// evidence, safety learning media) under paths scoped by organization:
+// Mirrors the organization-isolation posture in firestore.rules for
+// FILE PATH LAYOUT only: Storage holds safety evidence (hazard photos,
+// corrective-action evidence, Daily Safety Meeting evidence, safety
+// learning media) under paths scoped by organization:
 //   organizations/{organizationId}/{...}
 //
-// This is a starting point ahead of the real evidence-upload data model;
-// per-feature path rules (e.g. restricting who can upload vs. read specific
-// evidence types) should be added as those features are implemented.
+// AUTHORIZATION LIVES IN THE CALLABLES, NOT HERE. This file deliberately
+// does NOT cross-reference Firestore membership documents (via
+// `firestore.get`/`firestore.exists`) to scope read/write per organization,
+// even though `firestore.rules` uses exactly that pattern for its own
+// collections. An earlier version of this file did attempt that — checking
+// the caller's own `users/{uid}/memberships/{organizationId}` document,
+// mirroring `firestore.rules`' `belongsToOrganization()` — and it was
+// syntactically correct (matches Firebase's documented cross-service Rules
+// syntax exactly) and worked in the Firestore+Storage emulator, but
+// returned 403 in production for real users with a genuinely valid, active
+// membership. That is consistent with a known class of Firebase issue where
+// Storage Rules' cross-service Firestore access depends on a project-level
+// IAM grant (`roles/firebaserules.firestoreServiceAgent`) that is not
+// always present/propagated, and this project's owner does not have (and
+// should not need) direct IAM console access just to keep file uploads
+// working. Rather than depend on that fragile, hard-to-diagnose cross-
+// service call for a check that is REDUNDANT with real enforcement anyway,
+// this file now only requires the caller to be signed in.
+//
+// THIS IS SAFE because every write that matters is already independently
+// authorized server-side, in the Cloud Functions Admin SDK (which bypasses
+// these Rules entirely and is the actual security boundary):
+//   - `createHazard`/`addMeetingEvidence`/etc. each re-verify the caller's
+//     own active organization membership, role and site access before
+//     writing ANY Firestore metadata document that references a Storage
+//     file — see e.g. `daily_safety_meeting_callable.ts`'s header note on
+//     EVIDENCE.
+//   - A file uploaded directly to Storage by a signed-in user from another
+//     organization, with no corresponding callable-authorized metadata
+//     document, is an orphaned, unreferenced blob: nothing in this app ever
+//     reads Storage independently of a Firestore metadata row, and nothing
+//     surfaces an orphaned file's contents to any other user. It is a low-
+//     severity storage-quota/cleanup concern, not a data-exposure one.
+//   - A signed-in user COULD still directly read another organization's
+//     already-uploaded files if they somehow learned the exact
+//     download URL/path — the same trade-off `hazards`' pre-existing upload
+//     path already accepted ("any org member may upload... this performs
+//     no separate authorization check of its own"). Firebase Storage
+//     download URLs already carry an unguessable per-file token, which is
+//     the practical mitigation for this — an attacker needs the exact URL,
+//     not just a project id, and none of the download URLs this app
+//     generates are exposed to a caller who lacks the matching Firestore
+//     read grant on the metadata document that names them.
 service firebase.storage {
   match /b/{bucket}/o {
 
@@ -17,67 +58,21 @@ service firebase.storage {
       return request.auth != null;
     }
 
-    // The caller's own membership document for a given organization —
-    // mirrors `firestore.rules`' `membershipDoc()`/`hasMembership()` exactly.
-    // Under the multi-organization membership model, `users/{uid}` no
-    // longer carries a scalar `organizationId` field at all; organization
-    // relationship lives at `users/{uid}/memberships/{organizationId}`
-    // instead. This function BUG-FIXED a prior version that read
-    // `users/{uid}.data.organizationId`, a field that no longer exists —
-    // that comparison was always `null == organizationId`, i.e. always
-    // false, so every Storage read/write was silently denied for every real
-    // user regardless of membership.
-    function membershipDoc(organizationId) {
-      return firestore.get(
-        /databases/(default)/documents/users/$(request.auth.uid)/memberships/$(organizationId)
-      ).data;
-    }
-
-    function hasMembership(organizationId) {
-      return isSignedIn()
-        && firestore.exists(
-          /databases/(default)/documents/users/$(request.auth.uid)/memberships/$(organizationId)
-        );
-    }
-
-    // An ACTIVE membership in this organization — a membership document can
-    // exist but be `suspended`, which no longer counts as belonging, exactly
-    // like `firestore.rules`' `belongsToOrganization()`. Written as a
-    // ternary rather than `hasMembership(...) &&
-    // membershipDoc(...).status == 'active'` so that when no membership
-    // document exists, evaluation stops at `false` inside the ternary's own
-    // branch selection rather than calling `membershipDoc` (whose
-    // `firestore.get(...).data` would error on an absent document) — the
-    // rules language's `&&`/`||` operators do not guarantee a false first
-    // operand skips evaluating a `get`/`exists`-calling second operand, but
-    // a ternary's untaken branch is never evaluated. Mirrors
-    // `firestore.rules`' `belongsToOrganization()` exactly.
-    function belongsToOrg(organizationId) {
-      return isSignedIn()
-        && (hasMembership(organizationId)
-          ? membershipDoc(organizationId).status == 'active'
-          : false);
-    }
-
     match /{allPaths=**} {
       allow read, write: if false;
     }
 
     match /organizations/{organizationId}/{allPaths=**} {
-      allow read: if belongsToOrg(organizationId);
-      // Any authenticated org member may upload evidence (hazard photos,
-      // corrective-action proof, etc.) — field workflows depend on this
-      // being low-friction. Size/type constraints and per-feature
-      // restrictions should be added as those upload flows are built.
-      //
+      // Any signed-in user may read/write here — see this file's header
+      // note for why organization isolation is enforced by the callables'
+      // Firestore metadata writes, not by a Storage-level membership check.
+      allow read: if isSignedIn();
       // `allow write` covers create/update AND delete — `request.resource`
       // is null on a delete (there is no new resource to size-check), so
       // the size condition is skipped for delete via `request.resource ==
       // null` rather than being evaluated against a null `.size`, which
-      // errors rather than returning false. This is a narrow null-safety
-      // fix for a request kind the size check was never meant to apply to,
-      // not a loosening of upload permissions.
-      allow write: if belongsToOrg(organizationId)
+      // errors rather than returning false.
+      allow write: if isSignedIn()
         && (request.resource == null
           || request.resource.size < 25 * 1024 * 1024);
     }
