@@ -1,0 +1,18 @@
+[
+  {
+    "_comment": "CORS config for the jva-safety.firebasestorage.app bucket, allowing the web app's origins to read (GET/HEAD) Storage download URLs directly (e.g. <img>/Image.network for meeting evidence thumbnails). Not applied by `firebase deploy` — GCS bucket CORS is separate from storage.rules and must be applied via the Storage client library or gsutil: `gsutil cors set storage.cors.json gs://jva-safety.firebasestorage.app` (or the Node @google-cloud/storage bucket.setCorsConfiguration(...) equivalent, since gsutil may not be usable on every machine). Re-apply whenever the web app's hosting origin changes (a new custom domain, etc.) or a new local dev port needs to be added.",
+    "origin": [
+      "https://jva-safety.web.app",
+      "https://jva-safety.firebaseapp.com",
+      "http://localhost:5000"
+    ],
+    "method": ["GET", "HEAD"],
+    "responseHeader": [
+      "Content-Type",
+      "Content-Length",
+      "Content-Disposition",
+      "Content-Encoding"
+    ],
+    "maxAgeSeconds": 3600
+  }
+]
