@@ -355,8 +355,8 @@ void main() {
       expect(find.text('PPE'), findsOneWidget);
     });
 
-    testWidgets('starting the meeting sends the recommended points and '
-        "today's activities to the existing callable", (tester) async {
+    testWidgets('meeting points are unchecked by default — the foreman '
+        "must actively select which apply today's meeting", (tester) async {
       await seedSite('site-1');
       await seedActivity('activity-1');
       await seedMeetingPoint('point-1');
@@ -371,6 +371,31 @@ void main() {
       expect(service.createCalls, hasLength(1));
       expect(service.createCalls.single['siteId'], 'site-1');
       expect(service.createCalls.single['activityIds'], ['activity-1']);
+      expect(service.createCalls.single['meetingPointIds'], <String>[]);
+    });
+
+    testWidgets('checking a meeting point includes it when starting the '
+        'meeting', (tester) async {
+      await seedSite('site-1');
+      await seedActivity('activity-1');
+      await seedMeetingPoint('point-1', title: 'Working at Height');
+      final service = _FakeMeetingService();
+
+      await tester.pumpWidget(wrap(role: AppRole.foreman, meetingService: service));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(CheckboxListTile, 'Working at Height'));
+      await tester.pumpAndSettle();
+
+      final tile = tester.widget<CheckboxListTile>(
+        find.widgetWithText(CheckboxListTile, 'Working at Height'),
+      );
+      expect(tile.value, isTrue, reason: 'checkbox should be checked after tap');
+
+      await tester.tap(find.widgetWithText(ElevatedButton, "Start Today's Meeting"));
+      await tester.pumpAndSettle();
+
+      expect(service.createCalls, hasLength(1));
       expect(service.createCalls.single['meetingPointIds'], ['point-1']);
     });
 

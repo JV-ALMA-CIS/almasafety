@@ -461,15 +461,24 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
   }
 }
 
-/// Step 1-2: resolves today's site activities and the recommended meeting
+/// Step 1-2: resolves today's site activities and the CANDIDATE meeting
 /// points (those whose `applicableActivities` overlaps today's activities,
-/// or which apply universally), and lets the foreman start the meeting.
+/// or which apply universally), and lets the foreman pick which of those
+/// candidates actually apply this morning before starting the meeting.
 ///
-/// The actual accept/remove/add step happens in [_MeetingWorkspace] after
-/// the meeting is created — the recommendation set here is only what the
+/// **Candidates are NOT pre-selected.** A Site Manager's meeting point
+/// library is typically built up once to cover every activity a site ever
+/// runs, not re-authored daily — on any given morning only a subset is
+/// actually relevant, so this screen makes the foreman actively check the
+/// ones covered today rather than starting with everything pre-checked and
+/// having to individually remove what doesn't apply. See this widget's
+/// state class for the selection mechanics.
+///
+/// The actual accept/remove/add step still happens in [_MeetingWorkspace]
+/// after the meeting is created — the selection here is only what the
 /// meeting is SEEDED with; nothing is final until the foreman edits and
 /// completes it.
-class _StartMeetingView extends StatelessWidget {
+class _StartMeetingView extends StatefulWidget {
   const _StartMeetingView({
     required this.organizationId,
     required this.siteId,
@@ -497,7 +506,53 @@ class _StartMeetingView extends StatelessWidget {
   }) onStart;
 
   @override
+  State<_StartMeetingView> createState() => _StartMeetingViewState();
+}
+
+class _StartMeetingViewState extends State<_StartMeetingView> {
+  /// The candidate meeting point ids the foreman has checked as covered
+  /// today. Reset whenever the candidate set itself changes (e.g. today's
+  /// activities load in) so a stale selection from a different candidate
+  /// list is never silently carried over — see [_syncSelection].
+  final Set<String> _selectedPointIds = {};
+  List<String>? _lastCandidateIds;
+
+  /// Keeps [_selectedPointIds] valid as the candidate set loads/changes:
+  /// drops any selected id no longer in [candidateIds] (e.g. a point was
+  /// deactivated), and otherwise leaves the foreman's choices untouched —
+  /// selection is deliberately NOT reset just because the stream re-emits
+  /// the same set.
+  void _syncSelection(List<String> candidateIds) {
+    final last = _lastCandidateIds;
+    if (last != null &&
+        last.length == candidateIds.length &&
+        last.toSet().containsAll(candidateIds)) {
+      return;
+    }
+    // A momentarily EMPTY candidate list is never trusted enough to prune an
+    // existing selection against — nested Firestore listeners (activities,
+    // then meeting points) can each re-subscribe and briefly re-emit an
+    // empty snapshot before their real data arrives, especially right after
+    // an unrelated setState elsewhere in this widget triggers a rebuild.
+    // Treating that transient emission as authoritative would silently wipe
+    // whatever the foreman had already checked. Only a genuinely non-empty,
+    // settled candidate list is allowed to prune selections that have
+    // fallen out of it (e.g. a point was deactivated).
+    if (candidateIds.isEmpty) return;
+    _lastCandidateIds = candidateIds;
+    _selectedPointIds.removeWhere((id) => !candidateIds.contains(id));
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final organizationId = widget.organizationId;
+    final siteId = widget.siteId;
+    final siteRepository = widget.siteRepository;
+    final activityRepository = widget.activityRepository;
+    final meetingPointRepository = widget.meetingPointRepository;
+    final isStarting = widget.isStarting;
+    final errorMessage = widget.errorMessage;
+    final onStart = widget.onStart;
     return StreamBuilder<Site?>(
       stream: siteRepository.watchById(siteId),
       builder: (context, siteSnapshot) {
@@ -531,10 +586,14 @@ class _StartMeetingView extends StatelessWidget {
                 final allPoints =
                     pointSnapshot.data ?? const <SafetyMeetingPoint>[];
                 final activityIds = activities.map((a) => a.id).toSet();
-                final recommended = allPoints.where((point) {
+                final candidates = allPoints.where((point) {
                   return point.applicableActivities.isEmpty ||
                       point.applicableActivities.any(activityIds.contains);
                 }).toList();
+                _syncSelection(candidates.map((p) => p.id).toList());
+                final selectedPoints = candidates
+                    .where((p) => _selectedPointIds.contains(p.id))
+                    .toList();
 
                 return ListView(
                   padding: const EdgeInsets.all(AppSpacing.md),
@@ -544,7 +603,7 @@ class _StartMeetingView extends StatelessWidget {
                     Text(site.name, style: AppTextStyles.bodyMedium),
                     const SizedBox(height: AppSpacing.md),
                     if (errorMessage != null) ...[
-                      AuthErrorBanner(message: errorMessage!),
+                      AuthErrorBanner(message: errorMessage),
                       const SizedBox(height: AppSpacing.md),
                     ],
                     Text(
@@ -561,20 +620,38 @@ class _StartMeetingView extends StatelessWidget {
                       _ListRow(icon: Icons.engineering_outlined, label: activity.name),
                     const SizedBox(height: AppSpacing.lg),
                     Text(
-                      'Recommended Meeting Points (${recommended.length})',
+                      'Safety Meeting Points '
+                      '(${_selectedPointIds.length}/${candidates.length} '
+                      'selected)',
                       style: AppTextStyles.titleLarge,
                     ),
+                    const SizedBox(height: AppSpacing.xs),
+                    const Text(
+                      "Check the points you'll actually cover this "
+                      "morning — the library covers every activity this "
+                      "site runs, not just today's.",
+                      style: AppTextStyles.bodyMedium,
+                    ),
                     const SizedBox(height: AppSpacing.sm),
-                    if (recommended.isEmpty)
+                    if (candidates.isEmpty)
                       const Text(
-                        'No recommended meeting points for these '
-                        'activities yet.',
+                        'No meeting points apply to these activities yet.',
                         style: AppTextStyles.bodyMedium,
                       ),
-                    for (final point in recommended)
-                      _ListRow(
-                        icon: Icons.list_alt_outlined,
-                        label: point.title,
+                    for (final point in candidates)
+                      CheckboxListTile(
+                        value: _selectedPointIds.contains(point.id),
+                        onChanged: (checked) => setState(() {
+                          if (checked ?? false) {
+                            _selectedPointIds.add(point.id);
+                          } else {
+                            _selectedPointIds.remove(point.id);
+                          }
+                        }),
+                        title: Text(point.title),
+                        subtitle: Text(point.category),
+                        controlAffinity: ListTileControlAffinity.leading,
+                        contentPadding: EdgeInsets.zero,
                       ),
                     const SizedBox(height: AppSpacing.lg),
                     ConstrainedBox(
@@ -589,7 +666,7 @@ class _StartMeetingView extends StatelessWidget {
                                   projectId: site.projectId,
                                   siteId: siteId,
                                   todaysActivities: activities,
-                                  recommendedPoints: recommended,
+                                  recommendedPoints: selectedPoints,
                                 ),
                         icon: const Icon(Icons.play_arrow_outlined),
                         label: Text(
