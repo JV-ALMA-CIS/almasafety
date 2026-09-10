@@ -5,6 +5,7 @@ import '../core/services/firestore_service.dart';
 import '../core/services/session_controller.dart';
 import '../core/widgets/responsive_scaffold.dart';
 import '../features/authentication/domain/app_role.dart';
+import '../features/daily_safety_meetings/presentation/daily_safety_meeting_history_screen.dart';
 import '../features/notifications/data/notification_repository.dart';
 import '../features/notifications/domain/app_notification.dart';
 import 'app_routes.dart';
@@ -82,6 +83,32 @@ class AppShell extends StatelessWidget {
       currentRoute: location,
       onNavSelected: (route) => context.go(route),
       actions: [
+        // A Foreman's own Meeting History — the entry point to find and
+        // resume a forgotten in-progress meeting (see
+        // DailySafetyMeetingScreen.resumeMeetingId's doc comment) — used to
+        // live as a button at the bottom of the meeting workspace's own
+        // scrollable content, easy to miss exactly when it mattered most
+        // (a Foreman who forgot to complete a meeting also isn't likely to
+        // go looking for a buried button). Shown here in the app bar
+        // instead: always visible the moment a Foreman opens Daily Safety
+        // Meetings, no scrolling required. Scoped to the exact route AND
+        // role a Foreman actually sees — [AppRoutes.dailySafetyMeetings]
+        // also serves [AdminDailySafetyMeetingsScreen] to a Site Manager,
+        // which has no foreman-workspace history concept to jump to.
+        if (location == AppRoutes.dailySafetyMeetings &&
+            membershipRole == AppRole.foreman &&
+            sessionController.activeOrganizationId != null)
+          IconButton(
+            tooltip: 'Meeting History',
+            icon: const Icon(Icons.history_outlined),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => DailySafetyMeetingHistoryScreen(
+                  organizationId: sessionController.activeOrganizationId!,
+                ),
+              ),
+            ),
+          ),
         if (sessionController.activeOrganizationId != null &&
             profile?.uid != null)
           _NotificationBellAction(

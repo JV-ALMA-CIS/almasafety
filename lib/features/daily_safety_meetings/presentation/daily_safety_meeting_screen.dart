@@ -722,23 +722,6 @@ class _StartMeetingViewState extends State<_StartMeetingView> {
                         style: AppTextStyles.bodyMedium,
                       ),
                     ],
-                    const SizedBox(height: AppSpacing.lg),
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(
-                        minHeight: AppSpacing.minTouchTarget,
-                      ),
-                      child: OutlinedButton.icon(
-                        onPressed: () => Navigator.of(context).push(
-                          MaterialPageRoute<void>(
-                            builder: (_) => DailySafetyMeetingHistoryScreen(
-                              organizationId: organizationId,
-                            ),
-                          ),
-                        ),
-                        icon: const Icon(Icons.history_outlined),
-                        label: const Text('View Meeting History'),
-                      ),
-                    ),
                   ],
                 );
               },
@@ -1271,23 +1254,6 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
                     style: AppTextStyles.bodyMedium,
                   ),
                 ],
-                const SizedBox(height: AppSpacing.lg),
-                ConstrainedBox(
-                  constraints: const BoxConstraints(
-                    minHeight: AppSpacing.minTouchTarget,
-                  ),
-                  child: OutlinedButton.icon(
-                    onPressed: () => Navigator.of(context).push(
-                      MaterialPageRoute<void>(
-                        builder: (_) => DailySafetyMeetingHistoryScreen(
-                          organizationId: widget.organizationId,
-                        ),
-                      ),
-                    ),
-                    icon: const Icon(Icons.history_outlined),
-                    label: const Text('View Meeting History'),
-                  ),
-                ),
               ],
             );
           },
