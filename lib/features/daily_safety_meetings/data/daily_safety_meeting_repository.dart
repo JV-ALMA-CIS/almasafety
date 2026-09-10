@@ -2,6 +2,7 @@ import '../../../core/constants/firestore_paths.dart';
 import '../../../core/services/firestore_repository.dart';
 import '../../../core/services/firestore_service.dart';
 import '../domain/daily_safety_meeting.dart';
+import '../domain/daily_safety_meeting_status.dart';
 
 /// Reads daily safety meetings from
 /// `organizations/{organizationId}/daily_safety_meetings`.
@@ -69,6 +70,22 @@ class DailySafetyMeetingRepository {
   Stream<List<DailySafetyMeeting>> watchAll() {
     return _repository.watchCollection(
       queryBuilder: (query) => query.orderBy('date', descending: true),
+    );
+  }
+
+  /// Streams every COMPLETED meeting in this organization, most recent
+  /// first — what [AdminDailySafetyMeetingsScreen] shows a Site Manager.
+  /// An in-progress meeting is a foreman's own working draft, not yet a
+  /// reviewable record: a Site Manager reviewing meetings should never see
+  /// one that has not been finished, since it may still be missing
+  /// attendance, points, or simply forgotten mid-toolbox-talk. The Foreman's
+  /// own history ([watchHistoryForForeman]) still shows every status, so
+  /// they can find and resume a forgotten in-progress meeting.
+  Stream<List<DailySafetyMeeting>> watchCompleted() {
+    return _repository.watchCollection(
+      queryBuilder: (query) => query
+          .where('status', isEqualTo: DailySafetyMeetingStatus.completed.id)
+          .orderBy('date', descending: true),
     );
   }
 

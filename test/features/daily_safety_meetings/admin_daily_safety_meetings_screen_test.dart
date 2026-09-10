@@ -29,7 +29,7 @@ class _ErroringMeetingRepository extends DailySafetyMeetingRepository {
     : super(organizationId: 'org-alpha');
 
   @override
-  Stream<List<DailySafetyMeeting>> watchAll() =>
+  Stream<List<DailySafetyMeeting>> watchCompleted() =>
       Stream.error(Exception('simulated Firestore failure'));
 }
 

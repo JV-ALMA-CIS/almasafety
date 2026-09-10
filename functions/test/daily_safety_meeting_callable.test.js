@@ -33,6 +33,8 @@ let db;
 let createDailySafetyMeeting;
 let recordMeetingAttendance;
 let addMeetingConcern;
+let updateMeetingConcern;
+let removeMeetingConcern;
 let setMeetingPointNote;
 let removeMeetingPointNote;
 let addMeetingEvidence;
@@ -51,6 +53,8 @@ beforeAll(() => {
     createDailySafetyMeeting,
     recordMeetingAttendance,
     addMeetingConcern,
+    updateMeetingConcern,
+    removeMeetingConcern,
     setMeetingPointNote,
     removeMeetingPointNote,
     addMeetingEvidence,
@@ -546,6 +550,73 @@ describe("addMeetingConcern", () => {
         )
       ).rejects.toThrow();
     });
+
+  test("a concern CAN still be added once the meeting is completed — " +
+    "deliberate exception, unlike update/remove", async () => {
+    await seedMeeting(ORG_A, "meeting-1", {status: "completed"});
+
+    const result = await addMeetingConcern.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        description: "Remembered this the next day",
+        category: "safety",
+      })
+    );
+
+    expect(result.meetingId).toBe("meeting-1");
+  });
+
+  test("updateMeetingConcern still refuses once the meeting is completed",
+    async () => {
+      await seedMeeting(ORG_A, "meeting-1");
+      const added = await addMeetingConcern.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          description: "Original",
+          category: "safety",
+        })
+      );
+      await db.doc(`organizations/${ORG_A}/daily_safety_meetings/meeting-1`)
+        .update({status: "completed"});
+
+      await expect(
+        updateMeetingConcern.run(
+          callRequest("foreman-a", {
+            organizationId: ORG_A,
+            meetingId: "meeting-1",
+            concernId: added.id,
+            description: "Edited after completion",
+          })
+        )
+      ).rejects.toThrow();
+    });
+
+  test("removeMeetingConcern still refuses once the meeting is completed",
+    async () => {
+      await seedMeeting(ORG_A, "meeting-1");
+      const added = await addMeetingConcern.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          description: "Original",
+          category: "safety",
+        })
+      );
+      await db.doc(`organizations/${ORG_A}/daily_safety_meetings/meeting-1`)
+        .update({status: "completed"});
+
+      await expect(
+        removeMeetingConcern.run(
+          callRequest("foreman-a", {
+            organizationId: ORG_A,
+            meetingId: "meeting-1",
+            concernId: added.id,
+          })
+        )
+      ).rejects.toThrow();
+    });
 });
 
 describe("setMeetingPointNote", () => {
@@ -632,23 +703,26 @@ describe("setMeetingPointNote", () => {
     ).rejects.toThrow();
   });
 
-  test("a note is refused once the meeting is completed", async () => {
+  test("a note CAN still be set once the meeting is completed — " +
+    "deliberate exception, matching addMeetingConcern/addMeetingEvidence",
+  async () => {
     await seedMeetingPoint(ORG_A, "point-1");
     await seedMeeting(ORG_A, "meeting-1", {
       meetingPointIds: ["point-1"],
       status: "completed",
     });
 
-    await expect(
-      setMeetingPointNote.run(
-        callRequest("foreman-a", {
-          organizationId: ORG_A,
-          meetingId: "meeting-1",
-          meetingPointId: "point-1",
-          note: "Should be refused.",
-        })
-      )
-    ).rejects.toThrow();
+    await setMeetingPointNote.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        meetingPointId: "point-1",
+        note: "Remembered this detail afterward.",
+      })
+    );
+
+    const note = await getPointNote(ORG_A, "meeting-1", "point-1");
+    expect(note.note).toBe("Remembered this detail afterward.");
   });
 });
 

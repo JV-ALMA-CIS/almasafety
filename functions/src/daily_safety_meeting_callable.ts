@@ -97,15 +97,16 @@
  * (`open`/`resolved`, always written `open` — resolving a concern is a later
  * feature's job, not this one's).
  *
- * Authorization is the SAME `requireOwnMeeting` chain as
- * `updateDailySafetyMeeting` and attendance: only the meeting's own foreman,
- * only while the meeting is still `inProgress`. Once a meeting is
- * `completed`, ALL THREE of these callables refuse — concerns become part of
- * the permanent meeting record at that point, and nothing (not even the
- * meeting's own foreman) may add, edit or remove one after the fact. This is
- * what "prevent silently altering historical meeting data" means at the data
- * layer: the callable itself is the only write path, and it hard-stops once
- * `status !== "inProgress"`.
+ * Authorization: only the meeting's own foreman, always — but NOT uniformly
+ * `inProgress`-only. `addMeetingConcern` deliberately ALSO accepts a
+ * COMPLETED meeting (a worker may raise something with the foreman a day
+ * later, or the foreman remembers something back at the office) — see that
+ * callable's own doc comment for why. `updateMeetingConcern`/
+ * `removeMeetingConcern` remain `inProgress`-only: a concern once logged can
+ * never be edited or retracted after the fact, completed or not. This is
+ * what "prevent silently altering historical meeting data" means at the
+ * data layer for THOSE two — the callable itself is the only write path,
+ * and it hard-stops once `status !== "inProgress"`.
  *
  * DISCUSSION CONTEXT (point notes)
  *
@@ -123,11 +124,13 @@
  * checkbox alone proves nothing about whether it was genuinely discussed.
  * Optional: a meeting completes with or without notes on any given point.
  *
- * Authorization is the SAME `requireInProgressOwnMeeting` chain as
- * concerns/attendance. `setMeetingPointNote` additionally confirms the named
- * `meetingPointId` is currently on the meeting's own `meetingPointIds` — a
- * note is meaningless for a point that was never actually recorded as
- * covered. Once `completed`, both callables refuse, exactly like concerns.
+ * Authorization: only the meeting's own foreman. `setMeetingPointNote`
+ * deliberately ALSO accepts a COMPLETED meeting, matching
+ * `addMeetingConcern`'s exception — see that callable's doc comment. It
+ * additionally confirms the named `meetingPointId` is currently on the
+ * meeting's own `meetingPointIds` — a note is meaningless for a point that
+ * was never actually recorded as covered. `removeMeetingPointNote` remains
+ * `inProgress`-only.
  *
  * EVIDENCE
  *
@@ -797,14 +800,22 @@ async function requireOwnMeetingConcern(
 }
 
 /**
- * Adds a new concern to an in-progress meeting, at
+ * Adds a new concern to a meeting, at
  * `daily_safety_meetings/{id}/concerns/{concernId}`.
  *
- * Only the meeting's own foreman may call this (see
- * `requireInProgressOwnMeeting`). `organizationId` and `siteId` are always
- * copied from the freshly-fetched meeting document, never accepted from the
- * request, so a concern can never be created for an organization/site other
- * than the one its own meeting belongs to.
+ * Only the meeting's own foreman may call this (see `requireOwnMeeting`).
+ * `organizationId` and `siteId` are always copied from the freshly-fetched
+ * meeting document, never accepted from the request, so a concern can never
+ * be created for an organization/site other than the one its own meeting
+ * belongs to.
+ *
+ * **DELIBERATE EXCEPTION, same as `addMeetingEvidence`: a concern may still
+ * be ADDED to a COMPLETED meeting.** A worker may raise something with the
+ * foreman a day after the toolbox talk, or the foreman may simply remember
+ * something once back at the office — see this file's header note. Only
+ * ADDING is exempted; `updateMeetingConcern`/`removeMeetingConcern` below
+ * remain `inProgress`-only, so a concern once logged cannot be edited or
+ * retracted after the fact, completed meeting or not.
  */
 export const addMeetingConcern = onCall(async (request) => {
   const organizationId = requireString(request, "organizationId");
@@ -815,11 +826,7 @@ export const addMeetingConcern = onCall(async (request) => {
   const foremanId = request.auth?.uid;
   if (!foremanId) throw denied();
 
-  const meeting = await requireInProgressOwnMeeting(
-    organizationId,
-    meetingId,
-    foremanId
-  );
+  const meeting = await requireOwnMeeting(organizationId, meetingId, foremanId);
 
   const ref = getFirestore()
     .collection(
@@ -939,8 +946,7 @@ function requireMeetingPointOnMeeting(
 }
 
 /**
- * Sets (creates or overwrites) the discussion note for one meeting point on
- * an in-progress meeting, at
+ * Sets (creates or overwrites) the discussion note for one meeting point, at
  * `daily_safety_meetings/{id}/point_notes/{meetingPointId}` — a
  * DETERMINISTIC id keyed by the meeting point itself (mirrors
  * `attendance/{workerId}`'s one-record-per-key shape, unlike `concerns`'
@@ -956,11 +962,11 @@ function requireMeetingPointOnMeeting(
  * on any given point, exactly like meeting points themselves are optional
  * beyond the one-activity-one-point completion gate.
  *
- * Authorization is the SAME `requireInProgressOwnMeeting` chain as
- * concerns/attendance: only the meeting's own foreman, only while the
- * meeting is still `inProgress`. Once `completed`, this callable refuses —
- * notes become part of the permanent meeting record at that point, exactly
- * like concerns.
+ * **DELIBERATE EXCEPTION, same as `addMeetingConcern`/`addMeetingEvidence`:
+ * a note may still be SET on a COMPLETED meeting** — a foreman may
+ * remember additional context worth recording after the fact. Authorization
+ * is `requireOwnMeeting`, not `requireInProgressOwnMeeting`. Only
+ * `removeMeetingPointNote` below remains `inProgress`-only.
  */
 export const setMeetingPointNote = onCall(async (request) => {
   const organizationId = requireString(request, "organizationId");
@@ -971,11 +977,7 @@ export const setMeetingPointNote = onCall(async (request) => {
   const foremanId = request.auth?.uid;
   if (!foremanId) throw denied();
 
-  const meeting = await requireInProgressOwnMeeting(
-    organizationId,
-    meetingId,
-    foremanId
-  );
+  const meeting = await requireOwnMeeting(organizationId, meetingId, foremanId);
   requireMeetingPointOnMeeting(meeting, meetingPointId);
 
   const ref = getFirestore().doc(

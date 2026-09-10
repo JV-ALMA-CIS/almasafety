@@ -182,7 +182,7 @@ class _AdminDailySafetyMeetingsScreenState
     }
 
     return StreamBuilder<List<DailySafetyMeeting>>(
-      stream: _meetingRepository.watchAll(),
+      stream: _meetingRepository.watchCompleted(),
       builder: (context, meetingSnapshot) {
         final meetings = meetingSnapshot.data ?? const <DailySafetyMeeting>[];
         final isLoading =

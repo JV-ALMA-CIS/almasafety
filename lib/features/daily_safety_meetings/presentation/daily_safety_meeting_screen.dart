@@ -73,6 +73,7 @@ String _today() {
 class DailySafetyMeetingScreen extends StatefulWidget {
   const DailySafetyMeetingScreen({
     super.key,
+    this.resumeMeetingId,
     this.meetingRepository,
     this.meetingService,
     this.activityRepository,
@@ -89,6 +90,15 @@ class DailySafetyMeetingScreen extends StatefulWidget {
     this.evidenceRepositoryBuilder,
     this.imagePicker,
   });
+
+  /// When given, this screen resumes that SPECIFIC meeting instead of
+  /// resolving "today's meeting" for the signed-in foreman's site — how a
+  /// Foreman reopens a past, forgotten in-progress meeting from
+  /// [DailySafetyMeetingHistoryScreen] to finish and complete it days
+  /// later. Server-side authorization is unaffected either way: every
+  /// callable this screen calls independently re-verifies the caller is
+  /// that specific meeting's own foreman.
+  final String? resumeMeetingId;
 
   /// Injected in tests. Production builds pass nothing and the state
   /// constructs the real dependencies scoped to the signed-in foreman's
@@ -378,13 +388,26 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
     }
 
     final date = _today();
+    final resumeMeetingId = widget.resumeMeetingId;
+
+    // Resuming a specific past meeting (from history) reads that one
+    // document directly rather than the "today's meeting" query — see
+    // [DailySafetyMeetingScreen.resumeMeetingId]'s doc comment. Wrapped to
+    // the same List<DailySafetyMeeting> shape the rest of this build()
+    // already expects, so the branch below is unchanged either way.
+    final uid = profile!.uid;
+    final meetingStream = resumeMeetingId != null
+        ? _meetingRepositoryFor(organizationId)
+            .watchById(resumeMeetingId)
+            .map((m) => m == null ? const <DailySafetyMeeting>[] : [m])
+        : _meetingRepositoryFor(organizationId).watchForForemanSiteAndDate(
+            foremanId: uid,
+            siteId: siteId,
+            date: date,
+          );
 
     return StreamBuilder<List<DailySafetyMeeting>>(
-      stream: _meetingRepositoryFor(organizationId).watchForForemanSiteAndDate(
-        foremanId: profile!.uid,
-        siteId: siteId,
-        date: date,
-      ),
+      stream: meetingStream,
       builder: (context, meetingSnapshot) {
         if (meetingSnapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
@@ -407,8 +430,10 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
           return _MeetingWorkspace(
             meeting: existing,
             organizationId: organizationId,
-            siteId: siteId,
-            currentUid: profile.uid,
+            // The MEETING's own site, not the foreman's current one — they
+            // can differ when resuming a past meeting after a reassignment.
+            siteId: existing.siteId,
+            currentUid: uid,
             meetingService: _meetingService,
             attendanceService: _attendanceService,
             concernService: _concernService,
@@ -443,6 +468,21 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
             isSaving: _isSaving,
             errorMessage: _errorMessage,
             onSave: _save,
+          );
+        }
+
+        if (resumeMeetingId != null) {
+          // A specific meeting was requested (resuming from history) but no
+          // longer exists/resolves — an error, not "start a new one".
+          return const Center(
+            child: Padding(
+              padding: EdgeInsets.all(AppSpacing.lg),
+              child: Text(
+                'That meeting could not be found.',
+                style: AppTextStyles.bodyMedium,
+                textAlign: TextAlign.center,
+              ),
+            ),
           );
         }
 
@@ -971,7 +1011,65 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
   @override
   Widget build(BuildContext context) {
     final meeting = widget.meeting;
+
+    return PopScope(
+      // Only intercept navigating away while the meeting is genuinely
+      // unfinished — a completed meeting has nothing left to lose by
+      // leaving, so this never interrupts the common case.
+      canPop: meeting.isCompleted,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        final shouldLeave = await _confirmLeaveIncomplete(context);
+        if (shouldLeave && context.mounted) {
+          Navigator.of(context).pop();
+        }
+      },
+      child: _buildWorkspaceBody(context),
+    );
+  }
+
+  /// Prompts before leaving an INCOMPLETE meeting — a foreman closing the
+  /// tab, tapping back, or navigating elsewhere mid-toolbox-talk should be
+  /// warned, not silently leave a half-recorded meeting stuck `inProgress`
+  /// indefinitely (nothing is lost either way — it can always be resumed
+  /// from [DailySafetyMeetingHistoryScreen] — but a deliberate choice beats
+  /// an accidental one). Returns true if the foreman confirms leaving
+  /// anyway.
+  Future<bool> _confirmLeaveIncomplete(BuildContext context) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Meeting not completed'),
+        content: const Text(
+          "This meeting hasn't been marked complete yet. You can finish "
+          'it later from Meeting History, but the toolbox talk record '
+          "isn't final until you tap Complete Meeting.",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Stay and finish'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Leave anyway'),
+          ),
+        ],
+      ),
+    );
+    return result ?? false;
+  }
+
+  Widget _buildWorkspaceBody(BuildContext context) {
+    final meeting = widget.meeting;
+    // Activities/points/attendance freeze hard at completion. Concerns and
+    // meeting-point discussion notes are a deliberate exception — a
+    // foreman may still ADD (not edit/remove) either after completion; see
+    // `functions/src/daily_safety_meeting_callable.ts`'s header note. This
+    // is UI convenience only, matching every other canEdit gate on this
+    // screen: the real enforcement is server-side in the callables.
     final canEdit = !meeting.isCompleted;
+    const canAddConcernOrNote = true;
 
     return StreamBuilder<List<Activity>>(
       stream: widget.activityRepository.watchBySite(widget.siteId),
@@ -1080,6 +1178,7 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
                                 point: point,
                                 note: notesByPointId[pointId]?.note,
                                 canEdit: canEdit,
+                                canEditNote: canAddConcernOrNote,
                                 isSaving: widget.isSaving,
                                 onRemovePoint: () => _removePoint(point),
                                 onSetNote: (note) => _setNote(point, note),
@@ -1121,6 +1220,7 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
                   meeting: meeting,
                   currentUid: widget.currentUid,
                   canEdit: canEdit,
+                  canAdd: canAddConcernOrNote,
                   isSaving: widget.isSaving,
                   onAdd: _addConcern,
                   onEdit: _editConcern,
@@ -1208,6 +1308,7 @@ class _MeetingPointTile extends StatefulWidget {
     required this.point,
     required this.note,
     required this.canEdit,
+    required this.canEditNote,
     required this.isSaving,
     required this.onRemovePoint,
     required this.onSetNote,
@@ -1219,7 +1320,18 @@ class _MeetingPointTile extends StatefulWidget {
   /// The point's current discussion note, or null if none has been
   /// recorded — optional, matching every other field on this workspace.
   final String? note;
+
+  /// Whether the point itself (checkbox/remove) can still be edited — false
+  /// once the meeting is completed, since that record is frozen.
   final bool canEdit;
+
+  /// Whether the discussion note can still be SET — true even once the
+  /// meeting is completed, matching `setMeetingPointNote`'s deliberate
+  /// post-completion exception (a foreman may remember something worth
+  /// recording later). Clearing an existing note to empty still calls
+  /// `onRemoveNote`, which stays gated by [canEdit] server-side
+  /// (`removeMeetingPointNote` is `inProgress`-only) — see [_submitNote].
+  final bool canEditNote;
   final bool isSaving;
   final VoidCallback onRemovePoint;
   final ValueChanged<String> onSetNote;
@@ -1253,7 +1365,12 @@ class _MeetingPointTileState extends State<_MeetingPointTile> {
   void _submitNote() {
     final text = _noteController.text.trim();
     if (text.isEmpty) {
-      if (widget.note != null) widget.onRemoveNote();
+      // Clearing to empty is a REMOVAL, which stays inProgress-only
+      // server-side — see [_MeetingPointTile.canEditNote]'s doc comment.
+      // If the meeting has already completed, silently keep the existing
+      // note rather than attempting (and failing) a call the UI already
+      // should not have offered.
+      if (widget.note != null && widget.canEdit) widget.onRemoveNote();
     } else {
       widget.onSetNote(text);
     }
@@ -1349,7 +1466,7 @@ class _MeetingPointTileState extends State<_MeetingPointTile> {
                 ),
                 child: hasNote
                     ? InkWell(
-                        onTap: widget.canEdit && !widget.isSaving
+                        onTap: widget.canEditNote && !widget.isSaving
                             ? () => setState(() => _isEditingNote = true)
                             : null,
                         child: Row(
@@ -1367,12 +1484,12 @@ class _MeetingPointTileState extends State<_MeetingPointTile> {
                                 style: AppTextStyles.bodyMedium,
                               ),
                             ),
-                            if (widget.canEdit)
+                            if (widget.canEditNote)
                               const Icon(Icons.edit_outlined, size: 16),
                           ],
                         ),
                       )
-                    : (widget.canEdit
+                    : (widget.canEditNote
                         ? TextButton.icon(
                             onPressed: widget.isSaving
                                 ? null
@@ -1965,13 +2082,16 @@ class _AttendanceButton extends StatelessWidget {
 /// (short description + a fixed category), review what has been recorded,
 /// and edit/remove any of it before completing the meeting.
 ///
-/// **Once the meeting is completed, this section becomes read-only.**
-/// `addMeetingConcern`/`updateMeetingConcern`/`removeMeetingConcern` all
-/// refuse server-side once the meeting's own `status` is no longer
-/// `inProgress` — [canEdit] (derived from that same status one level up in
-/// [_MeetingWorkspace]) only mirrors that refusal in the UI so a foreman
-/// never sees a control that would fail anyway; it grants no capability of
-/// its own.
+/// **Editing/removing an existing concern locks once the meeting is
+/// completed; ADDING a new one does not.** `updateMeetingConcern`/
+/// `removeMeetingConcern` refuse server-side once the meeting's own
+/// `status` is no longer `inProgress` — [canEdit] (derived from that same
+/// status one level up in [_MeetingWorkspace]) mirrors that refusal in the
+/// UI. `addMeetingConcern` deliberately does NOT refuse on a completed
+/// meeting — [canAdd] mirrors that exception instead, so the "Add Concern"
+/// form stays available even once [canEdit] is false. Neither flag grants
+/// any capability of its own; both only mirror what the callables already
+/// enforce.
 class _ConcernsSection extends StatefulWidget {
   const _ConcernsSection({
     required this.concernRepository,
@@ -1980,6 +2100,7 @@ class _ConcernsSection extends StatefulWidget {
     required this.meeting,
     required this.currentUid,
     required this.canEdit,
+    required this.canAdd,
     required this.isSaving,
     required this.onAdd,
     required this.onEdit,
@@ -1993,6 +2114,7 @@ class _ConcernsSection extends StatefulWidget {
   final DailySafetyMeeting meeting;
   final String currentUid;
   final bool canEdit;
+  final bool canAdd;
   final bool isSaving;
   final Future<void> Function(String description, MeetingConcernCategory category)
   onAdd;
@@ -2115,7 +2237,7 @@ class _ConcernsSectionState extends State<_ConcernsSection> {
                   onCreateCorrectiveAction: () =>
                       _openCreateCorrectiveActionDialog(concern),
                 ),
-            if (widget.canEdit) ...[
+            if (widget.canAdd) ...[
               const SizedBox(height: AppSpacing.sm),
               Wrap(
                 spacing: AppSpacing.sm,
