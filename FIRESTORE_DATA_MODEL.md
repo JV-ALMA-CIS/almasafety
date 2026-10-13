@@ -521,6 +521,8 @@ status: string                 // draft | completed
 completedAt: Timestamp?
 crewOutcome: string?           // go | goCorrected | stop — the Foreman's crew result, set on completion (null for meetings completed before this existed)
 crewOutcomeNote: string?       // required for goCorrected / stop
+ahaIds: string[]               // accepted risk_assessments (§7D) covered with the crew
+ahasCovered: [{ id, featureOfWork, revision }]  // snapshot of ahaIds when recorded
 createdAt, createdBy, updatedAt, updatedBy
 ```
 
@@ -528,6 +530,14 @@ createdAt, createdBy, updatedAt, updatedBy
 `crewOutcome` (the app always sends one) using the same three values as a
 worker's Pre-Start Check (§6A). A note is required for anything but `go`. A
 `stop` notifies every active Site Manager of the organization.
+
+**Risk assessment (AHA) coverage.** The Safety Plan: Foremen cover the
+activity hazard analysis with the crew before work begins. The Foreman ticks
+each accepted AHA for the meeting's site that was covered
+(`updateDailySafetyMeeting` `ahaIds` — each must be an accepted AHA for that
+site). `completeDailySafetyMeeting` refuses (`failed-precondition`) while
+`ahaIds` is empty and the site has any accepted AHA; a site with none is not
+held up.
 
 **Auditability rule:** once `status == "completed"`, the document becomes immutable to clients (no field edits, no deletes) — enforced in `firestore.rules`, not just app logic. Corrections happen via new corrective actions/concerns, never by editing history.
 
@@ -801,6 +811,74 @@ date identified, description, person responsible, target date, date
 resolved). Sign-off: a Site Manager/Admin other than the inspector. Reads:
 Admin/Site Manager/Foreman of the organization only (excluded from the
 operational catch-all read rule).
+
+## 7C. Weekly employee and monthly supervisory safety meetings
+
+### `organizations/{orgId}/safety_meetings/{meetingId}`  *(callable-only)*
+The Safety Plan's weekly employee safety meeting (Thursday 08:00) and monthly
+supervisory safety meeting (Thursday 08:30). Separate from
+`daily_safety_meetings` (the Foreman's daily toolbox talk, with its learning
+gate, crew GO/STOP and "today's meeting"). Recorded once, after the meeting,
+by `recordSafetyMeeting` (`safety_meeting_callable.ts`); never updated or
+deleted.
+
+```
+organizationId: string
+kind: string                  // weeklyEmployee | monthlySupervisory
+siteId: string?               // null only for a monthly meeting covering every site
+siteName: string?
+date: string                  // yyyy-MM-dd the meeting was held (not future, ≤31 days back)
+topics: string[]              // subjects covered (1–40)
+attendeeUids: string[]        // active members of the organization
+attendeeNames: map<uid, name> // stored at recording time
+otherAttendees: string[]      // people without an account, by name
+attendeeCount: number         // attendeeUids + otherAttendees (≥1)
+concerns: string[]
+notes: string?
+facilitatorUid: string        // the caller
+facilitatorName: string?
+createdAt: Timestamp
+```
+
+Who records: weekly — a Foreman at one of their own sites, or a Site
+Manager/Admin at any site; monthly — Site Manager/Admin only. Reads:
+Admin/Site Manager/Foreman of the organization only (excluded from the
+operational catch-all read rule).
+
+## 7D. Risk assessments (Activity Hazard Analyses)
+
+### `organizations/{orgId}/risk_assessments/{id}`  *(callable-only)*
+The Safety Plan's AHA (Section 10, Appendix X; EM 385-1-1 Figure 1-2): one per
+phase / feature of work (the plan lists "Removals" and "Roof construction").
+Written by `risk_assessment_callable.ts`.
+
+```
+organizationId, siteId, siteName, projectId
+featureOfWork: string          // e.g. "Removals"
+activity, contractNo, location: string?
+estimatedStartDate: string?    // yyyy-MM-dd
+steps: [{ id, step, hazards: string[], controls: string[] }]   // principal steps, in order
+equipment: string[]
+inspectionRequirements: string[]
+trainingRequirements: string[]
+status: string                 // draft | accepted | superseded
+revision: number               // 1, 2, ...
+previousId: string?            // the revision this one replaces
+revisionDraftId: string?       // on an accepted AHA: the revision being prepared
+supersededById: string?, supersededAt: Timestamp?
+preparedByUid, preparedByName  // whoever last saved the draft
+acceptedByUid, acceptedByName, acceptedAt
+corName: string?, acceptanceNote: string?
+createdAt, updatedAt
+```
+
+`saveRiskAssessment` (create/edit a draft) and `reviseRiskAssessment`/
+`discardRiskAssessmentDraft`: Site Manager/Admin. `acceptRiskAssessment`: a
+Site Manager/Admin other than the preparer, once every step has a hazard and a
+control and the three lists are filled in; accepting a revision supersedes
+the previous one. An accepted AHA is never edited. Reads: every member of the
+organization (operational catch-all); the app shows Workers and Foremen only
+the accepted AHAs for their own sites.
 
 ## 8. Safety Alerts & Notifications
 

@@ -1549,6 +1549,23 @@ Site inspections (October 2026): daily site inspection and weekly HSE
   another Site Manager/Admin, and a Deficiency Log. See
   FIRESTORE_DATA_MODEL.md §7B.
 
+Weekly & monthly safety meetings (October 2026): the Safety Plan's weekly
+  employee meeting (Thursday 08:00) and monthly supervisory meeting
+  (Thursday 08:30), recorded after they are held — date, site, subjects
+  (Section 6a checklist plus others), attendees, concerns, notes — with a
+  "held this week / this month" status. Separate from Daily Safety
+  Meetings. See FIRESTORE_DATA_MODEL.md §7C.
+
+Risk assessments (October 2026): the Safety Plan's Activity Hazard Analyses
+  (Section 10) — principal steps with hazards and controls, equipment,
+  inspection and training requirements; standard drafts for Removals and
+  Roof construction; prepared by a Site Manager/Admin, accepted by another,
+  revised as new revisions. Everyone sees the accepted AHAs for their
+  sites. The Daily Safety Meeting shows the site's accepted AHAs; the
+  Foreman ticks the ones covered with the crew, and a site with an accepted
+  AHA cannot complete its meeting until one is covered. See
+  FIRESTORE_DATA_MODEL.md §7D and §6.
+
 NOT YET IMPLEMENTED
 Gemini integration (recommendations, summaries, hazard classification,
   trend analysis, content assistance — see §30-32)

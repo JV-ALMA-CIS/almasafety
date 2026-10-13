@@ -56,6 +56,9 @@ import '../../../core/widgets/status_badge.dart';
 import '../../pre_start_checks/presentation/crew_outcome_dialog.dart';
 import '../../pre_start_checks/presentation/pre_start_outcome_style.dart';
 import '../../pre_start_checks/presentation/pre_start_visuals.dart';
+import '../../risk_assessments/data/risk_assessment_repository.dart';
+import '../../risk_assessments/domain/risk_assessment.dart';
+import '../../risk_assessments/presentation/risk_assessments_screen.dart';
 import 'daily_safety_meeting_history_screen.dart';
 import 'worker_todays_meeting_card.dart';
 import '../../../core/widgets/color_choice_chips.dart';
@@ -110,6 +113,7 @@ class DailySafetyMeetingScreen extends StatefulWidget {
     this.evidenceRepositoryBuilder,
     this.imagePicker,
     this.workerLearningRepository,
+    this.riskAssessmentRepository,
     this.approvalService,
     this.activityAdminService,
   });
@@ -180,6 +184,10 @@ class DailySafetyMeetingScreen extends StatefulWidget {
   /// the moment they are completed — see [_LearningGateBanner].
   final WorkerLearningRepository? workerLearningRepository;
 
+  /// Injected in tests: the site's risk assessments (AHAs) the Foreman
+  /// covers with the crew.
+  final RiskAssessmentRepository? riskAssessmentRepository;
+
   /// Injected in tests: resolves an attendee's uid to a display name for
   /// [_AttendanceSection] — see [AdminDailySafetyMeetingsScreen]'s matching
   /// `_nameFor` pattern.
@@ -217,6 +225,7 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
   ActivityAssignmentRepository? _activityAssignmentRepository;
   CorrectiveActionRepository? _correctiveActionRepository;
   WorkerLearningRepository? _workerLearningRepository;
+  RiskAssessmentRepository? _riskAssessmentRepository;
 
   String? _errorMessage;
   bool _isSaving = false;
@@ -371,6 +380,21 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
           organizationId: organizationId,
         );
     _workerLearningRepository = created;
+    return created;
+  }
+
+  RiskAssessmentRepository _riskAssessmentRepositoryFor(String organizationId) {
+    final existing = _riskAssessmentRepository;
+    if (existing != null && existing.organizationId == organizationId) {
+      return existing;
+    }
+    final created =
+        widget.riskAssessmentRepository ??
+        RiskAssessmentRepository(
+          firestoreService: FirestoreService(),
+          organizationId: organizationId,
+        );
+    _riskAssessmentRepository = created;
     return created;
   }
 
@@ -624,6 +648,9 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
             ),
             imagePicker: _imagePicker,
             workerLearningRepository: _workerLearningRepositoryFor(
+              organizationId,
+            ),
+            riskAssessmentRepository: _riskAssessmentRepositoryFor(
               organizationId,
             ),
             members: _members,
@@ -990,6 +1017,7 @@ class _MeetingWorkspace extends StatefulWidget {
     required this.evidenceRepository,
     required this.imagePicker,
     required this.workerLearningRepository,
+    required this.riskAssessmentRepository,
     required this.members,
     required this.isSaving,
     required this.errorMessage,
@@ -1017,6 +1045,7 @@ class _MeetingWorkspace extends StatefulWidget {
   final MeetingEvidenceRepository evidenceRepository;
   final ImagePicker imagePicker;
   final WorkerLearningRepository workerLearningRepository;
+  final RiskAssessmentRepository riskAssessmentRepository;
 
   /// The organization's active members — resolves an attendee's uid to a
   /// display name. See [_DailySafetyMeetingScreenState._loadMembers].
@@ -1038,6 +1067,32 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
         widget.organizationId,
         widget.meeting.id,
         activityIds: ids.toList(),
+      ),
+    );
+  }
+
+  /// Ticks / unticks an accepted risk assessment (AHA) as covered with the
+  /// crew at this meeting.
+  Future<void> _toggleAha(RiskAssessment aha) {
+    final ids = {...widget.meeting.ahaIds};
+    if (!ids.remove(aha.id)) ids.add(aha.id);
+    return widget.onSave(
+      () => widget.meetingService.updateDailySafetyMeeting(
+        widget.organizationId,
+        widget.meeting.id,
+        ahaIds: ids.toList(),
+      ),
+    );
+  }
+
+  void _openAha(String id) {
+    Navigator.of(context, rootNavigator: true).push(
+      MaterialPageRoute<void>(
+        builder: (_) => RiskAssessmentDetailScreen(
+          organizationId: widget.organizationId,
+          id: id,
+          repository: widget.riskAssessmentRepository,
+        ),
       ),
     );
   }
@@ -1335,260 +1390,444 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
             final allPoints =
                 pointSnapshot.data ?? const <SafetyMeetingPoint>[];
 
-            return ListView(
-              // Remembers the scroll position across rebuilds — see
-              // 'meeting-start' above.
-              key: const PageStorageKey('meeting-workspace'),
-              padding: const EdgeInsets.all(AppSpacing.md),
-              children: [
-                FeatureHeader(
-                  title: meeting.isCompleted
-                      ? "Today's Meeting — Completed"
-                      : "Today's Meeting — In Progress",
-                  icon: meeting.isCompleted ? Icons.task_alt : Icons.groups,
-                  color: meeting.isCompleted
-                      ? AppColors.success
-                      : AppColors.meetings,
-                  chips: [
-                    FeatureChip(icon: Icons.event, label: meeting.date),
-                    FeatureChip(
-                      icon: Icons.handyman,
-                      label:
-                          '${meeting.activityIds.length} '
-                          '${meeting.activityIds.length == 1 ? 'activity' : 'activities'}',
-                    ),
-                    FeatureChip(
-                      icon: Icons.checklist,
-                      label:
-                          '${meeting.meetingPointIds.length} meeting '
-                          '${meeting.meetingPointIds.length == 1 ? 'point' : 'points'}',
-                    ),
-                  ],
-                  trailing: meeting.crewOutcome == null
-                      ? null
-                      : CrewOutcomeBadge(outcome: meeting.crewOutcome!),
-                ),
-                const SizedBox(height: AppSpacing.lg),
-                if (widget.errorMessage != null) ...[
-                  AuthErrorBanner(message: widget.errorMessage!),
-                  const SizedBox(height: AppSpacing.md),
-                ],
-                const FeatureSectionTitle(
-                  title: 'Activities Discussed',
-                  icon: Icons.handyman,
-                  color: AppColors.projects,
-                ),
-                const SizedBox(height: AppSpacing.sm),
-                for (final activity in siteActivities)
-                  _ColorCheckTile(
-                    checked: meeting.activityIds.contains(activity.id),
-                    emoji: hazardEmojiFor(activity.name),
-                    title: activity.name,
-                    onChanged: canEdit && !widget.isSaving
-                        ? (_) => _toggleActivity(activity)
-                        : null,
-                  ),
-                const SizedBox(height: AppSpacing.md),
-                FeatureSectionTitle(
-                  title: 'Safety Meeting Points',
-                  icon: Icons.checklist,
-                  color: AppColors.meetings,
-                  trailing: !canEdit
-                      ? null
-                      : TextButton.icon(
-                          onPressed: widget.isSaving
-                              ? null
-                              : () => _openAddPointPicker(
-                                  allPoints
-                                      .where(
-                                        (p) => !meeting.meetingPointIds
-                                            .contains(p.id),
-                                      )
-                                      .toList(),
-                                ),
-                          icon: const Icon(Icons.add_outlined),
-                          label: const Text('Add Safety Point'),
-                        ),
-                ),
-                const SizedBox(height: AppSpacing.sm),
-                // "Recommended" = every point currently on this meeting,
-                // whether seeded at start or added since — checking a point
-                // marks it covered; unchecking or removing takes it off the
-                // meeting entirely. There is no separate "covered" flag: a
-                // point on the meeting IS the covered set, matching
-                // `meetingPointIds`'s single source of truth.
-                //
-                // Each point also carries an optional DISCUSSION NOTE — what
-                // was actually explained/covered about it, kept deliberately
-                // separate from Concerns (an issue record, not discussion
-                // context) — see MeetingPointNote's doc comment.
-                LiveStreamBuilder<List<MeetingPointNote>>(
-                  streamKey: widget.pointNoteRepository,
-                  stream: () => widget.pointNoteRepository.watchAll(),
-                  builder: (context, noteSnapshot) {
-                    final notesByPointId = {
-                      for (final n
-                          in noteSnapshot.data ?? const <MeetingPointNote>[])
-                        n.meetingPointId: n,
-                    };
+            return LiveStreamBuilder<List<RiskAssessment>>(
+              streamKey: widget.riskAssessmentRepository,
+              stream: () => widget.riskAssessmentRepository.watchAll(),
+              builder: (context, ahaSnapshot) {
+                // The site's accepted AHAs — the Safety Plan: Foremen cover the
+                // activity hazard analysis with the crew before work begins.
+                final siteAhas = [
+                  for (final aha
+                      in ahaSnapshot.data ?? const <RiskAssessment>[])
+                    if (aha.siteId == widget.siteId &&
+                        aha.status == RiskAssessmentStatus.accepted)
+                      aha,
+                ];
+                final needsAha = siteAhas.isNotEmpty && meeting.ahaIds.isEmpty;
 
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        for (final pointId in meeting.meetingPointIds)
-                          Builder(
-                            builder: (context) {
-                              final point = allPoints
-                                  .where((p) => p.id == pointId)
-                                  .cast<SafetyMeetingPoint?>()
-                                  .firstWhere((_) => true, orElse: () => null);
-                              if (point == null) return const SizedBox.shrink();
-                              return _MeetingPointTile(
-                                point: point,
-                                note: notesByPointId[pointId]?.note,
-                                canEdit: canEdit,
-                                canEditNote: canAddConcernOrNote,
-                                isSaving: widget.isSaving,
-                                onRemovePoint: () => _removePoint(point),
-                                onSetNote: (note) => _setNote(point, note),
-                                onRemoveNote: () => _removeNote(point),
-                              );
-                            },
-                          ),
-                        if (meeting.meetingPointIds.isEmpty)
-                          const Text(
-                            'No safety meeting points recorded yet. Use '
-                            '"Add Safety Point" above.',
-                            style: AppTextStyles.bodyMedium,
+                return ListView(
+                  // Remembers the scroll position across rebuilds — see
+                  // 'meeting-start' above.
+                  key: const PageStorageKey('meeting-workspace'),
+                  padding: const EdgeInsets.all(AppSpacing.md),
+                  children: [
+                    FeatureHeader(
+                      title: meeting.isCompleted
+                          ? "Today's Meeting — Completed"
+                          : "Today's Meeting — In Progress",
+                      icon: meeting.isCompleted ? Icons.task_alt : Icons.groups,
+                      color: meeting.isCompleted
+                          ? AppColors.success
+                          : AppColors.meetings,
+                      chips: [
+                        FeatureChip(icon: Icons.event, label: meeting.date),
+                        FeatureChip(
+                          icon: Icons.handyman,
+                          label:
+                              '${meeting.activityIds.length} '
+                              '${meeting.activityIds.length == 1 ? 'activity' : 'activities'}',
+                        ),
+                        FeatureChip(
+                          icon: Icons.checklist,
+                          label:
+                              '${meeting.meetingPointIds.length} meeting '
+                              '${meeting.meetingPointIds.length == 1 ? 'point' : 'points'}',
+                        ),
+                        if (meeting.ahaIds.isNotEmpty)
+                          FeatureChip(
+                            icon: Icons.assignment_late,
+                            label:
+                                '${meeting.ahaIds.length} AHA'
+                                '${meeting.ahaIds.length == 1 ? '' : 's'} covered',
                           ),
                       ],
-                    );
-                  },
-                ),
-                const SizedBox(height: AppSpacing.md),
-                const FeatureSectionTitle(
-                  title: 'Attendance',
-                  icon: Icons.how_to_reg,
-                  color: AppColors.people,
-                ),
-                const SizedBox(height: AppSpacing.sm),
-                _AttendanceSection(
-                  meeting: meeting,
-                  organizationId: widget.organizationId,
-                  currentUid: widget.currentUid,
-                  canEdit: canEdit,
-                  isSaving: widget.isSaving,
-                  activityAssignmentRepository:
-                      widget.activityAssignmentRepository,
-                  attendanceRepository: widget.attendanceRepository,
-                  attendanceService: widget.attendanceService,
-                  members: widget.members,
-                  onRecordAttendance: _recordAttendance,
-                ),
-                const SizedBox(height: AppSpacing.md),
-                const FeatureSectionTitle(
-                  title: 'Concerns',
-                  icon: Icons.report_problem,
-                  color: AppColors.hazards,
-                ),
-                const SizedBox(height: AppSpacing.sm),
-                _ConcernsSection(
-                  members: widget.members,
-                  concernRepository: widget.concernRepository,
-                  correctiveActionRepository: widget.correctiveActionRepository,
-                  activityAssignmentRepository:
-                      widget.activityAssignmentRepository,
-                  meeting: meeting,
-                  currentUid: widget.currentUid,
-                  canEdit: canEdit,
-                  canAdd: canAddConcernOrNote,
-                  isSaving: widget.isSaving,
-                  onAdd: _addConcern,
-                  onEdit: _editConcern,
-                  onRemove: _removeConcern,
-                  onCreateCorrectiveAction: _createCorrectiveAction,
-                ),
-                const SizedBox(height: AppSpacing.md),
-                const FeatureSectionTitle(
-                  title: 'Evidence',
-                  icon: Icons.photo_camera,
-                  color: AppColors.analytics,
-                ),
-                const SizedBox(height: AppSpacing.xs),
-                const Text(
-                  'Supporting photos — a handwritten safety-book page, a '
-                  'sign-in sheet, a briefing/site photo. Can still be added '
-                  'after the meeting is completed.',
-                  style: AppTextStyles.bodyMedium,
-                ),
-                const SizedBox(height: AppSpacing.sm),
-                _EvidenceSection(
-                  evidenceRepository: widget.evidenceRepository,
-                  canRemove: canEdit,
-                  isCapturing: _isCapturingEvidence,
-                  errorMessage: _evidenceError,
-                  onCapture: _captureEvidence,
-                  onRemove: _removeEvidence,
-                ),
-                const SizedBox(height: AppSpacing.lg),
-                if (canEdit)
-                  _LearningGateBanner(
-                    meetingService: widget.meetingService,
-                    workerLearningRepository: widget.workerLearningRepository,
-                    organizationId: widget.organizationId,
-                    foremanUid: widget.currentUid,
-                    meetingId: meeting.id,
-                    siteId: widget.siteId,
-                    activityIds: meeting.activityIds,
-                    builder: (context, outstandingTitles) {
-                      final hasOutstandingLearning =
-                          outstandingTitles == null ||
-                          outstandingTitles.isNotEmpty;
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          if (outstandingTitles != null &&
-                              outstandingTitles.isNotEmpty) ...[
-                            _OutstandingLearningBanner(
-                              titles: outstandingTitles,
-                            ),
-                            const SizedBox(height: AppSpacing.md),
-                          ],
-                          ConstrainedBox(
-                            constraints: const BoxConstraints(
-                              minHeight: AppSpacing.minTouchTarget,
-                            ),
-                            child: ElevatedButton.icon(
-                              onPressed:
-                                  widget.isSaving ||
-                                      meeting.activityIds.isEmpty ||
-                                      meeting.meetingPointIds.isEmpty ||
-                                      hasOutstandingLearning
+                      trailing: meeting.crewOutcome == null
+                          ? null
+                          : CrewOutcomeBadge(outcome: meeting.crewOutcome!),
+                    ),
+                    const SizedBox(height: AppSpacing.lg),
+                    if (widget.errorMessage != null) ...[
+                      AuthErrorBanner(message: widget.errorMessage!),
+                      const SizedBox(height: AppSpacing.md),
+                    ],
+                    const FeatureSectionTitle(
+                      title: 'Activities Discussed',
+                      icon: Icons.handyman,
+                      color: AppColors.projects,
+                    ),
+                    const SizedBox(height: AppSpacing.sm),
+                    for (final activity in siteActivities)
+                      _ColorCheckTile(
+                        checked: meeting.activityIds.contains(activity.id),
+                        emoji: hazardEmojiFor(activity.name),
+                        title: activity.name,
+                        onChanged: canEdit && !widget.isSaving
+                            ? (_) => _toggleActivity(activity)
+                            : null,
+                      ),
+                    const SizedBox(height: AppSpacing.md),
+                    FeatureSectionTitle(
+                      title: 'Safety Meeting Points',
+                      icon: Icons.checklist,
+                      color: AppColors.meetings,
+                      trailing: !canEdit
+                          ? null
+                          : TextButton.icon(
+                              onPressed: widget.isSaving
                                   ? null
-                                  : _complete,
-                              icon: const Icon(Icons.check_circle_outline),
-                              label: const Text('Complete Meeting'),
+                                  : () => _openAddPointPicker(
+                                      allPoints
+                                          .where(
+                                            (p) => !meeting.meetingPointIds
+                                                .contains(p.id),
+                                          )
+                                          .toList(),
+                                    ),
+                              icon: const Icon(Icons.add_outlined),
+                              label: const Text('Add Safety Point'),
                             ),
-                          ),
-                        ],
-                      );
-                    },
-                  ),
-                if (canEdit &&
-                    (meeting.activityIds.isEmpty ||
-                        meeting.meetingPointIds.isEmpty)) ...[
-                  const SizedBox(height: AppSpacing.sm),
-                  const Text(
-                    'At least one activity and one meeting point must be '
-                    'recorded before completing.',
-                    style: AppTextStyles.bodyMedium,
-                  ),
-                ],
-              ],
+                    ),
+                    const SizedBox(height: AppSpacing.sm),
+                    // "Recommended" = every point currently on this meeting,
+                    // whether seeded at start or added since — checking a point
+                    // marks it covered; unchecking or removing takes it off the
+                    // meeting entirely. There is no separate "covered" flag: a
+                    // point on the meeting IS the covered set, matching
+                    // `meetingPointIds`'s single source of truth.
+                    //
+                    // Each point also carries an optional DISCUSSION NOTE — what
+                    // was actually explained/covered about it, kept deliberately
+                    // separate from Concerns (an issue record, not discussion
+                    // context) — see MeetingPointNote's doc comment.
+                    LiveStreamBuilder<List<MeetingPointNote>>(
+                      streamKey: widget.pointNoteRepository,
+                      stream: () => widget.pointNoteRepository.watchAll(),
+                      builder: (context, noteSnapshot) {
+                        final notesByPointId = {
+                          for (final n
+                              in noteSnapshot.data ??
+                                  const <MeetingPointNote>[])
+                            n.meetingPointId: n,
+                        };
+
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            for (final pointId in meeting.meetingPointIds)
+                              Builder(
+                                builder: (context) {
+                                  final point = allPoints
+                                      .where((p) => p.id == pointId)
+                                      .cast<SafetyMeetingPoint?>()
+                                      .firstWhere(
+                                        (_) => true,
+                                        orElse: () => null,
+                                      );
+                                  if (point == null) {
+                                    return const SizedBox.shrink();
+                                  }
+                                  return _MeetingPointTile(
+                                    point: point,
+                                    note: notesByPointId[pointId]?.note,
+                                    canEdit: canEdit,
+                                    canEditNote: canAddConcernOrNote,
+                                    isSaving: widget.isSaving,
+                                    onRemovePoint: () => _removePoint(point),
+                                    onSetNote: (note) => _setNote(point, note),
+                                    onRemoveNote: () => _removeNote(point),
+                                  );
+                                },
+                              ),
+                            if (meeting.meetingPointIds.isEmpty)
+                              const Text(
+                                'No safety meeting points recorded yet. Use '
+                                '"Add Safety Point" above.',
+                                style: AppTextStyles.bodyMedium,
+                              ),
+                          ],
+                        );
+                      },
+                    ),
+                    const SizedBox(height: AppSpacing.md),
+                    _AhaSection(
+                      meeting: meeting,
+                      siteAhas: siteAhas,
+                      canEdit: canEdit && !widget.isSaving,
+                      onToggle: _toggleAha,
+                      onOpen: _openAha,
+                    ),
+                    const SizedBox(height: AppSpacing.md),
+                    const FeatureSectionTitle(
+                      title: 'Attendance',
+                      icon: Icons.how_to_reg,
+                      color: AppColors.people,
+                    ),
+                    const SizedBox(height: AppSpacing.sm),
+                    _AttendanceSection(
+                      meeting: meeting,
+                      organizationId: widget.organizationId,
+                      currentUid: widget.currentUid,
+                      canEdit: canEdit,
+                      isSaving: widget.isSaving,
+                      activityAssignmentRepository:
+                          widget.activityAssignmentRepository,
+                      attendanceRepository: widget.attendanceRepository,
+                      attendanceService: widget.attendanceService,
+                      members: widget.members,
+                      onRecordAttendance: _recordAttendance,
+                    ),
+                    const SizedBox(height: AppSpacing.md),
+                    const FeatureSectionTitle(
+                      title: 'Concerns',
+                      icon: Icons.report_problem,
+                      color: AppColors.hazards,
+                    ),
+                    const SizedBox(height: AppSpacing.sm),
+                    _ConcernsSection(
+                      members: widget.members,
+                      concernRepository: widget.concernRepository,
+                      correctiveActionRepository:
+                          widget.correctiveActionRepository,
+                      activityAssignmentRepository:
+                          widget.activityAssignmentRepository,
+                      meeting: meeting,
+                      currentUid: widget.currentUid,
+                      canEdit: canEdit,
+                      canAdd: canAddConcernOrNote,
+                      isSaving: widget.isSaving,
+                      onAdd: _addConcern,
+                      onEdit: _editConcern,
+                      onRemove: _removeConcern,
+                      onCreateCorrectiveAction: _createCorrectiveAction,
+                    ),
+                    const SizedBox(height: AppSpacing.md),
+                    const FeatureSectionTitle(
+                      title: 'Evidence',
+                      icon: Icons.photo_camera,
+                      color: AppColors.analytics,
+                    ),
+                    const SizedBox(height: AppSpacing.xs),
+                    const Text(
+                      'Supporting photos — a handwritten safety-book page, a '
+                      'sign-in sheet, a briefing/site photo. Can still be added '
+                      'after the meeting is completed.',
+                      style: AppTextStyles.bodyMedium,
+                    ),
+                    const SizedBox(height: AppSpacing.sm),
+                    _EvidenceSection(
+                      evidenceRepository: widget.evidenceRepository,
+                      canRemove: canEdit,
+                      isCapturing: _isCapturingEvidence,
+                      errorMessage: _evidenceError,
+                      onCapture: _captureEvidence,
+                      onRemove: _removeEvidence,
+                    ),
+                    const SizedBox(height: AppSpacing.lg),
+                    if (canEdit)
+                      _LearningGateBanner(
+                        meetingService: widget.meetingService,
+                        workerLearningRepository:
+                            widget.workerLearningRepository,
+                        organizationId: widget.organizationId,
+                        foremanUid: widget.currentUid,
+                        meetingId: meeting.id,
+                        siteId: widget.siteId,
+                        activityIds: meeting.activityIds,
+                        builder: (context, outstandingTitles) {
+                          final hasOutstandingLearning =
+                              outstandingTitles == null ||
+                              outstandingTitles.isNotEmpty;
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              if (outstandingTitles != null &&
+                                  outstandingTitles.isNotEmpty) ...[
+                                _OutstandingLearningBanner(
+                                  titles: outstandingTitles,
+                                ),
+                                const SizedBox(height: AppSpacing.md),
+                              ],
+                              ConstrainedBox(
+                                constraints: const BoxConstraints(
+                                  minHeight: AppSpacing.minTouchTarget,
+                                ),
+                                child: ElevatedButton.icon(
+                                  onPressed:
+                                      widget.isSaving ||
+                                          meeting.activityIds.isEmpty ||
+                                          meeting.meetingPointIds.isEmpty ||
+                                          needsAha ||
+                                          hasOutstandingLearning
+                                      ? null
+                                      : _complete,
+                                  icon: const Icon(Icons.check_circle_outline),
+                                  label: const Text('Complete Meeting'),
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                    if (canEdit &&
+                        (meeting.activityIds.isEmpty ||
+                            meeting.meetingPointIds.isEmpty)) ...[
+                      const SizedBox(height: AppSpacing.sm),
+                      const Text(
+                        'At least one activity and one meeting point must be '
+                        'recorded before completing.',
+                        style: AppTextStyles.bodyMedium,
+                      ),
+                    ],
+                    if (canEdit && needsAha) ...[
+                      const SizedBox(height: AppSpacing.sm),
+                      const Text(
+                        "Cover the risk assessment (AHA) for today's work with "
+                        'the crew and tick it above before completing.',
+                        style: AppTextStyles.bodyMedium,
+                      ),
+                    ],
+                  ],
+                );
+              },
             );
           },
         );
       },
+    );
+  }
+}
+
+/// The site's accepted risk assessments (AHAs) — the Safety Plan's
+/// "Foremen cover the activity hazard analysis before work begins". While
+/// the meeting is in progress the Foreman ticks each one covered with the
+/// crew (and can open it to read through); once completed, it shows what
+/// was covered, by name and revision as recorded at the time.
+class _AhaSection extends StatelessWidget {
+  const _AhaSection({
+    required this.meeting,
+    required this.siteAhas,
+    required this.canEdit,
+    required this.onToggle,
+    required this.onOpen,
+  });
+
+  final DailySafetyMeeting meeting;
+  final List<RiskAssessment> siteAhas;
+  final bool canEdit;
+  final ValueChanged<RiskAssessment> onToggle;
+  final ValueChanged<String> onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final children = <Widget>[];
+    if (meeting.isCompleted) {
+      for (final covered in meeting.ahasCovered) {
+        children.add(
+          _AhaRow(
+            title: covered.featureOfWork,
+            subtitle: 'Revision ${covered.revision} · covered with the crew',
+            covered: true,
+            onTap: null,
+            onRead: () => onOpen(covered.id),
+          ),
+        );
+      }
+      if (meeting.ahasCovered.isEmpty) {
+        children.add(
+          const Text(
+            'No risk assessment was recorded for this meeting.',
+            style: AppTextStyles.bodyMedium,
+          ),
+        );
+      }
+    } else {
+      for (final aha in siteAhas) {
+        final covered = meeting.ahaIds.contains(aha.id);
+        children.add(
+          _AhaRow(
+            title: aha.featureOfWork,
+            subtitle:
+                'Revision ${aha.revision} · ${aha.steps.length} steps · '
+                '${covered ? 'covered with the crew' : 'tap when covered'}',
+            covered: covered,
+            onTap: canEdit ? () => onToggle(aha) : null,
+            onRead: () => onOpen(aha.id),
+          ),
+        );
+      }
+      if (siteAhas.isEmpty) {
+        children.add(
+          const Text(
+            'This site has no accepted risk assessment yet.',
+            style: AppTextStyles.bodyMedium,
+          ),
+        );
+      }
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const FeatureSectionTitle(
+          title: 'Risk Assessments (AHA)',
+          icon: Icons.assignment_late,
+          color: AppColors.riskAssessments,
+        ),
+        if (!meeting.isCompleted && siteAhas.isNotEmpty) ...[
+          const SizedBox(height: AppSpacing.xs),
+          const Text(
+            "Go through the hazards and controls for today's work with the "
+            'crew, then tick each one you covered.',
+            style: AppTextStyles.bodyMedium,
+          ),
+        ],
+        const SizedBox(height: AppSpacing.sm),
+        ...children,
+      ],
+    );
+  }
+}
+
+class _AhaRow extends StatelessWidget {
+  const _AhaRow({
+    required this.title,
+    required this.subtitle,
+    required this.covered,
+    required this.onTap,
+    required this.onRead,
+  });
+
+  final String title;
+  final String subtitle;
+  final bool covered;
+  final VoidCallback? onTap;
+  final VoidCallback onRead;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          ChoiceTile(
+            multi: true,
+            title: title,
+            subtitle: subtitle,
+            icon: Icons.assignment_late,
+            color: AppColors.riskAssessments,
+            selected: covered,
+            onTap: onTap,
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: onRead,
+              icon: const Icon(Icons.menu_book_outlined),
+              label: Text('Read "$title"'),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

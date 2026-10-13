@@ -746,6 +746,19 @@ service cloud.firestore {
         allow write: if false;
       }
 
+      // ---- organizations/{organizationId}/safety_meetings/{id} ----
+      // Weekly employee and monthly supervisory safety meetings —
+      // `safety_meeting_callable.ts`. Read by the roles that run them
+      // (Admin/Site Manager/Foreman) and the System Administrator; written
+      // only by the callable, and permanent once recorded.
+      match /safety_meetings/{meetingId} {
+        allow read: if isAdmin()
+          || (belongsToOrganization(organizationId)
+            && membershipDoc(organizationId).role in
+              ['admin', 'siteManager', 'foreman']);
+        allow write: if false;
+      }
+
       // ---- organizations/{organizationId}/incidents/{incidentId} ----
       // Flat under the organization, like `hazards`. Unlike a hazard, an
       // incident can name an injured person and describe an injury, so it
@@ -973,7 +986,8 @@ service cloud.firestore {
           && operationalCollection != 'incidents'
           // Supervisor-only — see their own `match` blocks above.
           && operationalCollection != 'inspection_templates'
-          && operationalCollection != 'inspections';
+          && operationalCollection != 'inspections'
+          && operationalCollection != 'safety_meetings';
         allow write: if false;
       }
     }

@@ -169,6 +169,15 @@ export {
   signOffInspection,
 } from "./inspection_callable";
 
+export {recordSafetyMeeting} from "./safety_meeting_callable";
+
+export {
+  saveRiskAssessment,
+  acceptRiskAssessment,
+  reviseRiskAssessment,
+  discardRiskAssessmentDraft,
+} from "./risk_assessment_callable";
+
 export {
   createSafetyAlert,
   acknowledgeSafetyAlert,

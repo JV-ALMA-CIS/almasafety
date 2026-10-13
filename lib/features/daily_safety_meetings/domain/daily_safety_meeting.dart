@@ -41,6 +41,8 @@ class DailySafetyMeeting {
     this.completedAt,
     this.crewOutcome,
     this.crewOutcomeNote,
+    this.ahaIds = const [],
+    this.ahasCovered = const [],
   });
 
   final String id;
@@ -74,6 +76,15 @@ class DailySafetyMeeting {
 
   /// The Foreman's note for a GO corrected / STOP [crewOutcome].
   final String? crewOutcomeNote;
+
+  /// The accepted risk assessments (AHAs) the Foreman covered with the
+  /// crew — the Safety Plan: "cover the activity hazard analysis before
+  /// work begins".
+  final List<String> ahaIds;
+
+  /// [ahaIds] as recorded at the time (name and revision), so a completed
+  /// meeting still says what was covered after the AHA is revised.
+  final List<CoveredAha> ahasCovered;
 
   bool get isCompleted => status == DailySafetyMeetingStatus.completed;
 
@@ -149,6 +160,31 @@ class DailySafetyMeeting {
       completedAt: (data['completedAt'] as Timestamp?)?.toDate(),
       crewOutcome: PreStartOutcome.tryFromId(data['crewOutcome']),
       crewOutcomeNote: data['crewOutcomeNote'] as String?,
+      ahaIds:
+          (data['ahaIds'] as List<dynamic>?)?.whereType<String>().toList() ??
+          const [],
+      ahasCovered: [
+        for (final raw in (data['ahasCovered'] as List<dynamic>?) ?? const [])
+          if (raw is Map && raw['id'] is String)
+            CoveredAha(
+              id: raw['id'] as String,
+              featureOfWork: raw['featureOfWork'] as String? ?? '',
+              revision: (raw['revision'] as num?)?.toInt() ?? 1,
+            ),
+      ],
     );
   }
+}
+
+/// A risk assessment (AHA) covered at a meeting, as recorded at the time.
+class CoveredAha {
+  const CoveredAha({
+    required this.id,
+    required this.featureOfWork,
+    required this.revision,
+  });
+
+  final String id;
+  final String featureOfWork;
+  final int revision;
 }

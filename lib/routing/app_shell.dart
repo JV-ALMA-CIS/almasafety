@@ -249,6 +249,15 @@ class AppShell extends StatelessWidget {
               route: AppRoutes.inspections,
               color: AppColors.inspections,
             ),
+          // Activity Hazard Analyses — everyone reads the accepted ones for
+          // their sites; Site Managers/Admins prepare and accept them.
+          const NavSectionEntry(
+            icon: Icons.assignment_late_outlined,
+            selectedIcon: Icons.assignment_late,
+            label: 'Risk Assessments (AHA)',
+            route: AppRoutes.riskAssessments,
+            color: AppColors.riskAssessments,
+          ),
           const NavSectionEntry(
             icon: Icons.build_outlined,
             selectedIcon: Icons.build,
@@ -275,6 +284,16 @@ class AppShell extends StatelessWidget {
             route: AppRoutes.dailySafetyMeetings,
             color: AppColors.meetings,
           ),
+          // The Safety Plan's weekly employee and monthly supervisory
+          // meetings — recorded by Foremen and Site Managers.
+          if (canReviewPendingAccounts)
+            const NavSectionEntry(
+              icon: Icons.groups_outlined,
+              selectedIcon: Icons.groups,
+              label: 'Weekly & Monthly Meetings',
+              route: AppRoutes.safetyMeetings,
+              color: AppColors.teamMeetings,
+            ),
           // "Safety Learning" here is the signed-in user's OWN required
           // learning (MySafetyLearningScreen) — meaningful for a Foreman or
           // Worker, who each have personal WorkerLearningRecord documents.

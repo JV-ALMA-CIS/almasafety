@@ -29,6 +29,7 @@ import 'package:jva_safety/features/daily_safety_meetings/data/meeting_evidence_
 import 'package:jva_safety/features/daily_safety_meetings/data/meeting_point_note_repository.dart';
 import 'package:jva_safety/features/daily_safety_meetings/presentation/daily_safety_meeting_screen.dart';
 import 'package:jva_safety/features/organizations/data/site_repository.dart';
+import 'package:jva_safety/features/risk_assessments/data/risk_assessment_repository.dart';
 import 'package:jva_safety/features/safety_learning/data/worker_learning_repository.dart';
 import 'package:jva_safety/features/safety_meeting_points/data/safety_meeting_point_repository.dart';
 import 'package:jva_safety/features/pre_start_checks/domain/pre_start_outcome.dart';
@@ -75,6 +76,7 @@ class _FakeMeetingService extends DailySafetyMeetingService {
   >
   updateCalls = [];
   final List<String> completeCalls = [];
+  final List<List<String>> ahaCalls = [];
   final List<({PreStartOutcome? outcome, String? note})> crewOutcomes = [];
   AppException? completeError;
 
@@ -115,7 +117,9 @@ class _FakeMeetingService extends DailySafetyMeetingService {
     List<String>? activityIds,
     List<String>? meetingPointIds,
     List<String>? concerns,
+    List<String>? ahaIds,
   }) async {
+    if (ahaIds != null) ahaCalls.add(ahaIds);
     updateCalls.add((
       id: id,
       activityIds: activityIds,
@@ -221,6 +225,15 @@ Future<void> scrollAndTap(WidgetTester tester, Finder finder) async {
 /// Scrolls [finder] fully into view before tapping it — the colored
 /// meeting header pushes some buttons to the bottom edge of the test screen.
 Future<void> tapVisible(WidgetTester tester, Finder finder) async {
+  // A lazily built list only builds what is near the screen — scroll down
+  // to it first when it is further away.
+  if (finder.evaluate().isEmpty) {
+    await tester.scrollUntilVisible(
+      finder,
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+  }
   await tester.ensureVisible(finder);
   await tester.pumpAndSettle();
   await tester.tap(finder);
@@ -428,6 +441,10 @@ void main() {
               meetingId: meetingId,
             ),
             workerLearningRepository: WorkerLearningRepository(
+              firestoreService: FirestoreService(firestore: firestore),
+              organizationId: 'org-alpha',
+            ),
+            riskAssessmentRepository: RiskAssessmentRepository(
               firestoreService: FirestoreService(firestore: firestore),
               organizationId: 'org-alpha',
             ),
@@ -938,6 +955,105 @@ void main() {
         concernService.addCalls.single.description,
         'Unstable ladder at east wing.',
       );
+    });
+  });
+
+  group('DailySafetyMeetingScreen (risk assessments)', () {
+    Future<void> seedAha(
+      String id, {
+      String status = 'accepted',
+      String siteId = 'site-1',
+    }) {
+      return firestore.doc('organizations/org-alpha/risk_assessments/$id').set({
+        'organizationId': 'org-alpha',
+        'siteId': siteId,
+        'featureOfWork': 'Removals',
+        'revision': 1,
+        'status': status,
+        'steps': <Object>[],
+      });
+    }
+
+    Future<void> readyMeeting() async {
+      await seedSite('site-1');
+      await seedActivity('activity-1');
+      await seedMeetingPoint('point-1');
+      await seedMeeting(
+        'meeting-1',
+        activityIds: ['activity-1'],
+        meetingPointIds: ['point-1'],
+      );
+    }
+
+    Future<void> scrollTo(WidgetTester tester, String text) async {
+      await tester.scrollUntilVisible(
+        find.text(text),
+        500,
+        scrollable: find.byType(Scrollable).first,
+      );
+      // Rows rebuilt by scrolling (the learning check) settle first.
+      await tester.pumpAndSettle();
+    }
+
+    ElevatedButton completeButton(WidgetTester tester) =>
+        tester.widget(find.widgetWithText(ElevatedButton, 'Complete Meeting'));
+
+    testWidgets("the site's accepted AHA must be ticked before Complete", (
+      tester,
+    ) async {
+      await readyMeeting();
+      await seedAha('aha-1');
+      await seedAha('draft', status: 'draft');
+      await seedAha('other', siteId: 'site-2');
+      final service = _FakeMeetingService();
+      await tester.pumpWidget(
+        wrap(role: AppRole.foreman, meetingService: service),
+      );
+      await tester.pumpAndSettle();
+
+      await scrollTo(tester, 'Read "Removals"');
+      // Only the accepted AHA for this site is offered.
+      expect(find.text('Read "Removals"'), findsOneWidget);
+      await tapVisible(tester, find.text('Removals'));
+      await tester.pumpAndSettle();
+      expect(service.ahaCalls, [
+        ['aha-1'],
+      ]);
+
+      // Not ticked yet (this fake does not save it), so Complete waits.
+      await scrollTo(tester, 'Complete Meeting');
+      expect(completeButton(tester).onPressed, isNull);
+      expect(
+        find.textContaining('Cover the risk assessment (AHA)'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('once covered, the meeting can be completed', (tester) async {
+      await readyMeeting();
+      await seedAha('aha-1');
+      await firestore
+          .doc('organizations/org-alpha/daily_safety_meetings/meeting-1')
+          .update({
+            'ahaIds': ['aha-1'],
+          });
+      await tester.pumpWidget(wrap(role: AppRole.foreman));
+      await tester.pumpAndSettle();
+
+      expect(find.text('1 AHA covered'), findsOneWidget);
+      await scrollTo(tester, 'Complete Meeting');
+      expect(completeButton(tester).onPressed, isNotNull);
+    });
+
+    testWidgets('a site without an accepted AHA is not held up', (
+      tester,
+    ) async {
+      await readyMeeting();
+      await tester.pumpWidget(wrap(role: AppRole.foreman));
+      await tester.pumpAndSettle();
+      await scrollTo(tester, 'This site has no accepted risk assessment yet.');
+      await scrollTo(tester, 'Complete Meeting');
+      expect(completeButton(tester).onPressed, isNotNull);
     });
   });
 

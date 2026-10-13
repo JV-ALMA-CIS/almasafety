@@ -3022,6 +3022,73 @@ describe("the Inspections foundation", () => {
   });
 });
 
+describe("the weekly/monthly Safety Meetings foundation", () => {
+  beforeEach(async () => {
+    await seed(async (db) => {
+      for (const [uid, role] of [["worker-a", "worker"],
+        ["foreman-a", "foreman"]]) {
+        await db.doc(userPath(uid)).set(profile(uid, "active"));
+        await db.doc(`users/${uid}/memberships/${ORG_A}`)
+          .set(membership(uid, ORG_A, {role, siteIds: ["site-1"]}));
+      }
+      await db.doc(`organizations/${ORG_A}/safety_meetings/m1`).set({
+        organizationId: ORG_A, kind: "weeklyEmployee", siteId: "site-1",
+      });
+    });
+  });
+
+  test("Foremen and Site Managers read the meetings", async () => {
+    for (const [uid, email] of [["foreman-a", "foreman-a@example.com"],
+      ["approver-a", "approver-a@example.com"]]) {
+      await assertSucceeds(actor(uid, email)
+        .collection(`organizations/${ORG_A}/safety_meetings`).get());
+    }
+  });
+
+  test("a Worker cannot read them", async () => {
+    await assertFails(actor("worker-a", "worker-a@example.com")
+      .doc(`organizations/${ORG_A}/safety_meetings/m1`).get());
+  });
+
+  test("no client writes them directly", async () => {
+    const db = actor("approver-a", "approver-a@example.com");
+    await assertFails(db.doc(`organizations/${ORG_A}/safety_meetings/m1`)
+      .update({topics: ["Forged"]}));
+    await assertFails(db.doc(`organizations/${ORG_A}/safety_meetings/m2`)
+      .set({organizationId: ORG_A, kind: "weeklyEmployee"}));
+    await assertFails(
+      db.doc(`organizations/${ORG_A}/safety_meetings/m1`).delete()
+    );
+  });
+});
+
+describe("the Risk Assessments (AHA) foundation", () => {
+  beforeEach(async () => {
+    await seed(async (db) => {
+      await db.doc(userPath("worker-a")).set(profile("worker-a", "active"));
+      await db.doc(`users/worker-a/memberships/${ORG_A}`)
+        .set(membership("worker-a", ORG_A, {role: "worker",
+          siteIds: ["site-1"]}));
+      await db.doc(`organizations/${ORG_A}/risk_assessments/r1`).set({
+        organizationId: ORG_A, siteId: "site-1", status: "accepted",
+      });
+    });
+  });
+
+  test("any member of the organization can read them", async () => {
+    await assertSucceeds(actor("worker-a", "worker-a@example.com")
+      .doc(`organizations/${ORG_A}/risk_assessments/r1`).get());
+  });
+
+  test("no client writes them directly", async () => {
+    const db = actor("approver-a", "approver-a@example.com");
+    await assertFails(db.doc(`organizations/${ORG_A}/risk_assessments/r1`)
+      .update({status: "draft"}));
+    await assertFails(db.doc(`organizations/${ORG_A}/risk_assessments/r2`)
+      .set({organizationId: ORG_A, status: "accepted"}));
+  });
+});
+
 describe("the Corrective Actions foundation", () => {
   // DESIGN NOTE. Flat under the organization (a sibling of
   // `daily_safety_meetings`, not a subcollection of one) — see

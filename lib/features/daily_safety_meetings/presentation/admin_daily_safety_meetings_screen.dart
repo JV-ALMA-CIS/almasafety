@@ -365,6 +365,13 @@ class _AdminMeetingCard extends StatelessWidget {
               '${meeting.meetingPointIds.length} safety points · '
               '${meeting.concerns.length} concerns',
         ),
+        if (meeting.ahasCovered.isNotEmpty)
+          AccentDetail(
+            icon: Icons.assignment_late,
+            text:
+                'AHA covered: '
+                '${meeting.ahasCovered.map((a) => a.featureOfWork).join(', ')}',
+          ),
       ],
     );
   }
@@ -651,6 +658,29 @@ class _DailySafetyMeetingSummaryScreenState
                                                   _BulletRow(
                                                     activitiesById[id]?.name ??
                                                         id,
+                                                  ),
+                                              ],
+                                      ),
+                                      const SizedBox(height: AppSpacing.lg),
+                                      _SummarySection(
+                                        title: 'Risk Assessments (AHA) Covered',
+                                        children: meeting.ahasCovered.isEmpty
+                                            ? [
+                                                const Text(
+                                                  'No risk assessment '
+                                                  'recorded.',
+                                                  style:
+                                                      AppTextStyles.bodyMedium,
+                                                ),
+                                              ]
+                                            : [
+                                                for (final aha
+                                                    in meeting.ahasCovered)
+                                                  _BulletRow(
+                                                    aha.featureOfWork,
+                                                    subtitle:
+                                                        'Revision '
+                                                        '${aha.revision}',
                                                   ),
                                               ],
                                       ),

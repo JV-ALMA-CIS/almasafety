@@ -631,8 +631,69 @@ export const createDailySafetyMeeting = onCall(async (request) => {
 });
 
 /**
+ * Validates the risk assessments (AHAs) a Foreman says were covered at this
+ * meeting: each must be an ACCEPTED AHA for the meeting's own site. Returns
+ * a snapshot of each (name and revision) to store on the meeting, so the
+ * record still reads correctly after the AHA is revised.
+ *
+ * @param {string} organizationId the organization.
+ * @param {string} siteId the meeting's site.
+ * @param {string[]} ids the covered AHA ids.
+ * @return {Promise<object[]>} id, featureOfWork and revision of each.
+ */
+async function requireAcceptedAhasAtSite(
+  organizationId: string,
+  siteId: string,
+  ids: string[]
+): Promise<{id: string; featureOfWork: string; revision: number}[]> {
+  const db = getFirestore();
+  return Promise.all(ids.map(async (id) => {
+    const aha = (
+      await db.doc(`organizations/${organizationId}/risk_assessments/${id}`)
+        .get()
+    ).data();
+    if (!aha || aha.status !== "accepted" || aha.siteId !== siteId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Only an accepted risk assessment for this site can be covered."
+      );
+    }
+    return {
+      id,
+      featureOfWork: typeof aha.featureOfWork === "string" ?
+        aha.featureOfWork :
+        "",
+      revision: typeof aha.revision === "number" ? aha.revision : 1,
+    };
+  }));
+}
+
+/**
+ * Whether [siteId] has any accepted risk assessment (AHA) — if so, the
+ * Safety Plan requires the Foreman to cover one with the crew before work
+ * begins, so the meeting cannot be completed without.
+ *
+ * @param {string} organizationId the organization.
+ * @param {string} siteId the meeting's site.
+ * @return {Promise<boolean>} true when the site has one.
+ */
+async function siteHasAcceptedAha(
+  organizationId: string,
+  siteId: string
+): Promise<boolean> {
+  const snapshot = await getFirestore()
+    .collection(`organizations/${organizationId}/risk_assessments`)
+    .where("siteId", "==", siteId)
+    .where("status", "==", "accepted")
+    .limit(1)
+    .get();
+  return !snapshot.empty;
+}
+
+/**
  * Updates an in-progress meeting's `activityIds`, `meetingPointIds` and/or
- * `concerns` — the foreman accepting/removing/adding recommended meeting
+ * `concerns` and/or `ahaIds` (the accepted risk assessments covered with
+ * the crew) — the foreman accepting/removing/adding recommended meeting
  * points and recording concerns after the physical meeting. Only the
  * meeting's own foreman may call this (see `requireOwnMeeting`), and only
  * while it is still `inProgress`: a completed meeting is a closed record.
@@ -654,6 +715,14 @@ export const updateDailySafetyMeeting = onCall(async (request) => {
   const activityIds = optionalStringArray(request, "activityIds");
   const meetingPointIds = optionalStringArray(request, "meetingPointIds");
   const concerns = optionalStringArray(request, "concerns");
+  const ahaIds = optionalStringArray(request, "ahaIds");
+  const ahasCovered = ahaIds === null ?
+    null :
+    await requireAcceptedAhasAtSite(
+      organizationId,
+      meeting.siteId as string,
+      [...new Set(ahaIds)]
+    );
 
   if (activityIds !== null) {
     await requireActivitiesAtSite(
@@ -672,6 +741,9 @@ export const updateDailySafetyMeeting = onCall(async (request) => {
       ...(activityIds !== null ? {activityIds} : {}),
       ...(meetingPointIds !== null ? {meetingPointIds} : {}),
       ...(concerns !== null ? {concerns} : {}),
+      ...(ahasCovered !== null ?
+        {ahaIds: ahasCovered.map((a) => a.id), ahasCovered} :
+        {}),
     });
 
   return {id, organizationId};
@@ -711,6 +783,20 @@ export const completeDailySafetyMeeting = onCall(async (request) => {
       "failed-precondition",
       "At least one activity and one meeting point must be recorded before " +
         "completing this meeting."
+    );
+  }
+
+  // Safety Plan: Foremen cover the activity hazard analysis with the crew
+  // before work begins.
+  const coveredAhaIds = (meeting.ahaIds as string[] | undefined) ?? [];
+  if (
+    coveredAhaIds.length === 0 &&
+    await siteHasAcceptedAha(organizationId, meeting.siteId as string)
+  ) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Cover the risk assessment (AHA) for today's work with the crew, " +
+        "and tick it, before completing this meeting."
     );
   }
 

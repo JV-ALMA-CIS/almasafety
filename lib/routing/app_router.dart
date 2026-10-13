@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import '../features/inspections/presentation/inspections_screen.dart';
+import '../features/risk_assessments/presentation/risk_assessments_screen.dart';
+import '../features/safety_meetings/presentation/safety_meetings_screen.dart';
 import '../features/safety_reporting/presentation/report_safety_issue_screen.dart';
 import '../core/widgets/live_stream_builder.dart';
 import 'package:go_router/go_router.dart';
@@ -290,6 +292,14 @@ GoRouter buildAppRouter(SessionController session) {
           GoRoute(
             path: AppRoutes.inspections,
             builder: (context, state) => const InspectionsScreen(),
+          ),
+          GoRoute(
+            path: AppRoutes.safetyMeetings,
+            builder: (context, state) => const SafetyMeetingsScreen(),
+          ),
+          GoRoute(
+            path: AppRoutes.riskAssessments,
+            builder: (context, state) => const RiskAssessmentsScreen(),
           ),
           GoRoute(
             path: AppRoutes.reportSafetyIssue,

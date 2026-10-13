@@ -32,6 +32,7 @@ let app;
 let db;
 let createDailySafetyMeeting;
 let completeDailySafetyMeeting;
+let updateDailySafetyMeeting;
 let recordMeetingAttendance;
 let getMeetingAttendeeLearningStatus;
 let getSiteCrewReadiness;
@@ -55,6 +56,7 @@ beforeAll(() => {
   ({
     createDailySafetyMeeting,
     completeDailySafetyMeeting,
+    updateDailySafetyMeeting,
     recordMeetingAttendance,
     getMeetingAttendeeLearningStatus,
     getSiteCrewReadiness,
@@ -2436,5 +2438,90 @@ describe("completeDailySafetyMeeting (safety learning gate)", () => {
         callRequest("foreman-a", {organizationId: ORG_A, id: "meeting-1"})
       )
     ).rejects.toThrow(/must complete the following safety learning/);
+  });
+});
+
+describe("covering the risk assessment (AHA)", () => {
+  async function seedAha(id, overrides = {}) {
+    await db.doc(`organizations/${ORG_A}/risk_assessments/${id}`).set({
+      organizationId: ORG_A,
+      siteId: "site-1",
+      featureOfWork: "Removals",
+      revision: 2,
+      status: "accepted",
+      ...overrides,
+    });
+  }
+
+  async function readyMeeting(overrides = {}) {
+    await seedMeetingPoint(ORG_A, "point-1");
+    await seedMeeting(ORG_A, "meeting-1", {
+      activityIds: ["activity-default"],
+      meetingPointIds: ["point-1"],
+      ...overrides,
+    });
+  }
+
+  function complete() {
+    return completeDailySafetyMeeting.run(
+      callRequest("foreman-a", {organizationId: ORG_A, id: "meeting-1"})
+    );
+  }
+
+  test("records the covered AHAs with their name and revision", async () => {
+    await seedAha("aha-1");
+    await readyMeeting();
+    await updateDailySafetyMeeting.run(callRequest("foreman-a", {
+      organizationId: ORG_A, id: "meeting-1", ahaIds: ["aha-1", "aha-1"],
+    }));
+    const meeting = await getMeeting(ORG_A, "meeting-1");
+    expect(meeting.ahaIds).toEqual(["aha-1"]);
+    expect(meeting.ahasCovered).toEqual([
+      {id: "aha-1", featureOfWork: "Removals", revision: 2},
+    ]);
+  });
+
+  test("only an accepted AHA for the meeting's own site can be covered",
+    async () => {
+      await seedAha("draft", {status: "draft"});
+      await seedAha("other-site", {siteId: "site-2"});
+      await readyMeeting();
+      for (const id of ["draft", "other-site", "missing"]) {
+        await expect(updateDailySafetyMeeting.run(callRequest("foreman-a", {
+          organizationId: ORG_A, id: "meeting-1", ahaIds: [id],
+        }))).rejects.toThrow(/accepted risk assessment/);
+      }
+    });
+
+  test("a site with an accepted AHA cannot complete without covering one",
+    async () => {
+      await seedAha("aha-1");
+      await readyMeeting();
+      await expect(complete()).rejects.toThrow(/risk assessment/);
+
+      await updateDailySafetyMeeting.run(callRequest("foreman-a", {
+        organizationId: ORG_A, id: "meeting-1", ahaIds: ["aha-1"],
+      }));
+      expect((await complete()).status).toBe("completed");
+    });
+
+  test("drafts, superseded AHAs and other sites' AHAs do not block",
+    async () => {
+      await seedAha("draft", {status: "draft"});
+      await seedAha("old", {status: "superseded"});
+      await seedAha("other-site", {siteId: "site-2"});
+      await readyMeeting();
+      expect((await complete()).status).toBe("completed");
+    });
+
+  test("unticking every AHA is allowed while in progress", async () => {
+    await seedAha("aha-1");
+    await readyMeeting({ahaIds: ["aha-1"]});
+    await updateDailySafetyMeeting.run(callRequest("foreman-a", {
+      organizationId: ORG_A, id: "meeting-1", ahaIds: [],
+    }));
+    const meeting = await getMeeting(ORG_A, "meeting-1");
+    expect(meeting.ahaIds).toEqual([]);
+    expect(meeting.ahasCovered).toEqual([]);
   });
 });

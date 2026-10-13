@@ -85,12 +85,14 @@ class DailySafetyMeetingService {
     List<String>? activityIds,
     List<String>? meetingPointIds,
     List<String>? concerns,
+    List<String>? ahaIds,
   }) => _call<Object?>('updateDailySafetyMeeting', {
     'organizationId': organizationId,
     'id': id,
     'activityIds': ?activityIds,
     'meetingPointIds': ?meetingPointIds,
     'concerns': ?concerns,
+    'ahaIds': ?ahaIds,
   });
 
   /// Completes the meeting: the server requires at least one activity and

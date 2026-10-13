@@ -61,6 +61,8 @@ class AppColors {
   static const Color administration = Color(0xFF5E35B1);
   static const Color requirements = Color(0xFFC0CA33);
   static const Color inspections = Color(0xFF00838F);
+  static const Color teamMeetings = Color(0xFF6A1B9A);
+  static const Color riskAssessments = Color(0xFFB45309);
 
   // Text
   static const Color textPrimary = Color(0xFF12222E);

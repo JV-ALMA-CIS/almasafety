@@ -149,6 +149,17 @@ void main() {
       expect(find.text('Hazards'), findsOneWidget);
       expect(find.text('Corrective Actions'), findsOneWidget);
       expect(find.text('Safety Alerts'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('Risk Assessments (AHA)'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('Risk Assessments (AHA)'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('MEETINGS & LEARNING'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       expect(find.text('MEETINGS & LEARNING'), findsOneWidget);
       await tester.scrollUntilVisible(
         find.text('Daily Safety Meetings'),

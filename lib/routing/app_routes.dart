@@ -127,6 +127,12 @@ class AppRoutes {
 
   /// Daily site inspections and weekly HSE walk-downs.
   static const String inspections = '/inspections';
+
+  /// Weekly employee and monthly supervisory safety meetings.
+  static const String safetyMeetings = '/safety-meetings';
+
+  /// Risk assessments — Activity Hazard Analyses (AHA).
+  static const String riskAssessments = '/risk-assessments';
   static const String correctiveActions = '/corrective-actions';
   static const String safetyAlerts = '/safety-alerts';
   static const String notifications = '/notifications';
