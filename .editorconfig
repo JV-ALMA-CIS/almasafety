@@ -1,0 +1,7 @@
+# Keep LF line endings everywhere — the Cloud Functions lint step
+# (`firebase deploy` predeploy) rejects Windows CRLF line endings.
+root = true
+
+[*]
+end_of_line = lf
+insert_final_newline = true
