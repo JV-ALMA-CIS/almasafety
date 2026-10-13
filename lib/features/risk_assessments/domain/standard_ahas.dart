@@ -1,5 +1,46 @@
+import 'general_ahas.dart';
 import 'risk_assessment.dart';
 
+/// A starting draft in the AHA library, with where its content comes from.
+class StandardAha {
+  const StandardAha({
+    required this.content,
+    required this.label,
+    required this.source,
+  });
+
+  final AhaContent content;
+
+  /// e.g. "roofing starting draft".
+  final String label;
+
+  /// e.g. "From the Rosslyn Ridge Safety Plan".
+  final String source;
+}
+
+/// The AHA library offered by "Prepare AHA": general drafts for common
+/// kinds of construction work, and the roofing drafts. Every one is only a
+/// starting point — the competent person preparing the AHA checks each
+/// line against the actual site before it is accepted.
+final standardAhas = <StandardAha>[
+  for (final aha in generalAhas)
+    StandardAha(
+      content: aha,
+      label: 'starting draft',
+      source: 'General requirements (EM 385-1-1, Safety Plan Appendix IX)',
+    ),
+  for (final aha in _roofingAhas)
+    StandardAha(
+      content: aha,
+      label: 'roofing starting draft',
+      source: 'From the Rosslyn Ridge Safety Plan',
+    ),
+];
+
+/// ROOFING starting drafts (from the Rosslyn Ridge Safety Plan) — offered
+/// alongside a blank form and copies of other sites' AHAs, for any site
+/// doing that kind of work.
+///
 /// Starting drafts for the two features of work the Safety Plan lists in
 /// Section 10 ("1 Removals", "2 Roof construction") for the roof replacement
 /// of the 22 type "A" townhomes (Section 2.d). Written from the plan's own
@@ -7,7 +48,7 @@ import 'risk_assessment.dart';
 /// machinery, sanitation (Appendix IX). They are only a starting point: the
 /// competent person who prepares the AHA must check every line against the
 /// actual site before it is accepted.
-const standardAhas = <AhaContent>[
+const _roofingAhas = <AhaContent>[
   AhaContent(
     featureOfWork: 'Removals',
     activity:

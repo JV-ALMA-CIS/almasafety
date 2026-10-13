@@ -14,6 +14,7 @@ import 'package:jva_safety/features/inspections/data/inspection_service.dart';
 import 'package:jva_safety/features/inspections/domain/inspection.dart';
 import 'package:jva_safety/features/inspections/presentation/inspection_run_screen.dart';
 import 'package:jva_safety/features/inspections/presentation/inspections_screen.dart';
+import 'package:jva_safety/features/organizations/data/site_repository.dart';
 
 class _Session extends SessionController {
   _Session(this.role);
@@ -52,7 +53,10 @@ class _FakeService extends InspectionService {
   final signOffs = <String>[];
 
   @override
-  Future<int> installDefaultTemplates(String organizationId) async {
+  Future<int> installDefaultTemplates(
+    String organizationId, {
+    List<String>? keys,
+  }) async {
     installs++;
     return 2;
   }
@@ -302,5 +306,64 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Review & sign off'), findsNothing);
     });
+  });
+
+  testWidgets('a checklist used only at other sites is not offered', (
+    tester,
+  ) async {
+    tall(tester);
+    await firestore.doc('organizations/org/sites/site-1').set({
+      'organizationId': 'org',
+      'projectId': 'project-1',
+      'name': 'Italian Embassy',
+      'code': 'EMB',
+      'status': 'active',
+    });
+    Map<String, Object?> template(String name, List<String> siteIds) => {
+      'organizationId': 'org',
+      'name': name,
+      'kind': 'daily',
+      'status': 'active',
+      'siteIds': siteIds,
+      'sections': [
+        {
+          'title': 'A',
+          'items': [
+            {'id': 'a1', 'text': 'Check', 'hazardCategory': 'other'},
+          ],
+        },
+      ],
+    };
+    await firestore
+        .doc('organizations/org/inspection_templates/general')
+        .set(template('Daily site inspection', const []));
+    await firestore
+        .doc('organizations/org/inspection_templates/roof')
+        .set(template('Roof work inspection', const ['site-rosslyn']));
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider<SessionController>(
+        create: (_) => _Session(AppRole.foreman),
+        child: MaterialApp(
+          home: Scaffold(
+            body: InspectionsScreen(
+              repository: repository,
+              service: _FakeService(firestore),
+              siteRepository: SiteRepository(
+                firestoreService: FirestoreService(firestore: firestore),
+                organizationId: 'org',
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Start inspection'));
+    await tester.pumpAndSettle();
+
+    // The Foreman's one site is chosen for them.
+    expect(find.text('Daily site inspection'), findsOneWidget);
+    expect(find.text('Roof work inspection'), findsNothing);
   });
 }

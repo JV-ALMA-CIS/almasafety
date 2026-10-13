@@ -963,6 +963,7 @@ void main() {
       String id, {
       String status = 'accepted',
       String siteId = 'site-1',
+      List<String> activityIds = const [],
     }) {
       return firestore.doc('organizations/org-alpha/risk_assessments/$id').set({
         'organizationId': 'org-alpha',
@@ -971,6 +972,7 @@ void main() {
         'revision': 1,
         'status': status,
         'steps': <Object>[],
+        'activityIds': activityIds,
       });
     }
 
@@ -1041,6 +1043,21 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('1 AHA covered'), findsOneWidget);
+      await scrollTo(tester, 'Complete Meeting');
+      expect(completeButton(tester).onPressed, isNotNull);
+    });
+
+    testWidgets("an AHA for an activity not worked today is not offered "
+        'and does not hold the meeting up', (tester) async {
+      await readyMeeting();
+      await seedAha('aha-1', activityIds: const ['activity-other']);
+      await tester.pumpWidget(wrap(role: AppRole.foreman));
+      await tester.pumpAndSettle();
+      await scrollTo(
+        tester,
+        "None of today's activities has a risk assessment.",
+      );
+      expect(find.text('Read "Removals"'), findsNothing);
       await scrollTo(tester, 'Complete Meeting');
       expect(completeButton(tester).onPressed, isNotNull);
     });

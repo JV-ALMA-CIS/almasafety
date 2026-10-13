@@ -3,6 +3,7 @@ import '../../../core/services/firestore_service.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../authentication/domain/app_role.dart';
 import '../data/site_repository.dart';
+import '../domain/organization_record_status.dart';
 import '../domain/site.dart';
 import 'site_select_list.dart';
 
@@ -29,6 +30,9 @@ List<String>? reportableSiteIds({
 /// report at and shows them as a [SiteSelectList] (own colour and code per
 /// site; tap the chosen one again to unselect). With a single site it is
 /// chosen automatically, so nobody is asked a question with one answer.
+///
+/// Only OPEN sites are offered: a switched-off site (e.g. its project is
+/// finished) is left out, unless it is the one already chosen.
 class ReportSitePicker extends StatefulWidget {
   const ReportSitePicker({
     super.key,
@@ -94,7 +98,10 @@ class _ReportSitePickerState extends State<ReportSitePicker> {
       stream: _sites,
       builder: (context, snapshot) {
         final sites = [
-          ...?snapshot.data,
+          for (final site in snapshot.data ?? const <Site>[])
+            if (site.status == OrganizationRecordStatus.active ||
+                site.id == widget.selectedSiteId)
+              site,
         ]..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
         if (snapshot.hasError) {
           return const Text(

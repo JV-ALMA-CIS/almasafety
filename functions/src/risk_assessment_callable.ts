@@ -9,6 +9,10 @@
  *
  *   draft ──accept──▶ accepted ──(a revision is accepted)──▶ superseded
  *
+ * Each AHA covers chosen ACTIVITIES of its site (`activityIds`), or the whole
+ * site when none are chosen — the daily meeting shows the AHAs for the
+ * activities being worked that day.
+ *
  * - `saveRiskAssessment` creates a draft (revision 1) or edits a draft. A
  *   Site Manager/Admin — the plan's "competent/qualified person"; the last
  *   one to save is recorded as the preparer.
@@ -225,6 +229,43 @@ function path(organizationId: string, id: string): string {
 }
 
 /**
+ * Validates the activities an AHA covers: each must be an activity of
+ * [siteId]. Empty means the AHA covers the whole site.
+ *
+ * @param {string} organizationId the organization.
+ * @param {string} siteId the AHA's site.
+ * @param {unknown} raw the `activityIds` argument.
+ * @return {Promise<string[]>} the activity ids.
+ */
+async function readActivityIds(
+  organizationId: string,
+  siteId: string,
+  raw: unknown
+): Promise<string[]> {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw) || raw.some((id) => typeof id !== "string")) {
+    throw new HttpsError("invalid-argument", "activityIds must be a list.");
+  }
+  const ids = [...new Set(raw as string[])].filter((id) => id.trim());
+  if (ids.length > 50) {
+    throw new HttpsError("invalid-argument", "Too many activities.");
+  }
+  const db = getFirestore();
+  await Promise.all(ids.map(async (id) => {
+    const activity = (
+      await db.doc(`organizations/${organizationId}/activities/${id}`).get()
+    ).data();
+    if (!activity || activity.siteId !== siteId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Each activity must be one of this site's activities."
+      );
+    }
+  }));
+  return ids;
+}
+
+/**
  * Reads the fields of the AHA form shared by create and edit.
  *
  * @param {CallableRequest} request the incoming callable request.
@@ -288,6 +329,15 @@ export const saveRiskAssessment = onCall(async (request) => {
   const rawId = (request.data ?? {}).id;
   if (typeof rawId === "string" && rawId.trim()) {
     const ref = db.doc(path(organizationId, rawId.trim()));
+    const current = (await ref.get()).data();
+    if (!current) {
+      throw new HttpsError("not-found", "That AHA could not be found.");
+    }
+    const activityIds = await readActivityIds(
+      organizationId,
+      current.siteId as string,
+      (request.data ?? {}).activityIds
+    );
     await db.runTransaction(async (tx) => {
       const existing = (await tx.get(ref)).data();
       if (!existing) {
@@ -299,7 +349,7 @@ export const saveRiskAssessment = onCall(async (request) => {
           "Only a draft can be edited. Start a revision instead."
         );
       }
-      tx.update(ref, {...form, ...preparer});
+      tx.update(ref, {...form, activityIds, ...preparer});
     });
     return {id: ref.id};
   }
@@ -309,6 +359,9 @@ export const saveRiskAssessment = onCall(async (request) => {
     await db.doc(`organizations/${organizationId}/sites/${siteId}`).get()
   ).data();
   if (!site) throw new HttpsError("not-found", "That site could not be found.");
+  const activityIds = await readActivityIds(
+    organizationId, siteId, (request.data ?? {}).activityIds
+  );
   const ref = db.collection(`organizations/${organizationId}/risk_assessments`)
     .doc();
   await ref.set({
@@ -317,6 +370,7 @@ export const saveRiskAssessment = onCall(async (request) => {
     siteName: typeof site.name === "string" ? site.name : null,
     projectId: typeof site.projectId === "string" ? site.projectId : null,
     ...form,
+    activityIds,
     status: "draft",
     revision: 1,
     previousId: null,
@@ -447,6 +501,7 @@ export const reviseRiskAssessment = onCall(async (request) => {
       siteName: aha.siteName ?? null,
       projectId: aha.projectId ?? null,
       featureOfWork: aha.featureOfWork,
+      activityIds: aha.activityIds ?? [],
       activity: aha.activity ?? null,
       contractNo: aha.contractNo ?? null,
       location: aha.location ?? null,

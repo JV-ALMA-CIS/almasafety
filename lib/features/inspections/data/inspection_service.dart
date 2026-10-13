@@ -5,6 +5,7 @@ import 'package:firebase_core/firebase_core.dart';
 import '../../../core/errors/app_exception.dart';
 import '../../../core/services/storage_service.dart';
 import '../../organizations/data/organization_admin_service.dart';
+import '../domain/checklist_text.dart';
 import '../domain/inspection.dart';
 
 /// Client for `functions/src/inspection_callable.ts`, plus the photo upload
@@ -30,14 +31,34 @@ class InspectionService {
     return FirebaseFunctions.instance;
   }
 
-  /// Installs the standard templates (daily inspection, weekly walk-down);
-  /// returns how many were added (0 when already installed).
-  Future<int> installDefaultTemplates(String organizationId) async {
+  /// Installs standard checklists: without [keys] the general ones (daily
+  /// inspection, weekly walk-down), otherwise exactly those from the
+  /// library. Returns how many were added (0 when already installed).
+  Future<int> installDefaultTemplates(
+    String organizationId, {
+    List<String>? keys,
+  }) async {
     final result = await _call<Map<Object?, Object?>>(
       'installDefaultInspectionTemplates',
-      {'organizationId': organizationId},
+      {'organizationId': organizationId, 'keys': ?keys},
     );
     return (result['added'] as num?)?.toInt() ?? 0;
+  }
+
+  /// The checklist library, with which ones this organization has.
+  Future<List<StandardChecklist>> listStandardTemplates(
+    String organizationId,
+  ) async {
+    final result = await _call<Map<Object?, Object?>>(
+      'listStandardInspectionTemplates',
+      {'organizationId': organizationId},
+    );
+    final templates = result['templates'];
+    if (templates is! List) return const [];
+    return [
+      for (final raw in templates)
+        if (raw is Map) StandardChecklist.fromMap(raw.cast()),
+    ];
   }
 
   /// Creates (no [templateId]) or updates a template; returns its id.
@@ -49,6 +70,7 @@ class InspectionService {
     String? description,
     required List<TemplateSection> sections,
     bool active = true,
+    List<String> siteIds = const [],
   }) async {
     final result = await _call<Map<Object?, Object?>>(
       'saveInspectionTemplate',
@@ -59,6 +81,7 @@ class InspectionService {
         'kind': kind.id,
         'description': ?description,
         'sections': [for (final section in sections) section.toJson()],
+        'siteIds': siteIds,
         'status': active ? 'active' : 'inactive',
       },
     );

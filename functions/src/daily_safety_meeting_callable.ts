@@ -669,25 +669,49 @@ async function requireAcceptedAhasAtSite(
 }
 
 /**
- * Whether [siteId] has any accepted risk assessment (AHA) — if so, the
- * Safety Plan requires the Foreman to cover one with the crew before work
- * begins, so the meeting cannot be completed without.
+ * Today's activities that still need their risk assessment (AHA) covered.
+ * The Safety Plan: Foremen cover the activity hazard analysis with the crew
+ * before work begins. An accepted AHA of the site applies to an activity
+ * when it lists that activity, or lists none (it covers the whole site).
+ * An activity with an applicable AHA is covered once ANY applicable AHA is
+ * in [coveredIds]; an activity with none applicable needs nothing.
  *
  * @param {string} organizationId the organization.
  * @param {string} siteId the meeting's site.
- * @return {Promise<boolean>} true when the site has one.
+ * @param {string[]} activityIds the meeting's activities.
+ * @param {string[]} coveredIds the AHAs ticked as covered.
+ * @return {Promise<string[]>} the names of the activities still needing
+ * one (empty when the meeting may be completed).
  */
-async function siteHasAcceptedAha(
+async function activitiesNeedingAha(
   organizationId: string,
-  siteId: string
-): Promise<boolean> {
-  const snapshot = await getFirestore()
+  siteId: string,
+  activityIds: string[],
+  coveredIds: string[]
+): Promise<string[]> {
+  const db = getFirestore();
+  const snapshot = await db
     .collection(`organizations/${organizationId}/risk_assessments`)
     .where("siteId", "==", siteId)
     .where("status", "==", "accepted")
-    .limit(1)
     .get();
-  return !snapshot.empty;
+  const ahas = snapshot.docs.map((doc) => ({
+    id: doc.id,
+    activityIds: (doc.data().activityIds as string[] | undefined) ?? [],
+  }));
+  const missing = activityIds.filter((activityId) => {
+    const applicable = ahas.filter(
+      (a) => a.activityIds.length === 0 || a.activityIds.includes(activityId)
+    );
+    return applicable.length > 0 &&
+      !applicable.some((a) => coveredIds.includes(a.id));
+  });
+  return Promise.all(missing.map(async (id) => {
+    const activity = (
+      await db.doc(`organizations/${organizationId}/activities/${id}`).get()
+    ).data();
+    return typeof activity?.name === "string" ? activity.name : id;
+  }));
 }
 
 /**
@@ -788,15 +812,17 @@ export const completeDailySafetyMeeting = onCall(async (request) => {
 
   // Safety Plan: Foremen cover the activity hazard analysis with the crew
   // before work begins.
-  const coveredAhaIds = (meeting.ahaIds as string[] | undefined) ?? [];
-  if (
-    coveredAhaIds.length === 0 &&
-    await siteHasAcceptedAha(organizationId, meeting.siteId as string)
-  ) {
+  const needingAha = await activitiesNeedingAha(
+    organizationId,
+    meeting.siteId as string,
+    activityIds,
+    (meeting.ahaIds as string[] | undefined) ?? []
+  );
+  if (needingAha.length > 0) {
     throw new HttpsError(
       "failed-precondition",
-      "Cover the risk assessment (AHA) for today's work with the crew, " +
-        "and tick it, before completing this meeting."
+      "Cover the risk assessment (AHA) with the crew, and tick it, for: " +
+        needingAha.join(", ") + "."
     );
   }
 

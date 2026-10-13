@@ -227,13 +227,88 @@ function readSections(raw: unknown): TemplateSection[] {
 }
 
 /**
- * Installs the standard templates (daily site inspection, weekly HSE
- * walk-down) for [organizationId], skipping any already installed — safe
- * to call more than once. Site Manager/Admin only.
+ * Reads the sites a template is used at: each must be a site of the
+ * organization. Empty means every site.
+ *
+ * @param {string} organizationId the organization.
+ * @param {unknown} raw the `siteIds` argument.
+ * @return {Promise<string[]>} the site ids.
+ */
+async function readSiteIds(
+  organizationId: string,
+  raw: unknown
+): Promise<string[]> {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw) || raw.some((id) => typeof id !== "string")) {
+    throw new HttpsError("invalid-argument", "siteIds must be a list.");
+  }
+  const ids = [...new Set(raw as string[])].filter((id) => id.trim());
+  if (ids.length > 200) {
+    throw new HttpsError("invalid-argument", "Too many sites.");
+  }
+  const db = getFirestore();
+  await Promise.all(ids.map(async (id) => {
+    const site = (
+      await db.doc(`organizations/${organizationId}/sites/${id}`).get()
+    ).data();
+    if (!site) {
+      throw new HttpsError("invalid-argument", "One of the sites is unknown.");
+    }
+  }));
+  return ids;
+}
+
+/**
+ * The checklist library: every standard checklist, and whether this
+ * organization already has it. Site Manager/Admin only.
+ */
+export const listStandardInspectionTemplates = onCall(async (request) => {
+  const organizationId = requireString(request, "organizationId");
+  await requireIncidentInvestigator(request, organizationId);
+  const existing = await getFirestore()
+    .collection(`organizations/${organizationId}/inspection_templates`)
+    .get();
+  const installed = new Set(
+    existing.docs.map((doc) => doc.data().defaultKey).filter(Boolean)
+  );
+  return {
+    templates: DEFAULT_TEMPLATES.map((t) => ({
+      key: t.defaultKey,
+      name: t.name,
+      kind: t.kind,
+      description: t.description,
+      core: t.core,
+      itemCount: t.sections.reduce((n, s) => n + s.items.length, 0),
+      installed: installed.has(t.defaultKey),
+    })),
+  };
+});
+
+/**
+ * Installs standard templates for [organizationId], skipping any already
+ * installed — safe to call more than once. Without `keys`, the general
+ * ones (`core`: daily site inspection, weekly HSE walk-down); with `keys`,
+ * exactly those library checklists. Site Manager/Admin only.
  */
 export const installDefaultInspectionTemplates = onCall(async (request) => {
   const organizationId = requireString(request, "organizationId");
   const uid = await requireIncidentInvestigator(request, organizationId);
+  const rawKeys = (request.data ?? {}).keys;
+  if (
+    rawKeys !== undefined && rawKeys !== null &&
+    (!Array.isArray(rawKeys) || rawKeys.some((k) => typeof k !== "string"))
+  ) {
+    throw new HttpsError("invalid-argument", "keys must be a list.");
+  }
+  const keys = Array.isArray(rawKeys) ? rawKeys as string[] : null;
+  if (keys && keys.some((k) => !DEFAULT_TEMPLATES.some(
+    (t) => t.defaultKey === k
+  ))) {
+    throw new HttpsError("invalid-argument", "Unknown standard checklist.");
+  }
+  const wanted = DEFAULT_TEMPLATES.filter(
+    (t) => keys ? keys.includes(t.defaultKey) : t.core
+  );
   const db = getFirestore();
   const collection = db.collection(
     `organizations/${organizationId}/inspection_templates`
@@ -245,15 +320,19 @@ export const installDefaultInspectionTemplates = onCall(async (request) => {
   const batch = db.batch();
   const now = FieldValue.serverTimestamp();
   let added = 0;
-  for (const template of DEFAULT_TEMPLATES) {
+  const ids: string[] = [];
+  for (const template of wanted) {
     if (installed.has(template.defaultKey)) continue;
-    batch.set(collection.doc(), {
+    const ref = collection.doc();
+    ids.push(ref.id);
+    batch.set(ref, {
       organizationId,
       defaultKey: template.defaultKey,
       name: template.name,
       kind: template.kind,
       description: template.description,
       sections: template.sections,
+      siteIds: [],
       status: "active",
       createdAt: now,
       createdBy: uid,
@@ -263,7 +342,7 @@ export const installDefaultInspectionTemplates = onCall(async (request) => {
     added++;
   }
   if (added > 0) await batch.commit();
-  return {added};
+  return {added, ids};
 });
 
 /**
@@ -284,6 +363,9 @@ export const saveInspectionTemplate = onCall(async (request) => {
   }
   const description = optionalString(request, "description", 500);
   const sections = readSections((request.data ?? {}).sections);
+  const siteIds = await readSiteIds(
+    organizationId, (request.data ?? {}).siteIds
+  );
   const templateId = optionalString(request, "templateId", 200);
   const status = optionalString(request, "status", 20) ?? "active";
   if (status !== "active" && status !== "inactive") {
@@ -310,6 +392,7 @@ export const saveInspectionTemplate = onCall(async (request) => {
       kind,
       description,
       sections,
+      siteIds,
       status,
       updatedAt: now,
       updatedBy: uid,
@@ -324,6 +407,7 @@ export const saveInspectionTemplate = onCall(async (request) => {
     kind,
     description,
     sections,
+    siteIds,
     status,
     createdAt: now,
     createdBy: uid,
@@ -388,6 +472,13 @@ export const startInspection = onCall(async (request) => {
     throw new HttpsError(
       "failed-precondition",
       "That template is switched off."
+    );
+  }
+  const usedAt = (template.siteIds as string[] | undefined) ?? [];
+  if (usedAt.length > 0 && !usedAt.includes(siteId)) {
+    throw new HttpsError(
+      "failed-precondition",
+      "That checklist is not used at this site."
     );
   }
 

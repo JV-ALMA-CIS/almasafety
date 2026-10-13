@@ -162,6 +162,7 @@ export {
 
 export {
   installDefaultInspectionTemplates,
+  listStandardInspectionTemplates,
   saveInspectionTemplate,
   startInspection,
   recordInspectionItem,

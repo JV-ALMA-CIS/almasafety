@@ -7,12 +7,28 @@ import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../core/widgets/choice_list.dart';
 import '../../../core/widgets/feature_header.dart';
+import '../../activities/data/activity_admin_service.dart';
+import '../../activities/domain/activity.dart';
 import '../../authentication/presentation/auth_error_banner.dart';
 import '../../organizations/data/site_repository.dart';
 import '../../organizations/presentation/report_site_picker.dart';
 import '../data/risk_assessment_service.dart';
+import '../domain/aha_text.dart';
 import '../domain/risk_assessment.dart';
 import 'risk_assessment_style.dart';
+
+/// Loads one site's activities. Injected in tests.
+typedef SiteActivitiesLoader =
+    Future<List<Activity>> Function(String organizationId, String siteId);
+
+/// The default [SiteActivitiesLoader]: the `getSiteActivities` callable.
+Future<List<Activity>> loadSiteActivities(
+  String organizationId,
+  String siteId,
+) => ActivityAdminService().getSiteActivities(
+  organizationId: organizationId,
+  siteId: siteId,
+);
 
 /// Prepares an AHA: a new draft from [initial] (a standard draft or blank,
 /// site chosen here) or edits the draft [existing]. Pops the draft's id once
@@ -28,6 +44,7 @@ class RiskAssessmentEditorScreen extends StatefulWidget {
     this.initial,
     this.service,
     this.siteRepository,
+    this.loadActivities,
   }) : assert(existing != null || initial != null);
 
   final String organizationId;
@@ -37,6 +54,7 @@ class RiskAssessmentEditorScreen extends StatefulWidget {
   /// Injected in tests.
   final RiskAssessmentService? service;
   final SiteRepository? siteRepository;
+  final SiteActivitiesLoader? loadActivities;
 
   @override
   State<RiskAssessmentEditorScreen> createState() =>
@@ -99,6 +117,26 @@ class _RiskAssessmentEditorScreenState
   ];
   late String? _startDate = _start.estimatedStartDate;
   String? _siteId;
+
+  /// The site's activities this AHA covers; empty = the whole site.
+  late final Set<String> _activityIds = {...?widget.existing?.activityIds};
+  String? _activitiesSiteId;
+  Future<List<Activity>>? _activities;
+
+  String? get _effectiveSiteId => widget.existing?.siteId ?? _siteId;
+
+  /// The chosen site's activities, fetched once per site.
+  Future<List<Activity>> _activitiesFor(String siteId) {
+    if (_activitiesSiteId != siteId || _activities == null) {
+      _activitiesSiteId = siteId;
+      _activities = (widget.loadActivities ?? loadSiteActivities)(
+        widget.organizationId,
+        siteId,
+      ).catchError((Object _) => const <Activity>[]);
+    }
+    return _activities!;
+  }
+
   bool _isSaving = false;
   String? _errorMessage;
 
@@ -142,6 +180,48 @@ class _RiskAssessmentEditorScreenState
       () =>
           _startDate = '${picked.year}-${two(picked.month)}-${two(picked.day)}',
     );
+  }
+
+  /// Adds what was pasted in [_PasteAhaDialog]: its steps after the
+  /// existing ones (replacing them when they are all still empty), its
+  /// lines added to the three lists, and the feature of work / activity
+  /// when those are still blank.
+  Future<void> _pasteAha() async {
+    final parsed = await showDialog<ParsedAha>(
+      context: context,
+      builder: (_) => const _PasteAhaDialog(),
+    );
+    if (parsed == null || !mounted) return;
+    void addLines(TextEditingController controller, List<String> lines) {
+      final existing = splitLines(controller.text);
+      final merged = [
+        ...existing,
+        for (final line in lines)
+          if (!existing.contains(line)) line,
+      ];
+      controller.text = merged.join('\n');
+    }
+
+    setState(() {
+      if (_steps.every((s) => s.step.text.trim().isEmpty)) {
+        for (final step in _steps) {
+          step.dispose();
+        }
+        _steps.clear();
+      }
+      for (final step in parsed.steps) {
+        _steps.add(_StepFields(step));
+      }
+      addLines(_equipment, parsed.equipment);
+      addLines(_inspections, parsed.inspectionRequirements);
+      addLines(_training, parsed.trainingRequirements);
+      if (_featureOfWork.text.trim().isEmpty && parsed.featureOfWork != null) {
+        _featureOfWork.text = parsed.featureOfWork!;
+      }
+      if (_activity.text.trim().isEmpty && parsed.activity != null) {
+        _activity.text = parsed.activity!;
+      }
+    });
   }
 
   void _moveStep(int index, int delta) {
@@ -205,6 +285,7 @@ class _RiskAssessmentEditorScreenState
         organizationId: widget.organizationId,
         id: widget.existing?.id,
         siteId: _isNew ? _siteId : null,
+        activityIds: _activityIds.toList(),
         content: AhaContent(
           featureOfWork: feature,
           activity: _optional(_activity),
@@ -293,8 +374,73 @@ class _RiskAssessmentEditorScreenState
               organizationId: widget.organizationId,
               siteIds: siteIds,
               selectedSiteId: _siteId,
-              onChanged: (id) => setState(() => _siteId = id),
+              onChanged: (id) => setState(() {
+                if (id != _siteId) _activityIds.clear();
+                _siteId = id;
+              }),
               siteRepository: widget.siteRepository,
+            ),
+          ],
+          if (_effectiveSiteId != null) ...[
+            const SizedBox(height: AppSpacing.md),
+            const FeatureSectionTitle(
+              title: 'Activities covered',
+              icon: Icons.handyman,
+              color: AppColors.projects,
+            ),
+            const SizedBox(height: AppSpacing.xs),
+            const Text(
+              "The daily meeting shows this AHA when one of these activities "
+              'is worked. Choose "Whole site" if it applies to all work here.',
+              style: AppTextStyles.bodyMedium,
+            ),
+            const SizedBox(height: AppSpacing.sm),
+            ChoiceTile(
+              title: 'Whole site',
+              subtitle: 'Every activity at this site',
+              icon: Icons.domain,
+              color: AppColors.projects,
+              selected: _activityIds.isEmpty,
+              onTap: () => setState(_activityIds.clear),
+            ),
+            const SizedBox(height: AppSpacing.sm),
+            FutureBuilder<List<Activity>>(
+              future: _activitiesFor(_effectiveSiteId!),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState != ConnectionState.done) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                final activities = [
+                  for (final activity in snapshot.data ?? const <Activity>[])
+                    if (activity.status.id == 'active' ||
+                        _activityIds.contains(activity.id))
+                      activity,
+                ];
+                if (activities.isEmpty) {
+                  return const Text(
+                    'This site has no activities set up yet, so the AHA '
+                    'covers the whole site.',
+                    style: AppTextStyles.bodyMedium,
+                  );
+                }
+                return MultiChoiceList<String>(
+                  items: [
+                    for (final activity in activities)
+                      ChoiceItem(
+                        value: activity.id,
+                        title: activity.name,
+                        subtitle: activity.code,
+                        icon: Icons.handyman,
+                      ),
+                  ],
+                  selected: _activityIds,
+                  onChanged: (value) => setState(() {
+                    _activityIds
+                      ..clear()
+                      ..addAll(value);
+                  }),
+                );
+              },
             ),
           ],
           const SizedBox(height: AppSpacing.md),
@@ -358,6 +504,15 @@ class _RiskAssessmentEditorScreenState
             'In the order the work is done. For each step: what can go '
             'wrong, and what will be done about it.',
             style: AppTextStyles.bodyMedium,
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              onPressed: _pasteAha,
+              icon: const Icon(Icons.content_paste),
+              label: const Text('Paste an AHA'),
+            ),
           ),
           for (var i = 0; i < _steps.length; i++) ...[
             const SizedBox(height: AppSpacing.md),
@@ -536,6 +691,99 @@ class _StepCard extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Paste an AHA as text (e.g. from a Word or PDF AHA) — see
+/// [parseAhaText] for the layout. Shows what was found; pops the
+/// [ParsedAha].
+class _PasteAhaDialog extends StatefulWidget {
+  const _PasteAhaDialog();
+
+  @override
+  State<_PasteAhaDialog> createState() => _PasteAhaDialogState();
+}
+
+class _PasteAhaDialogState extends State<_PasteAhaDialog> {
+  final _text = TextEditingController();
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final parsed = parseAhaText(_text.text);
+    String count(int n, String what) => '$n $what${n == 1 ? '' : 's'}';
+    return AlertDialog(
+      title: const Text('Paste an AHA'),
+      content: SizedBox(
+        width: 560,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'Paste it in the order of the AHA form: each numbered line '
+                'is a step, followed by its "Hazards:" and "Controls:". '
+                'Then "Equipment:", "Inspection requirements:" and '
+                '"Training requirements:". Bullets are removed. You can '
+                'adjust everything afterwards.',
+              ),
+              const SizedBox(height: AppSpacing.md),
+              TextField(
+                controller: _text,
+                minLines: 10,
+                maxLines: 18,
+                onChanged: (_) => setState(() {}),
+                decoration: const InputDecoration(
+                  hintText:
+                      '1. Erect scaffold\n'
+                      'Hazards:\n'
+                      '- Falls from height\n'
+                      'Controls:\n'
+                      '- Guardrails on open sides\n'
+                      '2. Paint walls\n'
+                      '...\n'
+                      'Equipment:\n'
+                      '- Scaffold, rollers\n'
+                      'Training requirements:\n'
+                      '- Working at height',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              Text(
+                parsed.isEmpty
+                    ? 'Nothing found yet.'
+                    : '${count(parsed.steps.length, 'step')}, '
+                          '${count(parsed.hazardCount, 'hazard')}, '
+                          '${count(parsed.controlCount, 'control')}; '
+                          '${count(parsed.equipment.length, 'equipment line')}, '
+                          '${count(parsed.inspectionRequirements.length, 'inspection line')}, '
+                          '${count(parsed.trainingRequirements.length, 'training line')}',
+                style: AppTextStyles.bodyMedium,
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: parsed.isEmpty
+              ? null
+              : () => Navigator.of(context).pop(parsed),
+          child: const Text('Add to AHA'),
+        ),
+      ],
     );
   }
 }

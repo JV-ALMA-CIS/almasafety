@@ -12,6 +12,7 @@ import '../../../core/widgets/empty_state.dart';
 import '../../../core/widgets/feature_header.dart';
 import '../../../core/widgets/live_stream_builder.dart';
 import '../../authentication/domain/app_role.dart';
+import '../../activities/domain/activity.dart';
 import '../../authentication/presentation/auth_error_banner.dart';
 import '../../organizations/data/site_repository.dart';
 import '../data/risk_assessment_repository.dart';
@@ -34,12 +35,14 @@ class RiskAssessmentsScreen extends StatefulWidget {
     this.repository,
     this.service,
     this.siteRepository,
+    this.loadActivities,
   });
 
   /// Injected in tests.
   final RiskAssessmentRepository? repository;
   final RiskAssessmentService? service;
   final SiteRepository? siteRepository;
+  final SiteActivitiesLoader? loadActivities;
 
   @override
   State<RiskAssessmentsScreen> createState() => _RiskAssessmentsScreenState();
@@ -62,10 +65,13 @@ class _RiskAssessmentsScreenState extends State<RiskAssessmentsScreen> {
         );
   }
 
-  Future<void> _prepare(String organizationId) async {
+  Future<void> _prepare(
+    String organizationId,
+    List<RiskAssessment> copyable,
+  ) async {
     final navigator = Navigator.of(context, rootNavigator: true);
     final start = await navigator.push<AhaContent>(
-      MaterialPageRoute(builder: (_) => const _ChooseStartScreen()),
+      MaterialPageRoute(builder: (_) => _ChooseStartScreen(copyable: copyable)),
     );
     if (start == null || !mounted) return;
     final id = await navigator.push<String>(
@@ -75,6 +81,7 @@ class _RiskAssessmentsScreenState extends State<RiskAssessmentsScreen> {
           initial: start,
           service: widget.service,
           siteRepository: widget.siteRepository,
+          loadActivities: widget.loadActivities,
         ),
       ),
     );
@@ -90,6 +97,7 @@ class _RiskAssessmentsScreenState extends State<RiskAssessmentsScreen> {
           repository: _repositoryFor(organizationId),
           service: widget.service,
           siteRepository: widget.siteRepository,
+          loadActivities: widget.loadActivities,
         ),
       ),
     );
@@ -197,10 +205,9 @@ class _RiskAssessmentsScreenState extends State<RiskAssessmentsScreen> {
                   icon: Icons.assignment_late,
                   title: 'No risk assessments yet',
                   message: isManager
-                      ? 'Tap "Prepare AHA" to start one. The Safety Plan '
-                            'needs one for Removals and one for Roof '
-                            'construction — both are ready as drafts to check '
-                            'and adjust.'
+                      ? 'Tap "Prepare AHA" to start one for a site\'s work — '
+                            'paste your own into a blank form, copy another '
+                            'AHA, or start from a library draft.'
                       : 'Your Site Manager has not published a risk '
                             'assessment for your site yet.',
                 ),
@@ -254,7 +261,8 @@ class _RiskAssessmentsScreenState extends State<RiskAssessmentsScreen> {
                   heroTag: 'prepare-aha',
                   backgroundColor: AppColors.riskAssessments,
                   foregroundColor: Colors.white,
-                  onPressed: () => _prepare(organizationId),
+                  onPressed: () =>
+                      _prepare(organizationId, [...inUse, ...drafts]),
                   icon: const Icon(Icons.add),
                   label: const Text('Prepare AHA'),
                 )
@@ -313,22 +321,69 @@ class RiskAssessmentCard extends StatelessWidget {
   }
 }
 
-/// Where a new AHA starts from: one of the plan's standard drafts, or
-/// blank. Pops the chosen [AhaContent].
+/// Where a new AHA starts from: a blank form, a copy of an existing AHA
+/// (any site, accepted or draft), or a starting draft from the library.
+/// Pops the chosen [AhaContent].
 class _ChooseStartScreen extends StatefulWidget {
-  const _ChooseStartScreen();
+  const _ChooseStartScreen({required this.copyable});
+
+  /// AHAs (any site, accepted or draft) that can be copied as a start.
+  final List<RiskAssessment> copyable;
 
   @override
   State<_ChooseStartScreen> createState() => _ChooseStartScreenState();
 }
 
+/// One choice on [_ChooseStartScreen].
+class _StartOption {
+  const _StartOption({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.color,
+    required this.content,
+  });
+
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final Color color;
+  final AhaContent content;
+}
+
 class _ChooseStartScreenState extends State<_ChooseStartScreen> {
-  static const _blank = AhaContent(featureOfWork: '');
-  AhaContent? _choice;
+  int? _choice;
 
   @override
   Widget build(BuildContext context) {
-    final options = [...standardAhas, _blank];
+    final options = <_StartOption>[
+      const _StartOption(
+        title: 'Blank form',
+        subtitle: 'For any kind of work — or paste your own AHA into it',
+        icon: Icons.note_add_outlined,
+        color: AppColors.textSecondary,
+        content: AhaContent(featureOfWork: ''),
+      ),
+      for (final aha in widget.copyable)
+        _StartOption(
+          title: 'Copy: ${aha.featureOfWork} (${aha.siteName ?? 'a site'})',
+          subtitle:
+              '${aha.status == RiskAssessmentStatus.draft ? 'Draft' : 'In use'}'
+              ' · revision ${aha.revision} · ${aha.steps.length} steps — '
+              'adjust it for the site',
+          icon: Icons.copy_all,
+          color: AppColors.riskAssessments,
+          content: copyAhaContent(aha),
+        ),
+      for (final draft in standardAhas)
+        _StartOption(
+          title: '${draft.content.featureOfWork} — ${draft.label}',
+          subtitle: '${draft.source} · ${draft.content.steps.length} steps',
+          icon: Icons.menu_book_outlined,
+          color: AppColors.projects,
+          content: draft.content,
+        ),
+    ];
     return Scaffold(
       appBar: AppBar(),
       body: ListView(
@@ -337,8 +392,9 @@ class _ChooseStartScreenState extends State<_ChooseStartScreen> {
           const FeatureHeader(
             title: 'Prepare an AHA',
             subtitle:
-                'Start from a standard draft for the Safety Plan\'s phases of '
-                'work, or from a blank form.',
+                'Start from a blank form (and paste your own AHA), a copy of '
+                'an existing AHA, or a starting draft from the library — '
+                'then adjust it for the site.',
             icon: Icons.assignment_late,
             color: AppColors.riskAssessments,
           ),
@@ -348,24 +404,15 @@ class _ChooseStartScreenState extends State<_ChooseStartScreen> {
               for (var i = 0; i < options.length; i++)
                 ChoiceItem(
                   value: i,
-                  title: identical(options[i], _blank)
-                      ? 'Blank form'
-                      : '${options[i].featureOfWork} — standard draft',
-                  subtitle: identical(options[i], _blank)
-                      ? 'For any other phase of work'
-                      : '${options[i].steps.length} steps, '
-                            '${options[i].hazardCount} hazards with controls',
-                  icon: identical(options[i], _blank)
-                      ? Icons.note_add_outlined
-                      : Icons.assignment_late,
-                  color: identical(options[i], _blank)
-                      ? AppColors.textSecondary
-                      : AppColors.riskAssessments,
+                  title: options[i].title,
+                  subtitle: options[i].subtitle,
+                  icon: options[i].icon,
+                  color: options[i].color,
                 ),
             ],
-            selected: _choice == null ? null : options.indexOf(_choice!),
-            onChanged: (i) =>
-                setState(() => _choice = i == null ? null : options[i]),
+            selected: _choice,
+            searchHint: 'Search AHAs and drafts',
+            onChanged: (i) => setState(() => _choice = i),
           ),
           const SizedBox(height: AppSpacing.lg),
           SizedBox(
@@ -377,7 +424,7 @@ class _ChooseStartScreenState extends State<_ChooseStartScreen> {
               ),
               onPressed: _choice == null
                   ? null
-                  : () => Navigator.of(context).pop(_choice),
+                  : () => Navigator.of(context).pop(options[_choice!].content),
               icon: const Icon(Icons.arrow_forward),
               label: const Text('Continue'),
             ),
@@ -400,6 +447,7 @@ class RiskAssessmentDetailScreen extends StatefulWidget {
     required this.repository,
     this.service,
     this.siteRepository,
+    this.loadActivities,
   });
 
   final String organizationId;
@@ -407,6 +455,7 @@ class RiskAssessmentDetailScreen extends StatefulWidget {
   final RiskAssessmentRepository repository;
   final RiskAssessmentService? service;
   final SiteRepository? siteRepository;
+  final SiteActivitiesLoader? loadActivities;
 
   @override
   State<RiskAssessmentDetailScreen> createState() =>
@@ -419,6 +468,20 @@ class _RiskAssessmentDetailScreenState
       widget.service ?? RiskAssessmentService();
   late String _id = widget.id;
   bool _isBusy = false;
+  String? _activitiesSiteId;
+  Future<List<Activity>>? _activities;
+
+  Future<List<Activity>> _activitiesFor(String siteId) {
+    if (_activitiesSiteId != siteId || _activities == null) {
+      _activitiesSiteId = siteId;
+      _activities = (widget.loadActivities ?? loadSiteActivities)(
+        widget.organizationId,
+        siteId,
+      ).catchError((Object _) => const <Activity>[]);
+    }
+    return _activities!;
+  }
+
   String? _errorMessage;
 
   Future<void> _run(Future<void> Function() action) async {
@@ -443,6 +506,7 @@ class _RiskAssessmentDetailScreenState
           existing: aha,
           service: widget.service,
           siteRepository: widget.siteRepository,
+          loadActivities: widget.loadActivities,
         ),
       ),
     );
@@ -562,6 +626,11 @@ class _RiskAssessmentDetailScreenState
                     icon: Icons.location_city,
                     text: 'Site: ${aha.siteName ?? '—'}',
                   ),
+                  if (aha.activityIds.isEmpty)
+                    const AccentDetail(
+                      icon: Icons.handyman,
+                      text: 'Covers: all work at this site',
+                    ),
                   if (aha.location != null)
                     AccentDetail(
                       icon: Icons.place_outlined,
@@ -578,6 +647,24 @@ class _RiskAssessmentDetailScreenState
                   ),
                 ],
               ),
+              if (aha.activityIds.isNotEmpty)
+                FutureBuilder<List<Activity>>(
+                  future: _activitiesFor(aha.siteId),
+                  builder: (context, snapshot) {
+                    final names = {
+                      for (final a in snapshot.data ?? const <Activity>[])
+                        a.id: a.name,
+                    };
+                    return Padding(
+                      padding: const EdgeInsets.only(top: AppSpacing.sm),
+                      child: Text(
+                        'Covers: '
+                        '${aha.activityIds.map((id) => names[id] ?? 'an activity').join(', ')}',
+                        style: AppTextStyles.bodyLarge,
+                      ),
+                    );
+                  },
+                ),
               if (_errorMessage != null) ...[
                 const SizedBox(height: AppSpacing.md),
                 AuthErrorBanner(message: _errorMessage!),

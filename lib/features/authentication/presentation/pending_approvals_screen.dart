@@ -14,6 +14,7 @@ import '../../../core/theme/app_text_styles.dart';
 import '../../organizations/data/organization_repository.dart';
 import '../../organizations/data/site_repository.dart';
 import '../../organizations/domain/organization.dart';
+import '../../organizations/domain/organization_record_status.dart';
 import '../../organizations/domain/site.dart';
 import '../../organizations/presentation/site_select_list.dart';
 import '../data/account_approval_service.dart';
@@ -746,7 +747,13 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
                 .watchByIds(ownSiteIds)
                 .first;
       if (!mounted) return;
-      setState(() => _sites = sites);
+      // New people are only placed on open sites.
+      setState(
+        () => _sites = [
+          for (final site in sites)
+            if (site.status == OrganizationRecordStatus.active) site,
+        ],
+      );
     } catch (_) {
       if (!mounted) return;
       setState(() => _sitesError = 'Could not load sites. Please try again.');

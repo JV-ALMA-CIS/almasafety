@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:jva_safety/core/services/firestore_service.dart';
+import 'package:jva_safety/features/activities/domain/activity.dart';
+import 'package:jva_safety/features/organizations/domain/organization_record_status.dart';
 import 'package:jva_safety/core/services/session_controller.dart';
 import 'package:jva_safety/features/authentication/domain/account_status.dart';
 import 'package:jva_safety/features/authentication/domain/app_role.dart';
@@ -11,6 +13,7 @@ import 'package:jva_safety/features/authentication/domain/user_profile.dart';
 import 'package:jva_safety/features/organizations/data/site_repository.dart';
 import 'package:jva_safety/features/risk_assessments/data/risk_assessment_repository.dart';
 import 'package:jva_safety/features/risk_assessments/data/risk_assessment_service.dart';
+import 'package:jva_safety/features/risk_assessments/domain/aha_text.dart';
 import 'package:jva_safety/features/risk_assessments/domain/risk_assessment.dart';
 import 'package:jva_safety/features/risk_assessments/domain/standard_ahas.dart';
 import 'package:jva_safety/features/risk_assessments/presentation/risk_assessment_editor_screen.dart';
@@ -49,6 +52,7 @@ class _FakeService extends RiskAssessmentService {
   final FakeFirebaseFirestore firestore;
   final saved = <AhaContent>[];
   final savedSiteIds = <String?>[];
+  final savedActivityIds = <List<String>>[];
   final accepted = <String>[];
   final revised = <String>[];
 
@@ -57,9 +61,11 @@ class _FakeService extends RiskAssessmentService {
     required String organizationId,
     String? id,
     String? siteId,
+    List<String> activityIds = const [],
     required AhaContent content,
   }) async {
     saved.add(content);
+    savedActivityIds.add(activityIds);
     savedSiteIds.add(siteId);
     final newId = id ?? 'new-aha';
     await firestore.doc('organizations/org/risk_assessments/$newId').set({
@@ -105,6 +111,21 @@ class _FakeService extends RiskAssessmentService {
     return 'rev-2';
   }
 }
+
+Activity _activity(String id, String name) => Activity(
+  id: id,
+  organizationId: 'org',
+  projectId: 'project-1',
+  siteId: 'site-1',
+  name: name,
+  code: name.substring(0, 3).toUpperCase(),
+  status: OrganizationRecordStatus.active,
+);
+
+Future<List<Activity>> _loadActivities(String org, String site) async => [
+  _activity('roofing', 'Roofing'),
+  _activity('painting', 'Painting'),
+];
 
 void main() {
   late FakeFirebaseFirestore firestore;
@@ -178,6 +199,7 @@ void main() {
           repository: repository,
           service: service,
           siteRepository: siteRepository,
+          loadActivities: _loadActivities,
         ),
       ),
     ),
@@ -185,11 +207,12 @@ void main() {
 
   group('content', () {
     test('both standard drafts are complete enough to be accepted', () {
-      expect(standardAhas.map((a) => a.featureOfWork), [
-        'Removals',
-        'Roof construction',
-      ]);
-      for (final aha in standardAhas) {
+      expect(
+        standardAhas.map((a) => a.content.featureOfWork),
+        containsAll(['Removals', 'Roof construction', 'Scaffolding']),
+      );
+      for (final draft in standardAhas) {
+        final aha = draft.content;
         expect(aha.missingForAcceptance, isEmpty, reason: aha.featureOfWork);
       }
     });
@@ -236,7 +259,7 @@ void main() {
 
       await tester.tap(find.text('Prepare AHA'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Removals — standard draft'));
+      await tester.tap(find.text('Removals — roofing starting draft'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Continue'));
       await tester.pumpAndSettle();
@@ -252,9 +275,20 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(service.savedSiteIds, ['site-1']);
+      // Nothing chosen = the whole site.
+      expect(service.savedActivityIds, [<String>[]]);
       final saved = service.saved.single;
       expect(saved.featureOfWork, 'Removals');
-      expect(saved.steps, hasLength(standardAhas.first.steps.length));
+      expect(
+        saved.steps,
+        hasLength(
+          standardAhas
+              .firstWhere((a) => a.content.featureOfWork == 'Removals')
+              .content
+              .steps
+              .length,
+        ),
+      );
       expect(saved.missingForAcceptance, isEmpty);
       // Opens the new draft.
       expect(find.text('Draft — not yet accepted'), findsWidgets);
@@ -331,6 +365,238 @@ void main() {
       expect(service.revised, ['a1']);
       expect(find.text('Removals (revised)'), findsOneWidget);
       expect(find.text('Revision 2'), findsOneWidget);
+    });
+  });
+
+  group('other sites and activities', () {
+    testWidgets('an AHA can be limited to some of the site\'s activities', (
+      tester,
+    ) async {
+      tall(tester);
+      await tester.pumpWidget(page(AppRole.siteManager));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Prepare AHA'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Blank form'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Whole site'), findsOneWidget);
+      await tester.tap(find.text('Painting'));
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Phase / feature of work (required)'),
+        'Interior painting',
+      );
+      await tester.scrollUntilVisible(
+        find.text('Add a step'),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.text('Add a step'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.widgetWithText(TextField, 'What is done'),
+        'Paint walls',
+      );
+      await tester.scrollUntilVisible(
+        find.text('Save draft'),
+        400,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.text('Save draft'));
+      await tester.pumpAndSettle();
+
+      expect(service.savedActivityIds, [
+        ['painting'],
+      ]);
+      expect(service.saved.single.featureOfWork, 'Interior painting');
+    });
+
+    testWidgets("another site's accepted AHA can be copied as a start", (
+      tester,
+    ) async {
+      tall(tester);
+      await seed('a1', siteId: 'site-2', feature: 'Scaffolding');
+      await tester.pumpWidget(page(AppRole.siteManager));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Prepare AHA'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Copy: Scaffolding (Rosslyn Ridge)'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
+
+      expect(find.widgetWithText(TextField, 'Scaffolding'), findsOneWidget);
+      expect(
+        find.widgetWithText(TextField, 'Remove roof sheets'),
+        findsOneWidget,
+      );
+    });
+
+    test('per activity: only the activities worked today need an AHA', () {
+      RiskAssessment aha(String id, List<String> activities) =>
+          RiskAssessment.fromMap(id, {
+            'siteId': 'site-1',
+            'status': 'accepted',
+            'featureOfWork': id,
+            'activityIds': activities,
+          });
+      final roof = aha('roof', ['roofing']);
+      final paint = aha('paint', ['painting']);
+      final site = aha('site', []);
+
+      expect(
+        activitiesNeedingAha(
+          siteAhas: [roof],
+          activityIds: ['painting'],
+          coveredIds: [],
+        ),
+        isEmpty,
+      );
+      expect(
+        activitiesNeedingAha(
+          siteAhas: [roof, paint],
+          activityIds: ['roofing', 'painting'],
+          coveredIds: ['roof'],
+        ),
+        ['painting'],
+      );
+      expect(
+        activitiesNeedingAha(
+          siteAhas: [roof, site],
+          activityIds: ['roofing', 'painting'],
+          coveredIds: ['site'],
+        ),
+        isEmpty,
+      );
+    });
+  });
+
+  group('pasting an AHA', () {
+    test('steps, their hazards and controls, and the three lists', () {
+      final parsed = parseAhaText(
+        'Feature of work: Interior painting\n'
+        'Activity: Painting the residence\n'
+        '1. Erect scaffold\n'
+        'Hazards:\n'
+        '- Falls from height\n'
+        '• Scaffold collapse\n'
+        'Controls: Guardrails on open sides\n'
+        '- Inspected before each shift\n'
+        '\n'
+        'Step 2: Paint walls\n'
+        'and ceilings\n'
+        'Potential hazards:\n'
+        '- Paint fumes\n'
+        'Recommended controls:\n'
+        '- Ventilation\n'
+        'Equipment to be used:\n'
+        '- Scaffold\n'
+        '- Rollers and brushes\n'
+        'Inspection requirements:\n'
+        '- Scaffold tagged daily\n'
+        'Training requirements:\n'
+        '- Working at height\n',
+      );
+      expect(parsed.featureOfWork, 'Interior painting');
+      expect(parsed.activity, 'Painting the residence');
+      expect(parsed.steps.map((s) => s.step), [
+        'Erect scaffold',
+        'Paint walls and ceilings',
+      ]);
+      expect(parsed.steps.first.hazards, [
+        'Falls from height',
+        'Scaffold collapse',
+      ]);
+      expect(parsed.steps.first.controls, [
+        'Guardrails on open sides',
+        'Inspected before each shift',
+      ]);
+      expect(parsed.steps.last.hazards, ['Paint fumes']);
+      expect(parsed.steps.last.controls, ['Ventilation']);
+      expect(parsed.equipment, ['Scaffold', 'Rollers and brushes']);
+      expect(parsed.inspectionRequirements, ['Scaffold tagged daily']);
+      expect(parsed.trainingRequirements, ['Working at height']);
+    });
+
+    test('a plain list with no headings becomes the steps', () {
+      final parsed = parseAhaText('Set up\nDo the work\nClean up');
+      expect(parsed.steps.map((s) => s.step), [
+        'Set up',
+        'Do the work',
+        'Clean up',
+      ]);
+    });
+
+    testWidgets('pasting into a blank form fills it in', (tester) async {
+      tall(tester);
+      await tester.pumpWidget(page(AppRole.siteManager));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Prepare AHA'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Blank form'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
+
+      await tester.scrollUntilVisible(
+        find.text('Paste an AHA'),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.text('Paste an AHA'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.byType(TextField),
+        ),
+        'Feature of work: Interior painting\n'
+        '1. Paint walls\nHazards:\n- Fumes\nControls:\n- Ventilation\n'
+        'Equipment:\n- Rollers\n'
+        'Inspection requirements:\n- Daily check\n'
+        'Training requirements:\n- Briefing',
+      );
+      await tester.pump();
+      expect(
+        find.textContaining('1 step, 1 hazard, 1 control'),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('Add to AHA'));
+      await tester.pumpAndSettle();
+
+      await tester.scrollUntilVisible(
+        find.text('Save draft'),
+        400,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.text('Save draft'));
+      await tester.pumpAndSettle();
+
+      final saved = service.saved.single;
+      expect(saved.featureOfWork, 'Interior painting');
+      expect(saved.steps.single.step, 'Paint walls');
+      expect(saved.steps.single.hazards, ['Fumes']);
+      expect(saved.equipment, ['Rollers']);
+      expect(saved.missingForAcceptance, isEmpty);
+    });
+
+    testWidgets('a draft can be copied too', (tester) async {
+      tall(tester);
+      await seed('d1', status: 'draft', feature: 'Plumbing');
+      await tester.pumpWidget(page(AppRole.siteManager));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Prepare AHA'));
+      await tester.pumpAndSettle();
+      expect(find.text('Copy: Plumbing (Rosslyn Ridge)'), findsOneWidget);
+      // The library offers general drafts as well as the roofing ones.
+      await tester.scrollUntilVisible(
+        find.text('Scaffolding — starting draft'),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('Scaffolding — starting draft'), findsOneWidget);
     });
   });
 }

@@ -79,6 +79,12 @@ beforeEach(async () => {
   await seedPerson("eston", "siteManager", "Eston Gikonyo");
   await seedPerson("giuseppe", "siteManager", "Giuseppe Ferrante");
   await seedPerson("foreman-a", "foreman", "Fred Foreman");
+  await db.doc(`organizations/${ORG_A}/activities/roofing`).set({
+    organizationId: ORG_A, siteId: "site-1", name: "Roofing",
+  });
+  await db.doc(`organizations/${ORG_A}/activities/painting`).set({
+    organizationId: ORG_A, siteId: "site-2", name: "Painting",
+  });
 });
 
 describe("drafting", () => {
@@ -231,5 +237,36 @@ describe("revisions", () => {
     const {id} = await fns.saveRiskAssessment.run(call("eston", form()));
     await expect(fns.reviseRiskAssessment.run(call("eston", {id})))
       .rejects.toThrow(/accepted/);
+  });
+});
+
+describe("activities covered", () => {
+  test("an AHA can cover chosen activities of its own site", async () => {
+    const {id} = await fns.saveRiskAssessment.run(
+      call("eston", form({activityIds: ["roofing"]}))
+    );
+    expect((await get(id)).activityIds).toEqual(["roofing"]);
+
+    // No activities chosen = the whole site.
+    const {id: wholeSite} =
+      await fns.saveRiskAssessment.run(call("eston", form()));
+    expect((await get(wholeSite)).activityIds).toEqual([]);
+  });
+
+  test("another site's activity is refused", async () => {
+    await expect(fns.saveRiskAssessment.run(
+      call("eston", form({activityIds: ["painting"]}))
+    )).rejects.toThrow(/this site's activities/);
+  });
+
+  test("editing and revising keep the activities", async () => {
+    const {id} = await fns.saveRiskAssessment.run(call("eston", form()));
+    await fns.saveRiskAssessment.run(
+      call("eston", form({id, activityIds: ["roofing"]}))
+    );
+    await fns.acceptRiskAssessment.run(call("giuseppe", {id}));
+    const {id: revision} =
+      await fns.reviseRiskAssessment.run(call("eston", {id}));
+    expect((await get(revision)).activityIds).toEqual(["roofing"]);
   });
 });

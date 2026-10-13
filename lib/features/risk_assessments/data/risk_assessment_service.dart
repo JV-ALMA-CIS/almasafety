@@ -27,12 +27,14 @@ class RiskAssessmentService {
     required String organizationId,
     String? id,
     String? siteId,
+    List<String> activityIds = const [],
     required AhaContent content,
   }) async {
     final result = await _call('saveRiskAssessment', {
       'organizationId': organizationId,
       'id': ?id,
       'siteId': ?siteId,
+      'activityIds': activityIds,
       'featureOfWork': content.featureOfWork,
       'activity': ?content.activity,
       'contractNo': ?content.contractNo,

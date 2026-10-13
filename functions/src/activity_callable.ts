@@ -258,7 +258,7 @@ export const getSiteActivities = onCall(async (request) => {
     if (!membershipSnapshot.exists || !membership) throw denied();
     if (membership.status !== "active") throw denied();
 
-    if (membership.role !== "siteManager") {
+    if (membership.role !== "siteManager" && membership.role !== "admin") {
       if (membership.role !== "foreman" && membership.role !== "worker") {
         throw denied();
       }

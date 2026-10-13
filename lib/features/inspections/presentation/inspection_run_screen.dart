@@ -445,7 +445,7 @@ class _ItemCardState extends State<_ItemCard> {
                 onChanged: widget.onNote,
                 decoration: InputDecoration(
                   labelText: 'What is wrong? (required)',
-                  hintText: 'e.g. Two roofers not tied off on block 3',
+                  hintText: 'e.g. Two workers not tied off on block 3',
                   border: const OutlineInputBorder(),
                   isDense: true,
                   errorText: (widget.answer.note ?? '').isEmpty

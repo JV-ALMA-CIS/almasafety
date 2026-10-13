@@ -1566,6 +1566,23 @@ Risk assessments (October 2026): the Safety Plan's Activity Hazard Analyses
   AHA cannot complete its meeting until one is covered. See
   FIRESTORE_DATA_MODEL.md §7D and §6.
 
+Many sites, many kinds of work (October 2026): AHAs cover chosen activities
+  of their site (or the whole site) and the daily meeting asks for the AHA
+  of each activity worked that day; checklists can be limited to chosen
+  sites, with roofing checks split into their own "Roof work inspection";
+  new AHAs can start from a copy of another site's. Nothing roofing-specific
+  shows at a site that is not roofing. See FIRESTORE_DATA_MODEL.md "Many
+  sites, many kinds of work".
+  New projects need only their sites and activities; finishing a project
+  closes its sites, and closed sites are not offered for new work.
+  Checklists: a library of standard checklists added one at a time
+  (scaffolds, electrical, excavations, machinery, hot work, demolition,
+  welfare, roof work), plus "Paste a list" and "Duplicate" for entering the
+  company's own checklists per project.
+  AHAs: "Paste an AHA" for the company's own AHAs, a library of general
+  starting drafts (scaffolding, electrical, excavation, lifting, hot work,
+  demolition) besides the roofing ones, and copying any AHA, drafts too.
+
 NOT YET IMPLEMENTED
 Gemini integration (recommendations, summaries, hazard classification,
   trend analysis, content assistance — see §30-32)

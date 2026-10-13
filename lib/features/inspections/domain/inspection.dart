@@ -236,6 +236,8 @@ class InspectionTemplate {
     required this.sections,
     required this.isActive,
     this.description,
+    this.siteIds = const [],
+    this.defaultKey,
   });
 
   final String id;
@@ -244,6 +246,16 @@ class InspectionTemplate {
   final String? description;
   final List<TemplateSection> sections;
   final bool isActive;
+
+  /// The sites this checklist is used at; empty = every site. Lets a
+  /// work-specific checklist (e.g. roof work) appear only where that work
+  /// is done.
+  final List<String> siteIds;
+
+  /// Which standard checklist this was installed from, if any.
+  final String? defaultKey;
+
+  bool isUsedAt(String siteId) => siteIds.isEmpty || siteIds.contains(siteId);
 
   int get itemCount =>
       sections.fold(0, (total, section) => total + section.items.length);
@@ -258,6 +270,9 @@ class InspectionTemplate {
       kind: InspectionKind.fromId(data['kind'] as String?),
       description: data['description'] as String?,
       isActive: (data['status'] as String? ?? 'active') == 'active',
+      siteIds:
+          (data['siteIds'] as List?)?.whereType<String>().toList() ?? const [],
+      defaultKey: data['defaultKey'] as String?,
       sections: [
         for (final rawSection in (data['sections'] as List?) ?? const [])
           if (rawSection is Map)

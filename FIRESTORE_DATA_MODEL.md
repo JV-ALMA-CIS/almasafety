@@ -854,6 +854,7 @@ Written by `risk_assessment_callable.ts`.
 
 ```
 organizationId, siteId, siteName, projectId
+activityIds: string[]          // the site's activities covered; [] = whole site
 featureOfWork: string          // e.g. "Removals"
 activity, contractNo, location: string?
 estimatedStartDate: string?    // yyyy-MM-dd
@@ -879,6 +880,47 @@ control and the three lists are filled in; accepting a revision supersedes
 the previous one. An accepted AHA is never edited. Reads: every member of the
 organization (operational catch-all); the app shows Workers and Foremen only
 the accepted AHAs for their own sites.
+
+### Many sites, many kinds of work
+
+The company runs several sites doing different work (e.g. roofing at Rosslyn
+Ridge, other work at the Italian Embassy), so nothing work-specific is
+organization-wide:
+
+- **Checklists** (`inspection_templates`) carry `siteIds: string[]` — empty =
+  used at every site. `startInspection` refuses a checklist not used at the
+  chosen site, and the app only offers the ones that are. The standard daily
+  inspection and weekly walk-down are general; roofing checks live in the
+  separate "Roof work inspection" (`defaultKey: roof-work-inspection`), to be
+  limited to the roofing sites.
+- **Checklist library.** `inspection_templates.ts` holds the standard
+  checklists: the general ones (`core`: daily inspection, weekly walk-down —
+  "Install standard checklists") and a library added one at a time
+  (`installDefaultInspectionTemplates` with `keys`; listed by
+  `listStandardInspectionTemplates`): Roof work, Scaffolds & ladders,
+  Electrical & temporary power, Excavations & trenches, Machinery & cranes,
+  Fire prevention & hot work, Demolition & removals, Site welfare &
+  sanitation. A company's own checklists are entered with "Paste a list"
+  (one item per line, headings start sections, categories guessed) or by
+  duplicating an existing checklist.
+- **AHAs** (`risk_assessments`) carry `activityIds: string[]` — the site's
+  activities they cover; empty = the whole site. The daily meeting offers the
+  AHAs for the activities worked that day, and EVERY one of the meeting's
+  activities with an applicable accepted AHA must have one covered before it
+  can be completed (`activitiesNeedingAha`). A new AHA starts from a blank
+  form, a copy of any AHA (accepted or draft, any site), or a starting draft
+  from the app's AHA library (general drafts for scaffolding, electrical
+  work, excavation, lifting & machinery, hot work and demolition, plus the
+  Rosslyn roofing drafts). A company's own AHA is entered with "Paste an
+  AHA" (numbered steps, then "Hazards:"/"Controls:", then the three lists).
+- **New and finished projects.** A new project only needs its sites and
+  activities set up (Projects); general checklists (`siteIds: []`) and the
+  weekly/monthly meetings apply straight away, and its AHAs are prepared per
+  activity (blank or copied). Switching a project off (`updateProject`
+  status `inactive`) switches off its sites; switching it back on does not
+  reopen them. Every "choose a site" list for NEW work (reports,
+  inspections, meetings, AHAs, checklist "Used at", placing new people)
+  offers only active sites; history and filters still show closed ones.
 
 ## 8. Safety Alerts & Notifications
 

@@ -242,6 +242,7 @@ class _InspectionsScreenState extends State<InspectionsScreen> {
                                     organizationId: organizationId,
                                     repository: repository,
                                     service: _service,
+                                    siteRepository: widget.siteRepository,
                                   ),
                                 ),
                               ),
@@ -538,7 +539,14 @@ class _StartInspectionScreenState extends State<_StartInspectionScreen> {
             organizationId: widget.organizationId,
             siteIds: siteIds,
             selectedSiteId: _siteId,
-            onChanged: (id) => setState(() => _siteId = id),
+            onChanged: (id) => setState(() {
+              _siteId = id;
+              // A checklist not used at the newly chosen site is dropped.
+              final chosen = widget.templates.where((t) => t.id == _templateId);
+              if (id != null && chosen.any((t) => !t.isUsedAt(id))) {
+                _templateId = null;
+              }
+            }),
             siteRepository: widget.siteRepository,
           ),
           const SizedBox(height: AppSpacing.md),
@@ -551,14 +559,15 @@ class _StartInspectionScreenState extends State<_StartInspectionScreen> {
           ChoiceList<String>(
             items: [
               for (final template in widget.templates)
-                ChoiceItem(
-                  value: template.id,
-                  title: template.name,
-                  subtitle:
-                      '${template.kind.label} · ${template.itemCount} items',
-                  icon: template.kind.icon,
-                  color: template.kind.color,
-                ),
+                if (_siteId == null || template.isUsedAt(_siteId!))
+                  ChoiceItem(
+                    value: template.id,
+                    title: template.name,
+                    subtitle:
+                        '${template.kind.label} · ${template.itemCount} items',
+                    icon: template.kind.icon,
+                    color: template.kind.color,
+                  ),
             ],
             selected: _templateId,
             onChanged: (id) => setState(() => _templateId = id),

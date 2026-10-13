@@ -37,7 +37,7 @@ enum SafetyMeetingKind {
   List<String> get defaultTopics => switch (this) {
     SafetyMeetingKind.weeklyEmployee => const [
       'PPE: wearing it, its condition, replacing damaged items',
-      'Emergency numbers and AAR Healthcare contact details',
+      "Emergency numbers and the site's clinic / medical provider",
       'First aid: where the kit is and who the first-aiders are',
       'Fire extinguishers: where they are and how to use them',
       'Emergency and evacuation plan, assembly point',

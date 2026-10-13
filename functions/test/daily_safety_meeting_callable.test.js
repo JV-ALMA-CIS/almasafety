@@ -2525,3 +2525,59 @@ describe("covering the risk assessment (AHA)", () => {
     expect(meeting.ahasCovered).toEqual([]);
   });
 });
+
+describe("covering the AHA for each of today's activities", () => {
+  async function seedAha(id, activityIds) {
+    await db.doc(`organizations/${ORG_A}/risk_assessments/${id}`).set({
+      organizationId: ORG_A,
+      siteId: "site-1",
+      featureOfWork: id,
+      revision: 1,
+      status: "accepted",
+      activityIds,
+    });
+  }
+
+  async function meetingWith(activityIds, ahaIds = []) {
+    await seedMeetingPoint(ORG_A, "point-1");
+    await db.doc(`organizations/${ORG_A}/activities/roofing`).set({
+      organizationId: ORG_A, siteId: "site-1", name: "Roofing",
+    });
+    await db.doc(`organizations/${ORG_A}/activities/painting`).set({
+      organizationId: ORG_A, siteId: "site-1", name: "Painting",
+    });
+    await seedMeeting(ORG_A, "meeting-1", {
+      activityIds, meetingPointIds: ["point-1"], ahaIds,
+    });
+  }
+
+  function complete() {
+    return completeDailySafetyMeeting.run(
+      callRequest("foreman-a", {organizationId: ORG_A, id: "meeting-1"})
+    );
+  }
+
+  test("an AHA for an activity not worked today does not block",
+    async () => {
+      await seedAha("roof-aha", ["roofing"]);
+      await meetingWith(["painting"]);
+      expect((await complete()).status).toBe("completed");
+    });
+
+  test("every activity worked today needs its AHA covered", async () => {
+    await seedAha("roof-aha", ["roofing"]);
+    await seedAha("paint-aha", ["painting"]);
+    await meetingWith(["roofing", "painting"], ["roof-aha"]);
+    await expect(complete()).rejects.toThrow(/Painting/);
+
+    await db.doc(`organizations/${ORG_A}/daily_safety_meetings/meeting-1`)
+      .update({ahaIds: ["roof-aha", "paint-aha"]});
+    expect((await complete()).status).toBe("completed");
+  });
+
+  test("a whole-site AHA covers every activity", async () => {
+    await seedAha("site-aha", []);
+    await meetingWith(["roofing", "painting"], ["site-aha"]);
+    expect((await complete()).status).toBe("completed");
+  });
+});

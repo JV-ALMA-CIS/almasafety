@@ -559,6 +559,11 @@ export const createProject = onCall(async (request) => {
  *
  * `organizationId` is immutable — see this file's header note. Moving a
  * project between organizations is out of scope for this stage.
+ *
+ * Switching a project OFF (status `inactive`, e.g. the job is finished) also
+ * switches off every one of its sites, so finished sites stop being offered
+ * anywhere new work is recorded. Switching it back on does not reopen them:
+ * a site switched off on purpose stays off until reopened itself.
  */
 export const updateProject = onCall(async (request) => {
   const organizationId = requireString(request, "organizationId");
@@ -594,6 +599,23 @@ export const updateProject = onCall(async (request) => {
     updatedAt: FieldValue.serverTimestamp(),
     updatedBy: actorUid,
   });
+
+  if (status === "inactive") {
+    const sites = await getFirestore()
+      .collection(`organizations/${organizationId}/sites`)
+      .where("projectId", "==", id)
+      .where("status", "==", "active")
+      .get();
+    const batch = getFirestore().batch();
+    for (const site of sites.docs) {
+      batch.update(site.ref, {
+        status: "inactive",
+        updatedAt: FieldValue.serverTimestamp(),
+        updatedBy: actorUid,
+      });
+    }
+    if (!sites.empty) await batch.commit();
+  }
 
   return {id, organizationId};
 });

@@ -1403,7 +1403,28 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
                         aha.status == RiskAssessmentStatus.accepted)
                       aha,
                 ];
-                final needsAha = siteAhas.isNotEmpty && meeting.ahaIds.isEmpty;
+                // Only the AHAs for the activities worked today (or covering
+                // the whole site) are offered; each of today's activities
+                // with one needs one covered.
+                final todaysAhas = [
+                  for (final aha in siteAhas)
+                    if (aha.activityIds.isEmpty ||
+                        aha.activityIds.any(meeting.activityIds.contains) ||
+                        meeting.ahaIds.contains(aha.id))
+                      aha,
+                ];
+                final activityNames = {
+                  for (final a in siteActivities) a.id: a.name,
+                };
+                final needingAha = [
+                  for (final id in activitiesNeedingAha(
+                    siteAhas: siteAhas,
+                    activityIds: meeting.activityIds,
+                    coveredIds: meeting.ahaIds,
+                  ))
+                    activityNames[id] ?? 'an activity',
+                ];
+                final needsAha = needingAha.isNotEmpty;
 
                 return ListView(
                   // Remembers the scroll position across rebuilds — see
@@ -1551,7 +1572,8 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
                     const SizedBox(height: AppSpacing.md),
                     _AhaSection(
                       meeting: meeting,
-                      siteAhas: siteAhas,
+                      siteAhas: todaysAhas,
+                      siteHasAhas: siteAhas.isNotEmpty,
                       canEdit: canEdit && !widget.isSaving,
                       onToggle: _toggleAha,
                       onOpen: _openAha,
@@ -1680,9 +1702,10 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
                     ],
                     if (canEdit && needsAha) ...[
                       const SizedBox(height: AppSpacing.sm),
-                      const Text(
-                        "Cover the risk assessment (AHA) for today's work with "
-                        'the crew and tick it above before completing.',
+                      Text(
+                        'Cover the risk assessment (AHA) with the crew and '
+                        'tick it above before completing, for: '
+                        '${needingAha.join(', ')}.',
                         style: AppTextStyles.bodyMedium,
                       ),
                     ],
@@ -1706,13 +1729,19 @@ class _AhaSection extends StatelessWidget {
   const _AhaSection({
     required this.meeting,
     required this.siteAhas,
+    required this.siteHasAhas,
     required this.canEdit,
     required this.onToggle,
     required this.onOpen,
   });
 
   final DailySafetyMeeting meeting;
+
+  /// The site's accepted AHAs for today's activities.
   final List<RiskAssessment> siteAhas;
+
+  /// Whether the site has any accepted AHA at all (for any activity).
+  final bool siteHasAhas;
   final bool canEdit;
   final ValueChanged<RiskAssessment> onToggle;
   final ValueChanged<String> onOpen;
@@ -1757,8 +1786,13 @@ class _AhaSection extends StatelessWidget {
       }
       if (siteAhas.isEmpty) {
         children.add(
-          const Text(
-            'This site has no accepted risk assessment yet.',
+          Text(
+            siteHasAhas
+                ? meeting.activityIds.isEmpty
+                      ? "Tick today's activities above to see their risk "
+                            'assessments.'
+                      : "None of today's activities has a risk assessment."
+                : 'This site has no accepted risk assessment yet.',
             style: AppTextStyles.bodyMedium,
           ),
         );

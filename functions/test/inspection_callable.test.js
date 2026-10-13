@@ -53,8 +53,10 @@ function call(uid, data) {
     rawRequest: {}};
 }
 
-async function installDefaults() {
-  await fns.installDefaultInspectionTemplates.run(call("manager-a", {}));
+async function installDefaults(keys) {
+  await fns.installDefaultInspectionTemplates.run(
+    call("manager-a", keys ? {keys} : {})
+  );
   const snapshot = await db
     .collection(`organizations/${ORG_A}/inspection_templates`).get();
   const byKey = {};
@@ -280,5 +282,102 @@ describe("sign-off", () => {
     await expect(fns.signOffInspection.run(call("manager-a", {
       inspectionId: id,
     }))).rejects.toThrow(/not been submitted/);
+  });
+});
+
+describe("checklists used at chosen sites", () => {
+  test("a checklist limited to some sites cannot be started elsewhere",
+    async () => {
+      const byKey = await installDefaults(["roof-work-inspection"]);
+      const roofId = byKey["roof-work-inspection"];
+      const template = (await db.doc(
+        `organizations/${ORG_A}/inspection_templates/${roofId}`
+      ).get()).data();
+      expect(template.siteIds).toEqual([]);
+
+      await fns.saveInspectionTemplate.run(call("manager-a", {
+        templateId: roofId,
+        name: template.name,
+        kind: template.kind,
+        sections: template.sections,
+        siteIds: ["site-1"],
+      }));
+      await expect(fns.startInspection.run(call("manager-a", {
+        siteId: "site-2", templateId: roofId,
+      }))).rejects.toThrow(/not used at this site/);
+      await expect(fns.startInspection.run(call("manager-a", {
+        siteId: "site-1", templateId: roofId,
+      }))).resolves.toHaveProperty("id");
+    });
+
+  test("only real sites can be chosen", async () => {
+    await expect(fns.saveInspectionTemplate.run(call("manager-a", {
+      name: "Embassy check",
+      kind: "daily",
+      sections: [{title: "A", items: [{text: "x", hazardCategory: "other"}]}],
+      siteIds: ["nowhere"],
+    }))).rejects.toThrow(/unknown/);
+  });
+
+  test("the general daily checklist no longer mentions roofs", async () => {
+    const byKey = await installDefaults();
+    const daily = (await db.doc(
+      `organizations/${ORG_A}/inspection_templates/` +
+        byKey["daily-site-inspection"]
+    ).get()).data();
+    const text = JSON.stringify(daily.sections).toLowerCase();
+    expect(text).not.toMatch(/roof/);
+  });
+});
+
+describe("the checklist library", () => {
+  test("lists every standard checklist and which are installed", async () => {
+    await installDefaults();
+    const {templates} = await fns.listStandardInspectionTemplates.run(
+      call("manager-a", {})
+    );
+    const byKey = Object.fromEntries(templates.map((t) => [t.key, t]));
+    expect(byKey["daily-site-inspection"]).toMatchObject({
+      installed: true, core: true,
+    });
+    expect(byKey["scaffolds-ladders"]).toMatchObject({
+      installed: false, core: false, name: "Scaffolds & ladders",
+    });
+    expect(templates.length).toBeGreaterThanOrEqual(10);
+    expect(byKey["excavations"].itemCount).toBeGreaterThan(0);
+  });
+
+  test("a library checklist is added on its own, once", async () => {
+    const first = await fns.installDefaultInspectionTemplates.run(
+      call("manager-a", {keys: ["scaffolds-ladders"]})
+    );
+    expect(first.added).toBe(1);
+    expect(first.ids).toHaveLength(1);
+    const again = await fns.installDefaultInspectionTemplates.run(
+      call("manager-a", {keys: ["scaffolds-ladders"]})
+    );
+    expect(again.added).toBe(0);
+    const all = await db
+      .collection(`organizations/${ORG_A}/inspection_templates`).get();
+    expect(all.docs.map((d) => d.data().defaultKey))
+      .toEqual(["scaffolds-ladders"]);
+  });
+
+  test("unknown keys are refused; Foremen cannot use the library",
+    async () => {
+      await expect(fns.installDefaultInspectionTemplates.run(
+        call("manager-a", {keys: ["nope"]})
+      )).rejects.toThrow(/Unknown/);
+      await expect(fns.listStandardInspectionTemplates.run(
+        call("foreman-a", {})
+      )).rejects.toThrow();
+    });
+
+  test("no library checklist mentions a particular site", async () => {
+    const {DEFAULT_TEMPLATES} = require("../lib/inspection_templates");
+    for (const t of DEFAULT_TEMPLATES) {
+      if (t.defaultKey === "roof-work-inspection") continue;
+      expect(JSON.stringify(t.sections)).not.toMatch(/Rosslyn|AAR|Embassy/);
+    }
   });
 });

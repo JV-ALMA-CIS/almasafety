@@ -256,3 +256,60 @@ describe("updateOrganization (smoke test)", () => {
     expect(org.managedBy).toEqual(["sm-1", "second-manager"]);
   });
 });
+
+describe("updateProject: finishing a project", () => {
+  const ORG = "org-alpha";
+  let updateProject;
+
+  beforeAll(() => {
+    ({updateProject} = require("../lib/organization_callable"));
+  });
+
+  async function siteStatus(id) {
+    return (await db.doc(`organizations/${ORG}/sites/${id}`).get())
+      .data().status;
+  }
+
+  beforeEach(async () => {
+    await seedProfile("admin-1", {platformRole: "admin"});
+    await db.doc(`organizations/${ORG}`).set({name: "JV ALMA"});
+    for (const project of ["rosslyn", "embassy"]) {
+      await db.doc(`organizations/${ORG}/projects/${project}`).set({
+        organizationId: ORG, name: project, code: project, status: "active",
+      });
+    }
+    for (const [id, projectId] of [
+      ["rosslyn-1", "rosslyn"],
+      ["rosslyn-2", "rosslyn"],
+      ["embassy-1", "embassy"],
+    ]) {
+      await db.doc(`organizations/${ORG}/sites/${id}`).set({
+        organizationId: ORG, projectId, name: id, code: id, status: "active",
+      });
+    }
+  });
+
+  function update(data) {
+    return updateProject.run(
+      callRequest("admin-1", {organizationId: ORG, id: "rosslyn", ...data})
+    );
+  }
+
+  test("switching a project off switches off its sites only", async () => {
+    await update({status: "inactive"});
+    expect(await siteStatus("rosslyn-1")).toBe("inactive");
+    expect(await siteStatus("rosslyn-2")).toBe("inactive");
+    expect(await siteStatus("embassy-1")).toBe("active");
+  });
+
+  test("switching it back on does not reopen its sites", async () => {
+    await update({status: "inactive"});
+    await update({status: "active"});
+    expect(await siteStatus("rosslyn-1")).toBe("inactive");
+  });
+
+  test("other edits leave the sites alone", async () => {
+    await update({name: "Rosslyn Ridge"});
+    expect(await siteStatus("rosslyn-1")).toBe("active");
+  });
+});

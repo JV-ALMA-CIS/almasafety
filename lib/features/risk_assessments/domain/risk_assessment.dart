@@ -123,6 +123,7 @@ class RiskAssessment extends AhaContent {
     super.inspectionRequirements,
     super.trainingRequirements,
     this.siteName,
+    this.activityIds = const [],
     this.revision = 1,
     this.previousId,
     this.revisionDraftId,
@@ -141,6 +142,9 @@ class RiskAssessment extends AhaContent {
   final String organizationId;
   final String siteId;
   final String? siteName;
+
+  /// The site's activities this AHA covers; empty = the whole site.
+  final List<String> activityIds;
   final RiskAssessmentStatus status;
   final int revision;
 
@@ -161,6 +165,11 @@ class RiskAssessment extends AhaContent {
   final String? acceptanceNote;
   final DateTime? createdAt;
   final DateTime? updatedAt;
+
+  /// Whether this AHA applies to [activityId] — it lists it, or covers the
+  /// whole site.
+  bool appliesTo(String activityId) =>
+      activityIds.isEmpty || activityIds.contains(activityId);
 
   factory RiskAssessment.fromFirestore(
     DocumentSnapshot<Map<String, dynamic>> doc,
@@ -184,6 +193,7 @@ class RiskAssessment extends AhaContent {
       organizationId: data['organizationId'] as String? ?? '',
       siteId: data['siteId'] as String? ?? '',
       siteName: data['siteName'] as String?,
+      activityIds: _strings(data['activityIds']),
       status: status,
       featureOfWork: data['featureOfWork'] as String? ?? '',
       activity: data['activity'] as String?,
@@ -212,3 +222,39 @@ class RiskAssessment extends AhaContent {
     );
   }
 }
+
+/// Which of today's [activityIds] still need an AHA covered: the Safety
+/// Plan's "cover the activity hazard analysis before work begins", applied
+/// per activity. An activity needs one when any of [siteAhas] (the site's
+/// accepted AHAs) applies to it, and is covered once any applicable AHA is
+/// in [coveredIds]. Mirrors `activitiesNeedingAha` in
+/// `functions/src/daily_safety_meeting_callable.ts`.
+List<String> activitiesNeedingAha({
+  required List<RiskAssessment> siteAhas,
+  required List<String> activityIds,
+  required List<String> coveredIds,
+}) => [
+  for (final activityId in activityIds)
+    if (siteAhas.any((a) => a.appliesTo(activityId)) &&
+        !siteAhas.any(
+          (a) => a.appliesTo(activityId) && coveredIds.contains(a.id),
+        ))
+      activityId,
+];
+
+/// A copy of [aha]'s content to start a new AHA from (e.g. at another
+/// site): everything but its site, activities and step ids.
+AhaContent copyAhaContent(AhaContent aha) => AhaContent(
+  featureOfWork: aha.featureOfWork,
+  activity: aha.activity,
+  contractNo: aha.contractNo,
+  location: null,
+  estimatedStartDate: null,
+  steps: [
+    for (final step in aha.steps)
+      AhaStep(step: step.step, hazards: step.hazards, controls: step.controls),
+  ],
+  equipment: aha.equipment,
+  inspectionRequirements: aha.inspectionRequirements,
+  trainingRequirements: aha.trainingRequirements,
+);
