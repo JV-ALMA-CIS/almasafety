@@ -15,8 +15,9 @@ void main() {
   Future<DocumentSnapshot<Map<String, dynamic>>> seed(
     Map<String, dynamic> data,
   ) async {
-    final ref =
-        firestore.doc('organizations/org-alpha/daily_safety_meetings/m1');
+    final ref = firestore.doc(
+      'organizations/org-alpha/daily_safety_meetings/m1',
+    );
     await ref.set(data);
     return ref.get();
   }
@@ -54,25 +55,27 @@ void main() {
     expect(meeting.concerns, ['Loose scaffolding on level 3']);
   });
 
-  test('defaults list fields to empty and status to inProgress fields',
-      () async {
-    final doc = await seed({
-      'organizationId': 'org-alpha',
-      'projectId': 'project-1',
-      'siteId': 'site-1',
-      'date': '2026-08-20',
-      'foremanId': 'foreman-1',
-      'status': 'inProgress',
-    });
+  test(
+    'defaults list fields to empty and status to inProgress fields',
+    () async {
+      final doc = await seed({
+        'organizationId': 'org-alpha',
+        'projectId': 'project-1',
+        'siteId': 'site-1',
+        'date': '2026-08-20',
+        'foremanId': 'foreman-1',
+        'status': 'inProgress',
+      });
 
-    final meeting = DailySafetyMeeting.fromFirestore(doc);
+      final meeting = DailySafetyMeeting.fromFirestore(doc);
 
-    expect(meeting.activityIds, isEmpty);
-    expect(meeting.meetingPointIds, isEmpty);
-    expect(meeting.concerns, isEmpty);
-    expect(meeting.correctiveActionIds, isEmpty);
-    expect(meeting.isCompleted, isFalse);
-  });
+      expect(meeting.activityIds, isEmpty);
+      expect(meeting.meetingPointIds, isEmpty);
+      expect(meeting.concerns, isEmpty);
+      expect(meeting.correctiveActionIds, isEmpty);
+      expect(meeting.isCompleted, isFalse);
+    },
+  );
 
   test('throws when organizationId is missing', () async {
     final doc = await seed({
@@ -135,8 +138,7 @@ void main() {
     );
   });
 
-  test('every DailySafetyMeetingStatus round-trips through its stored id',
-      () {
+  test('every DailySafetyMeetingStatus round-trips through its stored id', () {
     for (final status in DailySafetyMeetingStatus.values) {
       expect(DailySafetyMeetingStatus.tryFromId(status.id), status);
     }

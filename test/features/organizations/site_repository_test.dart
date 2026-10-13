@@ -42,25 +42,26 @@ void main() {
     expect(sites.map((s) => s.id).toSet(), {'s1', 's2'});
   });
 
-  test('watchByProject narrows to one project within the organization',
-      () async {
-    await seedSite('org-alpha', 's1', projectId: 'p1');
-    await seedSite('org-alpha', 's2', projectId: 'p2');
-    await seedSite('org-alpha', 's3', projectId: 'p1');
+  test(
+    'watchByProject narrows to one project within the organization',
+    () async {
+      await seedSite('org-alpha', 's1', projectId: 'p1');
+      await seedSite('org-alpha', 's2', projectId: 'p2');
+      await seedSite('org-alpha', 's3', projectId: 'p1');
 
-    final repository = SiteRepository(
-      firestoreService: FirestoreService(firestore: firestore),
-      organizationId: 'org-alpha',
-    );
+      final repository = SiteRepository(
+        firestoreService: FirestoreService(firestore: firestore),
+        organizationId: 'org-alpha',
+      );
 
-    final sites = await repository.watchByProject('p1').first;
+      final sites = await repository.watchByProject('p1').first;
 
-    expect(sites.map((s) => s.id).toSet(), {'s1', 's3'});
-    expect(sites.every((s) => s.projectId == 'p1'), isTrue);
-  });
+      expect(sites.map((s) => s.id).toSet(), {'s1', 's3'});
+      expect(sites.every((s) => s.projectId == 'p1'), isTrue);
+    },
+  );
 
-  test('organizationId exposes the scope this repository was built with',
-      () {
+  test('organizationId exposes the scope this repository was built with', () {
     final repository = SiteRepository(
       firestoreService: FirestoreService(firestore: firestore),
       organizationId: 'org-alpha',

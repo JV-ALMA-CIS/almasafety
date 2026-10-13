@@ -32,8 +32,7 @@ class DailySafetyMeetingRepository {
 
   Future<DailySafetyMeeting?> getById(String id) => _repository.getById(id);
 
-  Stream<DailySafetyMeeting?> watchById(String id) =>
-      _repository.watchById(id);
+  Stream<DailySafetyMeeting?> watchById(String id) => _repository.watchById(id);
 
   /// Streams the given foreman's own meeting for [siteId] on [date]
   /// (`yyyy-MM-dd`) — at most one is expected, since the foreman-facing flow
@@ -48,6 +47,26 @@ class DailySafetyMeetingRepository {
     return _repository.watchCollection(
       queryBuilder: (query) => query
           .where('foremanId', isEqualTo: foremanId)
+          .where('siteId', isEqualTo: siteId)
+          .where('date', isEqualTo: date),
+    );
+  }
+
+  /// Streams the meeting(s) at [siteId] on [date] (`yyyy-MM-dd`) —
+  /// unlike [watchForForemanSiteAndDate], not scoped to any one foreman.
+  /// Powers a Worker's own "Today's Meeting" dashboard card: a Worker has
+  /// no foreman uid to query by (only their own `siteIds`), and
+  /// `firestore.rules` grants them read access to a meeting by `siteId`
+  /// membership alone — see that rule's own doc comment. At most one
+  /// meeting is expected per site per day, matching
+  /// [watchForForemanSiteAndDate]'s own "one meeting per site per day"
+  /// invariant.
+  Stream<List<DailySafetyMeeting>> watchForSiteAndDate({
+    required String siteId,
+    required String date,
+  }) {
+    return _repository.watchCollection(
+      queryBuilder: (query) => query
           .where('siteId', isEqualTo: siteId)
           .where('date', isEqualTo: date),
     );

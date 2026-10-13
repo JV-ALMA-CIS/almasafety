@@ -6,9 +6,13 @@ import '../../../core/errors/app_exception.dart';
 /// — one document per worker per activity, keyed by the worker's own uid so
 /// an assignment is idempotent to create and trivial to look up or remove.
 ///
-/// [siteId] is denormalized from the parent activity at assignment time
-/// purely for query convenience (it lets a query filter assignments by site
-/// without a join); it carries no authorization weight of its own.
+/// [siteId] and [projectId] are denormalized from the parent activity at
+/// assignment time purely for query convenience (they let a query filter
+/// assignments by site or project without a join); neither carries any
+/// authorization weight of its own. [projectId] is nullable — assignments
+/// written before this field existed have none, and that is not an error;
+/// see [SafetyRequirement]'s project-scope applicability, which simply
+/// treats a null [projectId] as "no project-scoped requirement can match."
 ///
 /// Created and removed exclusively through the `assignWorkerToActivity`/
 /// `removeWorkerFromActivity` callables — see
@@ -21,6 +25,7 @@ class ActivityAssignment {
     required this.organizationId,
     required this.siteId,
     required this.activityId,
+    this.projectId,
     this.assignedAt,
     this.assignedBy,
   });
@@ -29,6 +34,7 @@ class ActivityAssignment {
   final String organizationId;
   final String siteId;
   final String activityId;
+  final String? projectId;
   final DateTime? assignedAt;
   final String? assignedBy;
 
@@ -66,6 +72,7 @@ class ActivityAssignment {
       organizationId: organizationId,
       siteId: siteId,
       activityId: activityId,
+      projectId: data['projectId'] as String?,
       assignedAt: (data['assignedAt'] as Timestamp?)?.toDate(),
       assignedBy: data['assignedBy'] as String?,
     );

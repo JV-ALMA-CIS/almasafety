@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import '../../../core/widgets/live_stream_builder.dart';
+import '../../organizations/presentation/site_select_list.dart';
+import '../../../core/widgets/choice_list.dart';
 import 'package:provider/provider.dart';
 import '../../../core/services/firestore_service.dart';
 import '../../../core/services/session_controller.dart';
@@ -32,6 +35,9 @@ import '../domain/meeting_attendance_status.dart';
 import '../domain/meeting_concern.dart';
 import '../domain/meeting_evidence.dart';
 import '../domain/meeting_point_note.dart';
+import '../../pre_start_checks/presentation/pre_start_outcome_style.dart';
+import '../../../core/widgets/accent_card.dart';
+import '../../../core/widgets/feature_header.dart';
 
 /// The administrator-facing Daily Safety Meeting review list: every meeting
 /// recorded in one organization, most recent first — a read/history
@@ -105,7 +111,8 @@ class _AdminDailySafetyMeetingsScreenState
         firestoreService: _firestoreService,
         organizationId: widget.organization.id,
       );
-  late final SiteRepository _siteRepository = widget.siteRepository ??
+  late final SiteRepository _siteRepository =
+      widget.siteRepository ??
       SiteRepository(
         firestoreService: _firestoreService,
         organizationId: widget.organization.id,
@@ -163,9 +170,11 @@ class _AdminDailySafetyMeetingsScreenState
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
     // Checked against membershipFor(widget.organization.id) SPECIFICALLY,
     // not activeMembership — see ProjectsScreen's matching comment for why.
-    final membershipRole =
-        sessionController.membershipFor(widget.organization.id)?.role;
-    final canManage = isPlatformAdministrator ||
+    final membershipRole = sessionController
+        .membershipFor(widget.organization.id)
+        ?.role;
+    final canManage =
+        isPlatformAdministrator ||
         (membershipRole?.canReviewDailySafetyMeetings ?? false);
 
     if (!canManage) {
@@ -181,8 +190,9 @@ class _AdminDailySafetyMeetingsScreenState
       );
     }
 
-    return StreamBuilder<List<DailySafetyMeeting>>(
-      stream: _meetingRepository.watchCompleted(),
+    return LiveStreamBuilder<List<DailySafetyMeeting>>(
+      streamKey: _meetingRepository,
+      stream: () => _meetingRepository.watchCompleted(),
       builder: (context, meetingSnapshot) {
         final meetings = meetingSnapshot.data ?? const <DailySafetyMeeting>[];
         final isLoading =
@@ -199,8 +209,9 @@ class _AdminDailySafetyMeetingsScreenState
           );
         }
 
-        return StreamBuilder<List<Project>>(
-          stream: _projectRepository.watchAll(),
+        return LiveStreamBuilder<List<Project>>(
+          streamKey: _projectRepository,
+          stream: () => _projectRepository.watchAll(),
           builder: (context, projectSnapshot) {
             final projects = projectSnapshot.data ?? const <Project>[];
             final projectsById = {for (final p in projects) p.id: p};
@@ -211,8 +222,9 @@ class _AdminDailySafetyMeetingsScreenState
                       .where((m) => m.projectId == selectedProjectId)
                       .toList();
 
-            return StreamBuilder<List<Site>>(
-              stream: _siteRepository.watchAll(),
+            return LiveStreamBuilder<List<Site>>(
+              streamKey: _siteRepository,
+              stream: () => _siteRepository.watchAll(),
               builder: (context, siteSnapshot) {
                 final sitesById = {
                   for (final s in siteSnapshot.data ?? const <Site>[]) s.id: s,
@@ -222,33 +234,23 @@ class _AdminDailySafetyMeetingsScreenState
                   physics: const AlwaysScrollableScrollPhysics(),
                   padding: const EdgeInsets.all(AppSpacing.md),
                   children: [
-                    Text(
-                      'Daily Safety Meetings',
-                      style: AppTextStyles.headlineMedium,
-                    ),
-                    const SizedBox(height: AppSpacing.xs),
-                    Text(
-                      widget.organization.name,
-                      style: AppTextStyles.bodyMedium,
+                    FeatureHeader(
+                      title: 'Daily Safety Meetings',
+                      subtitle: widget.organization.name,
+                      icon: Icons.groups,
+                      color: AppColors.meetings,
                     ),
                     const SizedBox(height: AppSpacing.md),
                     if (projects.isNotEmpty)
-                      DropdownButtonFormField<String?>(
-                        initialValue: selectedProjectId,
-                        decoration: const InputDecoration(
-                          labelText: 'Project',
-                        ),
+                      ChoiceList<String>(
+                        label: 'Project',
                         items: [
-                          const DropdownMenuItem<String?>(
-                            value: null,
-                            child: Text('All projects'),
-                          ),
                           for (final project in projects)
-                            DropdownMenuItem<String?>(
-                              value: project.id,
-                              child: Text(project.name),
-                            ),
+                            projectChoice(project),
                         ],
+                        selected: selectedProjectId,
+                        noneLabel: 'All projects',
+                        searchHint: 'Search projects',
                         onChanged: (value) =>
                             setState(() => _selectedProjectId = value),
                       ),
@@ -263,7 +265,8 @@ class _AdminDailySafetyMeetingsScreenState
                       const Padding(
                         padding: EdgeInsets.symmetric(vertical: AppSpacing.xl),
                         child: AuthErrorBanner(
-                          message: 'Unable to load daily safety meetings. '
+                          message:
+                              'Unable to load daily safety meetings. '
                               'Please try again.',
                         ),
                       ),
@@ -284,23 +287,25 @@ class _AdminDailySafetyMeetingsScreenState
                     for (final meeting in filteredMeetings) ...[
                       _AdminMeetingCard(
                         meeting: meeting,
-                        siteName: sitesById[meeting.siteId]?.name ??
-                            meeting.siteId,
-                        projectName: projectsById[meeting.projectId]?.name ??
+                        siteName:
+                            sitesById[meeting.siteId]?.name ?? meeting.siteId,
+                        projectName:
+                            projectsById[meeting.projectId]?.name ??
                             meeting.projectId,
                         foremanName: _nameFor(meeting.foremanId),
-                        onTap: () => Navigator.of(context).push(
-                          MaterialPageRoute<void>(
-                            builder: (_) => DailySafetyMeetingSummaryScreen(
-                              organization: widget.organization,
-                              project: projectsById[meeting.projectId],
-                              site: sitesById[meeting.siteId],
-                              meeting: meeting,
-                              members: _members,
-                              firestoreService: _firestoreService,
+                        onTap: () =>
+                            Navigator.of(context, rootNavigator: true).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => DailySafetyMeetingSummaryScreen(
+                                  organization: widget.organization,
+                                  project: projectsById[meeting.projectId],
+                                  site: sitesById[meeting.siteId],
+                                  meeting: meeting,
+                                  members: _members,
+                                  firestoreService: _firestoreService,
+                                ),
+                              ),
                             ),
-                          ),
-                        ),
                       ),
                       const SizedBox(height: AppSpacing.sm),
                     ],
@@ -332,64 +337,35 @@ class _AdminMeetingCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: EdgeInsets.zero,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(AppSpacing.sm),
-        child: Padding(
-          padding: const EdgeInsets.all(AppSpacing.md),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      '$siteName · ${meeting.date}',
-                      style: AppTextStyles.titleLarge,
-                    ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: AppSpacing.sm,
-                      vertical: AppSpacing.xs,
-                    ),
-                    decoration: BoxDecoration(
-                      color: (meeting.isCompleted
-                              ? AppColors.success
-                              : AppColors.textSecondary)
-                          .withValues(alpha: 0.12),
-                      borderRadius: BorderRadius.circular(AppSpacing.sm),
-                    ),
-                    child: Text(
-                      meeting.status.label,
-                      style: AppTextStyles.label.copyWith(
-                        color: meeting.isCompleted
-                            ? AppColors.success
-                            : AppColors.textSecondary,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: AppSpacing.xs),
-              Text(
-                'Project: $projectName · Foreman: '
-                '${foremanName ?? meeting.foremanId}',
-                style: AppTextStyles.bodyMedium,
-              ),
-              const SizedBox(height: AppSpacing.xs),
-              Text(
-                '${meeting.activityIds.length} activities · '
-                '${meeting.meetingPointIds.length} safety points · '
-                '${meeting.concerns.length} concerns',
-                style: AppTextStyles.bodyMedium,
-              ),
-            ],
-          ),
+    return AccentCard(
+      color: meeting.isCompleted ? AppColors.success : AppColors.meetings,
+      icon: meeting.isCompleted ? Icons.task_alt : Icons.groups,
+      title: '$siteName · ${meeting.date}',
+      onTap: onTap,
+      badges: [
+        AccentBadge(
+          label: meeting.status.label,
+          color: meeting.isCompleted ? AppColors.success : AppColors.meetings,
         ),
-      ),
+      ],
+      trailing: meeting.crewOutcome == null
+          ? null
+          : CrewOutcomeBadge(outcome: meeting.crewOutcome!),
+      details: [
+        AccentDetail(
+          icon: Icons.person,
+          text:
+              'Project: $projectName · Foreman: '
+              '${foremanName ?? meeting.foremanId}',
+        ),
+        AccentDetail(
+          icon: Icons.checklist,
+          text:
+              '${meeting.activityIds.length} activities · '
+              '${meeting.meetingPointIds.length} safety points · '
+              '${meeting.concerns.length} concerns',
+        ),
+      ],
     );
   }
 }
@@ -518,17 +494,19 @@ class _DailySafetyMeetingSummaryScreenState
     final meeting = widget.meeting;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Meeting Summary')),
-      body: StreamBuilder<List<Activity>>(
-        stream: _activityRepository.watchBySite(meeting.siteId),
+      appBar: AppBar(),
+      body: LiveStreamBuilder<List<Activity>>(
+        streamKey: (_activityRepository, meeting.siteId),
+        stream: () => _activityRepository.watchBySite(meeting.siteId),
         builder: (context, activitySnapshot) {
           final activitiesById = {
             for (final a in activitySnapshot.data ?? const <Activity>[])
               a.id: a,
           };
 
-          return StreamBuilder<List<SafetyMeetingPoint>>(
-            stream: _meetingPointRepository.watchAll(),
+          return LiveStreamBuilder<List<SafetyMeetingPoint>>(
+            streamKey: _meetingPointRepository,
+            stream: () => _meetingPointRepository.watchAll(),
             builder: (context, pointSnapshot) {
               final pointsById = {
                 for (final p
@@ -536,163 +514,236 @@ class _DailySafetyMeetingSummaryScreenState
                   p.id: p,
               };
 
-              return StreamBuilder<List<MeetingAttendance>>(
-                stream: _attendanceRepository.watchAll(),
+              return LiveStreamBuilder<List<MeetingAttendance>>(
+                streamKey: _attendanceRepository,
+                stream: () => _attendanceRepository.watchAll(),
                 builder: (context, attendanceSnapshot) {
                   final attendance =
                       attendanceSnapshot.data ?? const <MeetingAttendance>[];
 
-                  return StreamBuilder<List<MeetingConcern>>(
-                    stream: _concernRepository.watchAll(),
+                  return LiveStreamBuilder<List<MeetingConcern>>(
+                    streamKey: _concernRepository,
+                    stream: () => _concernRepository.watchAll(),
                     builder: (context, concernSnapshot) {
                       final concerns =
                           concernSnapshot.data ?? const <MeetingConcern>[];
 
-                      return StreamBuilder<List<CorrectiveAction>>(
-                        stream: _correctiveActionRepository
+                      return LiveStreamBuilder<List<CorrectiveAction>>(
+                        streamKey: (_correctiveActionRepository, meeting.id),
+                        stream: () => _correctiveActionRepository
                             .watchForMeeting(meeting.id),
                         builder: (context, actionSnapshot) {
-                          final actions = actionSnapshot.data ??
-                              const <CorrectiveAction>[];
+                          final actions =
+                              actionSnapshot.data ?? const <CorrectiveAction>[];
 
-                          return StreamBuilder<List<MeetingPointNote>>(
-                            stream: _pointNoteRepository.watchAll(),
+                          return LiveStreamBuilder<List<MeetingPointNote>>(
+                            streamKey: _pointNoteRepository,
+                            stream: () => _pointNoteRepository.watchAll(),
                             builder: (context, noteSnapshot) {
                               final notesByPointId = {
-                                for (final n in noteSnapshot.data ??
-                                    const <MeetingPointNote>[])
+                                for (final n
+                                    in noteSnapshot.data ??
+                                        const <MeetingPointNote>[])
                                   n.meetingPointId: n,
                               };
 
-                              return StreamBuilder<List<MeetingEvidence>>(
-                                stream: _evidenceRepository.watchAll(),
+                              return LiveStreamBuilder<List<MeetingEvidence>>(
+                                streamKey: _evidenceRepository,
+                                stream: () => _evidenceRepository.watchAll(),
                                 builder: (context, evidenceSnapshot) {
-                                  final evidence = evidenceSnapshot.data ??
+                                  final evidence =
+                                      evidenceSnapshot.data ??
                                       const <MeetingEvidence>[];
 
                                   return ListView(
-                            padding: const EdgeInsets.all(AppSpacing.md),
-                            children: [
-                              _SummarySection(
-                                title: 'Meeting Information',
-                                children: [
-                                  _InfoRow('Organization', widget.organization.name),
-                                  _InfoRow(
-                                    'Project',
-                                    widget.project?.name ?? meeting.projectId,
-                                  ),
-                                  _InfoRow(
-                                    'Site',
-                                    widget.site?.name ?? meeting.siteId,
-                                  ),
-                                  _InfoRow('Date', meeting.date),
-                                  _InfoRow(
-                                    'Foreman',
-                                    _nameFor(meeting.foremanId) ??
-                                        meeting.foremanId,
-                                  ),
-                                  _InfoRow('Status', meeting.status.label),
-                                ],
-                              ),
-                              const SizedBox(height: AppSpacing.lg),
-                              _SummarySection(
-                                title: 'Activities Discussed',
-                                children: meeting.activityIds.isEmpty
-                                    ? [
-                                        const Text(
-                                          'No activities recorded.',
-                                          style: AppTextStyles.bodyMedium,
-                                        ),
-                                      ]
-                                    : [
-                                        for (final id in meeting.activityIds)
-                                          _BulletRow(
-                                            activitiesById[id]?.name ?? id,
+                                    padding: const EdgeInsets.all(
+                                      AppSpacing.md,
+                                    ),
+                                    children: [
+                                      FeatureHeader(
+                                        eyebrow: 'Daily Safety Meeting',
+                                        title:
+                                            '${widget.site?.name ?? meeting.siteId}'
+                                            ' — ${meeting.status.label}',
+                                        icon: meeting.isCompleted
+                                            ? Icons.task_alt
+                                            : Icons.groups,
+                                        color: meeting.isCompleted
+                                            ? AppColors.success
+                                            : AppColors.meetings,
+                                        chips: [
+                                          FeatureChip(
+                                            icon: Icons.handyman,
+                                            label:
+                                                '${meeting.activityIds.length} '
+                                                'activities',
                                           ),
-                                      ],
-                              ),
-                              const SizedBox(height: AppSpacing.lg),
-                              _SummarySection(
-                                title: 'Safety Points Covered',
-                                children: meeting.meetingPointIds.isEmpty
-                                    ? [
-                                        const Text(
-                                          'No safety points recorded.',
-                                          style: AppTextStyles.bodyMedium,
-                                        ),
-                                      ]
-                                    : [
-                                        for (final id
-                                            in meeting.meetingPointIds)
-                                          _BulletRow(
-                                            pointsById[id]?.title ?? id,
-                                            subtitle:
-                                                notesByPointId[id]?.note,
+                                          FeatureChip(
+                                            icon: Icons.checklist,
+                                            label:
+                                                '${meeting.meetingPointIds.length} '
+                                                'safety points',
                                           ),
-                                      ],
-                              ),
-                              const SizedBox(height: AppSpacing.lg),
-                              _SummarySection(
-                                title: 'Attendance '
-                                    '(${attendance.where((a) => a.status == MeetingAttendanceStatus.present).length}/'
-                                    '${attendance.length})',
-                                children: attendance.isEmpty
-                                    ? [
-                                        const Text(
-                                          'No attendance recorded.',
-                                          style: AppTextStyles.bodyMedium,
-                                        ),
-                                      ]
-                                    : [
-                                        for (final record in attendance)
-                                          _BulletRow(
-                                            '${_nameFor(record.workerId) ?? record.workerId} '
-                                            '— ${record.status.label}',
+                                          FeatureChip(
+                                            icon: Icons.report_problem,
+                                            label:
+                                                '${meeting.concerns.length} '
+                                                'concerns',
                                           ),
-                                      ],
-                              ),
-                              const SizedBox(height: AppSpacing.lg),
-                              _SummarySection(
-                                title: 'Concerns',
-                                children: concerns.isEmpty
-                                    ? [
-                                        const Text(
-                                          'No concerns recorded.',
-                                          style: AppTextStyles.bodyMedium,
-                                        ),
-                                      ]
-                                    : [
-                                        for (final concern in concerns)
-                                          _BulletRow(
-                                            '${concern.category.label}: '
-                                            '${concern.description}',
+                                        ],
+                                        trailing: meeting.crewOutcome == null
+                                            ? null
+                                            : CrewOutcomeBadge(
+                                                outcome: meeting.crewOutcome!,
+                                              ),
+                                      ),
+                                      const SizedBox(height: AppSpacing.md),
+                                      _SummarySection(
+                                        title: 'Meeting Information',
+                                        children: [
+                                          _InfoRow(
+                                            'Organization',
+                                            widget.organization.name,
                                           ),
-                                      ],
-                              ),
-                              const SizedBox(height: AppSpacing.lg),
-                              _SummarySection(
-                                title: 'Corrective Actions',
-                                children: actions.isEmpty
-                                    ? [
-                                        const Text(
-                                          'No corrective actions recorded.',
-                                          style: AppTextStyles.bodyMedium,
-                                        ),
-                                      ]
-                                    : [
-                                        for (final action in actions)
-                                          _BulletRow(
-                                            '${action.title} — '
-                                            '${action.status.label} '
-                                            '(assigned: '
-                                            '${_nameFor(action.assignedTo) ?? action.assignedTo})',
+                                          _InfoRow(
+                                            'Project',
+                                            widget.project?.name ??
+                                                meeting.projectId,
                                           ),
-                                      ],
-                              ),
-                              const SizedBox(height: AppSpacing.lg),
-                              _EvidenceSummarySection(evidence: evidence),
-                            ],
-                          );
+                                          _InfoRow(
+                                            'Site',
+                                            widget.site?.name ?? meeting.siteId,
+                                          ),
+                                          _InfoRow('Date', meeting.date),
+                                          _InfoRow(
+                                            'Foreman',
+                                            _nameFor(meeting.foremanId) ??
+                                                meeting.foremanId,
+                                          ),
+                                          _InfoRow(
+                                            'Status',
+                                            meeting.status.label,
+                                          ),
+                                          if (meeting.crewOutcome != null)
+                                            _InfoRow(
+                                              'Crew result',
+                                              [
+                                                meeting.crewOutcome!.label,
+                                                ?meeting.crewOutcomeNote,
+                                              ].join(' — '),
+                                            ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: AppSpacing.lg),
+                                      _SummarySection(
+                                        title: 'Activities Discussed',
+                                        children: meeting.activityIds.isEmpty
+                                            ? [
+                                                const Text(
+                                                  'No activities recorded.',
+                                                  style:
+                                                      AppTextStyles.bodyMedium,
+                                                ),
+                                              ]
+                                            : [
+                                                for (final id
+                                                    in meeting.activityIds)
+                                                  _BulletRow(
+                                                    activitiesById[id]?.name ??
+                                                        id,
+                                                  ),
+                                              ],
+                                      ),
+                                      const SizedBox(height: AppSpacing.lg),
+                                      _SummarySection(
+                                        title: 'Safety Points Covered',
+                                        children:
+                                            meeting.meetingPointIds.isEmpty
+                                            ? [
+                                                const Text(
+                                                  'No safety points recorded.',
+                                                  style:
+                                                      AppTextStyles.bodyMedium,
+                                                ),
+                                              ]
+                                            : [
+                                                for (final id
+                                                    in meeting.meetingPointIds)
+                                                  _BulletRow(
+                                                    pointsById[id]?.title ?? id,
+                                                    subtitle: notesByPointId[id]
+                                                        ?.note,
+                                                  ),
+                                              ],
+                                      ),
+                                      const SizedBox(height: AppSpacing.lg),
+                                      _SummarySection(
+                                        title:
+                                            'Attendance '
+                                            '(${attendance.where((a) => a.status == MeetingAttendanceStatus.present).length}/'
+                                            '${attendance.length})',
+                                        children: attendance.isEmpty
+                                            ? [
+                                                const Text(
+                                                  'No attendance recorded.',
+                                                  style:
+                                                      AppTextStyles.bodyMedium,
+                                                ),
+                                              ]
+                                            : [
+                                                for (final record in attendance)
+                                                  _BulletRow(
+                                                    '${_nameFor(record.workerId) ?? record.workerId} '
+                                                    '— ${record.status.label}',
+                                                  ),
+                                              ],
+                                      ),
+                                      const SizedBox(height: AppSpacing.lg),
+                                      _SummarySection(
+                                        title: 'Concerns',
+                                        children: concerns.isEmpty
+                                            ? [
+                                                const Text(
+                                                  'No concerns recorded.',
+                                                  style:
+                                                      AppTextStyles.bodyMedium,
+                                                ),
+                                              ]
+                                            : [
+                                                for (final concern in concerns)
+                                                  _BulletRow(
+                                                    '${concern.category.label}: '
+                                                    '${concern.description}',
+                                                  ),
+                                              ],
+                                      ),
+                                      const SizedBox(height: AppSpacing.lg),
+                                      _SummarySection(
+                                        title: 'Corrective Actions',
+                                        children: actions.isEmpty
+                                            ? [
+                                                const Text(
+                                                  'No corrective actions recorded.',
+                                                  style:
+                                                      AppTextStyles.bodyMedium,
+                                                ),
+                                              ]
+                                            : [
+                                                for (final action in actions)
+                                                  _BulletRow(
+                                                    '${action.title} — '
+                                                    '${action.status.label} '
+                                                    '(assigned: '
+                                                    '${_nameFor(action.assignedTo) ?? action.assignedTo})',
+                                                  ),
+                                              ],
+                                      ),
+                                      const SizedBox(height: AppSpacing.lg),
+                                      _EvidenceSummarySection(
+                                        evidence: evidence,
+                                      ),
+                                    ],
+                                  );
                                 },
                               );
                             },
@@ -711,21 +762,61 @@ class _DailySafetyMeetingSummaryScreenState
   }
 }
 
+/// One section of the meeting summary: its own colored card, so meeting
+/// information, activities, safety points, attendance, concerns, actions
+/// and evidence are clearly separated.
 class _SummarySection extends StatelessWidget {
   const _SummarySection({required this.title, required this.children});
 
   final String title;
   final List<Widget> children;
 
+  (Color, IconData) get _style {
+    final lower = title.toLowerCase();
+    if (lower.startsWith('meeting information')) {
+      return (AppColors.meetings, Icons.info);
+    }
+    if (lower.startsWith('activities')) {
+      return (AppColors.projects, Icons.handyman);
+    }
+    if (lower.startsWith('safety points')) {
+      return (AppColors.meetings, Icons.checklist);
+    }
+    if (lower.startsWith('attendance')) {
+      return (AppColors.people, Icons.how_to_reg);
+    }
+    if (lower.startsWith('concerns')) {
+      return (AppColors.hazards, Icons.report_problem);
+    }
+    if (lower.startsWith('corrective')) {
+      return (AppColors.correctiveActions, Icons.build_circle);
+    }
+    if (lower.startsWith('evidence')) {
+      return (AppColors.analytics, Icons.photo_camera);
+    }
+    return (AppColors.primaryBright, Icons.article);
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(title, style: AppTextStyles.titleLarge),
-        const SizedBox(height: AppSpacing.sm),
-        ...children,
-      ],
+    final (color, icon) = _style;
+    return Card(
+      margin: const EdgeInsets.only(bottom: AppSpacing.xs),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(AppSpacing.md),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            FeatureSectionTitle(title: title, icon: icon, color: color),
+            const SizedBox(height: AppSpacing.sm),
+            ...children,
+          ],
+        ),
+      ),
     );
   }
 }
@@ -743,10 +834,7 @@ class _InfoRow extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SizedBox(
-            width: 96,
-            child: Text(label, style: AppTextStyles.label),
-          ),
+          SizedBox(width: 96, child: Text(label, style: AppTextStyles.label)),
           Expanded(child: Text(value, style: AppTextStyles.bodyMedium)),
         ],
       ),
@@ -771,10 +859,7 @@ class _EvidenceSummarySection extends StatelessWidget {
       title: 'Evidence',
       children: evidence.isEmpty
           ? const [
-              Text(
-                'No evidence attached.',
-                style: AppTextStyles.bodyMedium,
-              ),
+              Text('No evidence attached.', style: AppTextStyles.bodyMedium),
             ]
           : [
               Wrap(
@@ -801,9 +886,7 @@ class _EvidenceThumbnail extends StatelessWidget {
         context: context,
         builder: (_) => Dialog(
           child: item.isImage
-              ? InteractiveViewer(
-                  child: Image.network(item.downloadUrl),
-                )
+              ? InteractiveViewer(child: Image.network(item.downloadUrl))
               : Padding(
                   padding: const EdgeInsets.all(AppSpacing.lg),
                   child: Text(
@@ -826,19 +909,13 @@ class _EvidenceThumbnail extends StatelessWidget {
                       height: 96,
                       fit: BoxFit.cover,
                       errorBuilder: (context, error, stackTrace) =>
-                          const Icon(
-                            Icons.broken_image_outlined,
-                            size: 96,
-                          ),
+                          const Icon(Icons.broken_image_outlined, size: 96),
                     )
                   : Container(
                       width: 96,
                       height: 96,
                       color: AppColors.textSecondary.withValues(alpha: 0.08),
-                      child: const Icon(
-                        Icons.description_outlined,
-                        size: 40,
-                      ),
+                      child: const Icon(Icons.description_outlined, size: 40),
                     ),
             ),
             const SizedBox(height: 2),

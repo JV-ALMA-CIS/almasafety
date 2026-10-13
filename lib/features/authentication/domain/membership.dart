@@ -73,9 +73,7 @@ class Membership {
   /// one, but (unlike [UserProfile]) it fails quietly rather than throwing:
   /// one bad membership document should not blank the caller's whole
   /// membership list.
-  static Membership? fromFirestore(
-    DocumentSnapshot<Map<String, dynamic>> doc,
-  ) {
+  static Membership? fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     final data = doc.data();
     if (data == null) return null;
     return Membership.fromMap(doc.id, data);

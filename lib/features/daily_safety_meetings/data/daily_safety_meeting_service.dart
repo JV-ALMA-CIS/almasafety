@@ -7,6 +7,7 @@ import '../../../core/errors/app_exception.dart';
 import '../../../core/services/firestore_service.dart';
 import '../../../core/services/storage_service.dart';
 import '../../organizations/data/organization_admin_service.dart';
+import '../../pre_start_checks/domain/pre_start_outcome.dart';
 import '../domain/meeting_evidence_type.dart';
 
 /// Client for the foreman-facing meeting callables in
@@ -64,16 +65,14 @@ class DailySafetyMeetingService {
     List<String> activityIds = const [],
     List<String> meetingPointIds = const [],
   }) async {
-    final result = await _call<Map<Object?, Object?>>(
-      'createDailySafetyMeeting',
-      {
-        'organizationId': organizationId,
-        'projectId': projectId,
-        'siteId': siteId,
-        'activityIds': activityIds,
-        'meetingPointIds': meetingPointIds,
-      },
-    );
+    final result =
+        await _call<Map<Object?, Object?>>('createDailySafetyMeeting', {
+          'organizationId': organizationId,
+          'projectId': projectId,
+          'siteId': siteId,
+          'activityIds': activityIds,
+          'meetingPointIds': meetingPointIds,
+        });
     return result['id'] as String? ?? '';
   }
 
@@ -95,14 +94,51 @@ class DailySafetyMeetingService {
   });
 
   /// Completes the meeting: the server requires at least one activity and
-  /// one meeting point already recorded, then sets `status` to `completed`.
+  /// one meeting point already recorded, then sets `status` to `completed`
+  /// and records the Foreman's [crewOutcome] for the crew (with
+  /// [crewOutcomeNote], required unless the outcome is GO). A crew STOP
+  /// notifies the organization's Site Managers.
   Future<void> completeDailySafetyMeeting(
     String organizationId,
-    String id,
-  ) => _call<Object?>('completeDailySafetyMeeting', {
+    String id, {
+    PreStartOutcome? crewOutcome,
+    String? crewOutcomeNote,
+  }) => _call<Object?>('completeDailySafetyMeeting', {
     'organizationId': organizationId,
     'id': id,
+    'crewOutcome': ?crewOutcome?.id,
+    'crewOutcomeNote': ?crewOutcomeNote,
   });
+
+  /// The calling Foreman's own outstanding "Needed today" lessons for a
+  /// meeting at [siteId] covering [activityIds] — [meetingId] null before it
+  /// is started. Exactly what Start/Complete will check server-side.
+  Future<List<({String learningId, String title})>> getMyMeetingLearningGate({
+    required String organizationId,
+    required String siteId,
+    required List<String> activityIds,
+    String? meetingId,
+  }) async {
+    final result =
+        await _call<Map<Object?, Object?>>('getMyMeetingLearningGate', {
+          'organizationId': organizationId,
+          'siteId': siteId,
+          'activityIds': activityIds,
+          'meetingId': ?meetingId,
+        });
+    final outstanding = result['outstanding'];
+    return [
+      if (outstanding is List)
+        for (final entry in outstanding.whereType<Map<Object?, Object?>>())
+          if (entry['learningId'] is String)
+            (
+              learningId: entry['learningId']! as String,
+              title: entry['title'] is String
+                  ? entry['title']! as String
+                  : entry['learningId']! as String,
+            ),
+    ];
+  }
 
   /// Sets (creates or overwrites) the discussion note for one meeting point
   /// on an in-progress meeting — what was actually explained/discussed

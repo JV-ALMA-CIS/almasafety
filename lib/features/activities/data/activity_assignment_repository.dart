@@ -52,9 +52,8 @@ class ActivityAssignmentRepository {
         .where('uid', isEqualTo: uid)
         .snapshots()
         .map(
-          (snapshot) => snapshot.docs
-              .map(ActivityAssignment.fromFirestore)
-              .toList(),
+          (snapshot) =>
+              snapshot.docs.map(ActivityAssignment.fromFirestore).toList(),
         );
   }
 

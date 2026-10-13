@@ -28,14 +28,26 @@ class AppTheme {
       useMaterial3: true,
       brightness: brightness,
       colorScheme: colorScheme,
-      scaffoldBackgroundColor:
-          isDark ? AppColors.backgroundDark : AppColors.background,
+      scaffoldBackgroundColor: isDark
+          ? AppColors.backgroundDark
+          : AppColors.background,
+      // Solid brand-colored app bar in both themes, with white title and
+      // icons — the strongest single color cue on every screen.
       appBarTheme: AppBarTheme(
-        backgroundColor: isDark ? AppColors.surfaceDark : AppColors.surface,
-        foregroundColor: AppColors.textPrimary,
+        backgroundColor: isDark ? AppColors.primaryDark : AppColors.primary,
+        foregroundColor: AppColors.textOnPrimary,
+        iconTheme: const IconThemeData(color: AppColors.textOnPrimary),
+        actionsIconTheme: const IconThemeData(color: AppColors.textOnPrimary),
         elevation: 0,
-        scrolledUnderElevation: 1,
+        scrolledUnderElevation: 2,
         centerTitle: false,
+      ),
+      floatingActionButtonTheme: const FloatingActionButtonThemeData(
+        backgroundColor: AppColors.secondary,
+        foregroundColor: AppColors.textPrimary,
+      ),
+      progressIndicatorTheme: const ProgressIndicatorThemeData(
+        color: AppColors.primaryBright,
       ),
       cardTheme: CardThemeData(
         elevation: 0,
@@ -43,13 +55,17 @@ class AppTheme {
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12),
           side: BorderSide(
-            color: colorScheme.outlineVariant.withValues(alpha: 0.5),
+            color: AppColors.primaryBright.withValues(alpha: 0.18),
           ),
         ),
         margin: EdgeInsets.zero,
       ),
       elevatedButtonTheme: ElevatedButtonThemeData(
+        // Filled primary rather than Material 3's pale tonal default, so
+        // the main action on a screen stands out in daylight.
         style: ElevatedButton.styleFrom(
+          backgroundColor: isDark ? AppColors.primaryBright : AppColors.primary,
+          foregroundColor: AppColors.textOnPrimary,
           minimumSize: const Size.fromHeight(AppSpacing.minTouchTarget),
           padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
           shape: RoundedRectangleBorder(

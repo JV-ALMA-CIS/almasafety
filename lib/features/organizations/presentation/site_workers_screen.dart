@@ -15,6 +15,8 @@ import '../data/site_assignment_service.dart';
 import '../domain/organization.dart';
 import '../domain/project.dart';
 import '../domain/site.dart';
+import '../../../core/widgets/feature_header.dart';
+import '../../../core/widgets/person_avatar.dart';
 
 /// Shows this site's workforce grouped by the real operational hierarchy —
 /// **Foreman -> Crew** — rather than one flat list of names, and lets an
@@ -221,7 +223,7 @@ class _SiteWorkersScreenState extends State<SiteWorkersScreen> {
   }
 
   Future<void> _openCrew(_Crew crew) async {
-    await Navigator.of(context).push(
+    await Navigator.of(context, rootNavigator: true).push(
       MaterialPageRoute<void>(
         builder: (_) => _CrewScreen(
           crew: crew,
@@ -274,32 +276,43 @@ class _SiteWorkersScreenState extends State<SiteWorkersScreen> {
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.all(AppSpacing.md),
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Workforce · ${widget.site.name}',
-                    style: AppTextStyles.headlineMedium,
-                  ),
-                  Text(
-                    '${widget.organization.name} · ${widget.project.name}',
-                    style: AppTextStyles.bodyMedium,
-                  ),
-                ],
-              ),
+        FeatureHeader(
+          eyebrow: 'Workforce',
+          title: widget.site.name,
+          subtitle: '${widget.organization.name} · ${widget.project.name}',
+          icon: Icons.groups,
+          color: AppColors.people,
+          chips: [
+            FeatureChip(
+              icon: Icons.engineering,
+              label:
+                  '${grouped.crews.length} '
+                  '${grouped.crews.length == 1 ? 'crew' : 'crews'}',
             ),
-            IconButton(
-              tooltip: 'Assign to this site',
+            FeatureChip(
+              icon: Icons.person,
+              label:
+                  '${assignedMembers.length} '
+                  '${assignedMembers.length == 1 ? 'person' : 'people'} on site',
+            ),
+          ],
+          footer: Tooltip(
+            message: 'Assign to this site',
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.white,
+                foregroundColor: AppColors.people,
+                minimumSize: const Size(0, AppSpacing.minTouchTarget),
+              ),
               onPressed: _isBusy || _isLoadingMembers
                   ? null
                   : _openAssignPicker,
-              icon: const Icon(Icons.person_add_alt_1_outlined),
+              icon: const Icon(Icons.person_add_alt_1),
+              label: const Text('Add Person'),
             ),
-          ],
+          ),
         ),
+
         if (_errorMessage != null) ...[
           const SizedBox(height: AppSpacing.md),
           AuthErrorBanner(message: _errorMessage!),
@@ -332,10 +345,26 @@ class _SiteWorkersScreenState extends State<SiteWorkersScreen> {
         ],
         if (grouped.unassignedWorkers.isNotEmpty) ...[
           const SizedBox(height: AppSpacing.sm),
-          Text(
-            'No Foreman assigned — workers below have no supervisor at '
-            'this site yet',
-            style: AppTextStyles.label.copyWith(color: AppColors.warning),
+          Container(
+            padding: const EdgeInsets.all(AppSpacing.sm + 2),
+            decoration: BoxDecoration(
+              color: AppColors.warning.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppColors.warning),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.warning_amber, color: AppColors.warning),
+                const SizedBox(width: AppSpacing.sm),
+                Expanded(
+                  child: Text(
+                    'No Foreman assigned — workers below have no supervisor '
+                    'at this site yet',
+                    style: AppTextStyles.label,
+                  ),
+                ),
+              ],
+            ),
           ),
           const SizedBox(height: AppSpacing.sm),
           for (final worker in grouped.unassignedWorkers) ...[
@@ -372,10 +401,25 @@ class _ForemanCrewCard extends StatelessWidget {
     final workerCount = crew.workers.length;
     return Card(
       margin: EdgeInsets.zero,
+      color: Color.alphaBlend(
+        AppColors.hazards.withValues(alpha: 0.07),
+        Theme.of(context).colorScheme.surface,
+      ),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: AppColors.hazards.withValues(alpha: 0.5)),
+      ),
       child: ListTile(
         onTap: onTap,
-        leading: const CircleAvatar(child: Icon(Icons.engineering_outlined)),
-        title: Text(crew.foreman.name),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.md,
+          vertical: AppSpacing.xs,
+        ),
+        leading: PersonAvatar(name: crew.foreman.name),
+        title: Text(
+          crew.foreman.name,
+          style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
         subtitle: Text(
           [
             'Foreman',
@@ -393,7 +437,7 @@ class _ForemanCrewCard extends StatelessWidget {
                 color: AppColors.danger,
               ),
             ),
-            const Icon(Icons.chevron_right),
+            const Icon(Icons.chevron_right, color: AppColors.hazards),
           ],
         ),
       ),
@@ -418,8 +462,16 @@ class _WorkerCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Card(
       margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: AppColors.people.withValues(alpha: 0.4)),
+      ),
       child: ListTile(
-        title: Text(worker.name),
+        leading: PersonAvatar(name: worker.name),
+        title: Text(
+          worker.name,
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
         subtitle: Text(
           [
             if (worker.trade != null) worker.trade!,
@@ -455,28 +507,54 @@ class _CrewScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text('${crew.foreman.name} — Crew')),
+      appBar: AppBar(),
       body: ListView(
         padding: const EdgeInsets.all(AppSpacing.md),
         children: [
-          Text('Foreman', style: AppTextStyles.label),
-          const SizedBox(height: AppSpacing.xs),
+          FeatureHeader(
+            eyebrow: 'Crew',
+            title: crew.foreman.name,
+            subtitle: crew.foreman.email,
+            icon: Icons.engineering,
+            color: AppColors.hazards,
+            chips: [
+              FeatureChip(
+                icon: Icons.groups,
+                label:
+                    '${crew.workers.length} '
+                    '${crew.workers.length == 1 ? 'crew member' : 'crew members'}',
+              ),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.lg),
+          const FeatureSectionTitle(
+            title: 'Foreman',
+            icon: Icons.engineering,
+            color: AppColors.hazards,
+          ),
+          const SizedBox(height: AppSpacing.sm),
           Card(
             margin: EdgeInsets.zero,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+              side: BorderSide(color: AppColors.hazards.withValues(alpha: 0.5)),
+            ),
             child: ListTile(
-              leading: const CircleAvatar(
-                child: Icon(Icons.engineering_outlined),
+              leading: PersonAvatar(name: crew.foreman.name),
+              title: Text(
+                crew.foreman.name,
+                style: const TextStyle(fontWeight: FontWeight.w700),
               ),
-              title: Text(crew.foreman.name),
               subtitle: Text(crew.foreman.email),
             ),
           ),
           const SizedBox(height: AppSpacing.lg),
-          Text(
-            crew.workers.length == 1
+          FeatureSectionTitle(
+            title: crew.workers.length == 1
                 ? 'Workers (1)'
                 : 'Workers (${crew.workers.length})',
-            style: AppTextStyles.label,
+            icon: Icons.groups,
+            color: AppColors.people,
           ),
           const SizedBox(height: AppSpacing.xs),
           if (crew.workers.isEmpty)

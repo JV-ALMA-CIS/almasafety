@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
+import '../core/widgets/live_stream_builder.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../core/services/firestore_service.dart';
 import '../core/services/session_controller.dart';
+import '../core/services/theme_controller.dart';
+import '../core/theme/app_colors.dart';
+import '../core/widgets/dashboard_header.dart';
 import '../core/widgets/responsive_scaffold.dart';
 import '../features/authentication/domain/app_role.dart';
 import '../features/daily_safety_meetings/presentation/daily_safety_meeting_history_screen.dart';
@@ -23,17 +27,17 @@ import 'app_routes.dart';
 /// about what the router/rules/callables would allow a modified client to
 /// reach; see those layers for the actual enforcement.
 ///
-/// PHASE 1 (single-company model): the header carries only the app's own
+/// PHASE 1 (single-company model): the sidebar header carries the app's own
 /// "JVA Safety" branding — no organization switcher. JV ALMA CIS is the
 /// one company every user works under; there is nothing to switch between,
 /// so surfacing a picker (even a static "which org am I in" label) would
 /// invite a question that no longer has a meaningful answer. Internally,
 /// `SessionController.activeOrganizationId` still resolves to that one
 /// company's Firestore id — nothing about the underlying membership model
-/// changed, only what the UI shows. The app bar itself stays minimal: a
-/// drawer toggle where needed, the title, and the two truly global actions
-/// (Notifications, and eventually a Profile entry) — never a list of
-/// feature buttons.
+/// changed, only what the UI shows. The app bar itself carries no title of
+/// its own (the sidebar already names the app) — just a drawer toggle where
+/// needed and the global actions (Meeting History where relevant,
+/// Notifications, Appearance, Sign Out).
 class AppShell extends StatelessWidget {
   const AppShell({super.key, required this.child});
 
@@ -74,11 +78,16 @@ class AppShell extends StatelessWidget {
       canManageOrgContent: canManageOrgContent,
       canReviewDailySafetyMeetings: canReviewDailySafetyMeetings,
       canManageSafetyLearningLibrary: canManageSafetyLearningLibrary,
+      isForeman: membershipRole == AppRole.foreman,
     );
 
     return ResponsiveScaffold(
-      title: 'JVA Safety',
-      header: const _SidebarHeader(),
+      header: _SidebarHeader(
+        userName: profile?.name,
+        role: isPlatformAdministrator
+            ? AppRole.admin
+            : membershipRole ?? profile?.platformRole,
+      ),
       sections: sections,
       currentRoute: location,
       onNavSelected: (route) => context.go(route),
@@ -101,7 +110,7 @@ class AppShell extends StatelessWidget {
           IconButton(
             tooltip: 'Meeting History',
             icon: const Icon(Icons.history_outlined),
-            onPressed: () => Navigator.of(context).push(
+            onPressed: () => Navigator.of(context, rootNavigator: true).push(
               MaterialPageRoute<void>(
                 builder: (_) => DailySafetyMeetingHistoryScreen(
                   organizationId: sessionController.activeOrganizationId!,
@@ -115,6 +124,25 @@ class AppShell extends StatelessWidget {
             organizationId: sessionController.activeOrganizationId!,
             uid: profile!.uid,
           ),
+        // Lets a user override the app's light/dark appearance in-app,
+        // independent of their device's own OS/browser setting — see
+        // ThemeController's doc comment for why this exists (desktop
+        // Firefox in particular does not forward its own "Theme" setting
+        // to prefers-color-scheme, only the OS-wide setting does, so users
+        // sharing one device with varying OS themes had no in-app way to
+        // pick dark mode for just this app).
+        const _ThemeModeAction(),
+        // The only way out of a signed-in session anywhere in the normal
+        // app shell — previously `SessionController.signOut` was reachable
+        // only from the pending-approval/access-denied screens, so a
+        // successfully signed-in user (e.g. testing multiple accounts in
+        // the same browser) had no way to switch accounts short of clearing
+        // browser storage. Always shown, regardless of role/organization.
+        IconButton(
+          tooltip: 'Sign Out',
+          icon: const Icon(Icons.logout_outlined),
+          onPressed: () => sessionController.signOut(),
+        ),
       ],
       body: child,
     );
@@ -156,6 +184,7 @@ class AppShell extends StatelessWidget {
     required bool canManageOrgContent,
     required bool canReviewDailySafetyMeetings,
     required bool canManageSafetyLearningLibrary,
+    required bool isForeman,
   }) {
     final showOperations = canManageOrgContent || canReviewDailySafetyMeetings;
     final showInsights = canManageOrgContent;
@@ -168,6 +197,7 @@ class AppShell extends StatelessWidget {
             selectedIcon: Icons.dashboard,
             label: 'Dashboard',
             route: AppRoutes.dashboard,
+            color: AppColors.dashboard,
           ),
         ],
       ),
@@ -180,53 +210,111 @@ class AppShell extends StatelessWidget {
               selectedIcon: Icons.apartment,
               label: 'Projects',
               route: AppRoutes.projects,
+              color: AppColors.projects,
             ),
           ],
         ),
-      const NavSection(
+      NavSection(
         title: 'Safety',
         entries: [
-          NavSectionEntry(
+          // First in Safety: the one way in for anything wrong on site.
+          const NavSectionEntry(
+            icon: Icons.campaign_outlined,
+            selectedIcon: Icons.campaign,
+            label: 'Report a Safety Issue',
+            route: AppRoutes.reportSafetyIssue,
+            color: AppColors.stop,
+          ),
+          const NavSectionEntry(
             icon: Icons.warning_amber_outlined,
             selectedIcon: Icons.warning_amber,
             label: 'Hazards',
             route: AppRoutes.hazards,
+            color: AppColors.hazards,
           ),
-          NavSectionEntry(
+          const NavSectionEntry(
+            icon: Icons.personal_injury_outlined,
+            selectedIcon: Icons.personal_injury,
+            label: 'Incidents',
+            route: AppRoutes.incidents,
+            color: AppColors.stop,
+          ),
+          // Daily site inspections / weekly HSE walk-downs — carried out by
+          // Foremen and Site Managers (Safety Plan, Section 7).
+          if (canReviewPendingAccounts)
+            const NavSectionEntry(
+              icon: Icons.fact_check_outlined,
+              selectedIcon: Icons.fact_check,
+              label: 'Inspections',
+              route: AppRoutes.inspections,
+              color: AppColors.inspections,
+            ),
+          const NavSectionEntry(
             icon: Icons.build_outlined,
             selectedIcon: Icons.build,
             label: 'Corrective Actions',
             route: AppRoutes.correctiveActions,
+            color: AppColors.correctiveActions,
           ),
-          NavSectionEntry(
+          const NavSectionEntry(
             icon: Icons.campaign_outlined,
             selectedIcon: Icons.campaign,
             label: 'Safety Alerts',
             route: AppRoutes.safetyAlerts,
+            color: AppColors.safetyAlerts,
           ),
         ],
       ),
-      const NavSection(
+      NavSection(
         title: 'Meetings & Learning',
         entries: [
-          NavSectionEntry(
+          const NavSectionEntry(
             icon: Icons.fact_check_outlined,
             selectedIcon: Icons.fact_check,
             label: 'Daily Safety Meetings',
             route: AppRoutes.dailySafetyMeetings,
+            color: AppColors.meetings,
           ),
-          NavSectionEntry(
-            icon: Icons.school_outlined,
-            selectedIcon: Icons.school,
-            label: 'Safety Learning',
-            route: AppRoutes.safetyLearning,
-          ),
-          NavSectionEntry(
+          // "Safety Learning" here is the signed-in user's OWN required
+          // learning (MySafetyLearningScreen) — meaningful for a Foreman or
+          // Worker, who each have personal WorkerLearningRecord documents.
+          // A Site Manager/Admin has none: they review learning org-wide
+          // through "Learning Compliance" under Insights instead, so
+          // showing them this entry only led to the confusing "No safety
+          // learning is currently required of you" message for a role that
+          // was never meant to have any. Gated on the same
+          // canReviewDailySafetyMeetings flag Daily Safety Meetings itself
+          // uses to tell a reviewer role apart from a Foreman.
+          if (!canReviewDailySafetyMeetings)
+            const NavSectionEntry(
+              icon: Icons.school_outlined,
+              selectedIcon: Icons.school,
+              label: 'Safety Learning',
+              route: AppRoutes.safetyLearning,
+              color: AppColors.learning,
+            ),
+          const NavSectionEntry(
             icon: Icons.play_circle_outline,
             selectedIcon: Icons.play_circle,
             label: 'Safety Videos',
             route: AppRoutes.safetyVideos,
+            color: AppColors.videos,
           ),
+          // A Foreman's own crew readiness check — same screen Admin/Site
+          // Manager use under Insights ("Learning Compliance"), scoped down
+          // to the Foreman's own site(s) — see
+          // SafetyLearningComplianceScreen's own doc comment for why. Lives
+          // here rather than under Insights (which stays hidden for a
+          // Foreman — see that section's own doc note) since this is a
+          // meeting-readiness check, not organization-wide oversight.
+          if (isForeman)
+            const NavSectionEntry(
+              icon: Icons.verified_user_outlined,
+              selectedIcon: Icons.verified_user,
+              label: 'Crew Compliance',
+              route: AppRoutes.safetyLearningCompliance,
+              color: AppColors.compliance,
+            ),
         ],
       ),
       if (showInsights)
@@ -238,12 +326,21 @@ class AppShell extends StatelessWidget {
               selectedIcon: Icons.bar_chart,
               label: 'Analytics',
               route: AppRoutes.analytics,
+              color: AppColors.analytics,
             ),
             NavSectionEntry(
               icon: Icons.summarize_outlined,
               selectedIcon: Icons.summarize,
               label: 'Reports',
               route: AppRoutes.reports,
+              color: AppColors.reports,
+            ),
+            NavSectionEntry(
+              icon: Icons.verified_user_outlined,
+              selectedIcon: Icons.verified_user,
+              label: 'Learning Compliance',
+              route: AppRoutes.safetyLearningCompliance,
+              color: AppColors.compliance,
             ),
           ],
         ),
@@ -266,12 +363,14 @@ class AppShell extends StatelessWidget {
                 selectedIcon: Icons.admin_panel_settings,
                 label: 'Administration',
                 route: AppRoutes.administration,
+                color: AppColors.administration,
               ),
             const NavSectionEntry(
               icon: Icons.how_to_reg_outlined,
               selectedIcon: Icons.how_to_reg,
               label: 'Pending Approvals',
               route: AppRoutes.pendingApprovals,
+              color: AppColors.people,
             ),
             // My Workers is the Foreman-scoped counterpart to Site
             // Manager/Admin's Organizations -> Site Workers drill-down:
@@ -286,6 +385,7 @@ class AppShell extends StatelessWidget {
                 selectedIcon: Icons.groups,
                 label: 'My Workers',
                 route: AppRoutes.workers,
+                color: AppColors.people,
               ),
             // The company-wide Safety Learning library is admin-only,
             // deliberately not delegated to Site Manager (PROJECT_CONTEXT.md
@@ -296,6 +396,23 @@ class AppShell extends StatelessWidget {
                 selectedIcon: Icons.library_books,
                 label: 'Safety Learning Library',
                 route: AppRoutes.manageSafetyLearning,
+                color: AppColors.learning,
+              ),
+            // Safety Requirements decides WHICH of the library's learning
+            // items are actually required (for which site/activity, or
+            // organization-wide) — org-content authoring, same
+            // canManageOrgContent boundary as Safety Meeting Points below,
+            // not the admin-only library gate: a Site Manager sets
+            // requirements for their own organization even though only an
+            // Admin curates the shared learning library those requirements
+            // draw from.
+            if (canManageOrgContent)
+              const NavSectionEntry(
+                icon: Icons.checklist_outlined,
+                selectedIcon: Icons.checklist,
+                label: 'Safety Requirements',
+                route: AppRoutes.manageSafetyRequirements,
+                color: AppColors.requirements,
               ),
             // Safety Meeting Points, unlike the library above, is
             // field-level content a Site Manager prepares for their own
@@ -307,6 +424,7 @@ class AppShell extends StatelessWidget {
                 selectedIcon: Icons.list_alt,
                 label: 'Safety Meeting Points',
                 route: AppRoutes.manageSafetyMeetingPoints,
+                color: AppColors.meetings,
               ),
           ],
         ),
@@ -321,31 +439,135 @@ class AppShell extends StatelessWidget {
 /// identity text, not a selectable/switchable control — there was
 /// previously an [OrganizationSwitcher] here for the (now-removed)
 /// multi-organization case; that concept no longer applies.
+///
+/// Below the wordmark it names the signed-in user and their role — the same
+/// role badge the dashboard banner shows — so it is always clear whose
+/// view of the app this is.
 class _SidebarHeader extends StatelessWidget {
-  const _SidebarHeader();
+  const _SidebarHeader({this.userName, this.role});
+
+  final String? userName;
+  final AppRole? role;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
-      child: Column(
+    // The app bar carries no title of its own — this header is the app's
+    // only wordmark: "JVA Safety" in bold white on the brand gradient,
+    // with the one company every user works under beneath it, and the
+    // navigation sections directly below.
+    return Container(
+      margin: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 16),
+      decoration: BoxDecoration(
+        gradient: AppColors.brandGradient,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'JVA Safety',
-            style: Theme.of(
-              context,
-            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: AppColors.secondary,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(
+              Icons.health_and_safety,
+              color: AppColors.textPrimary,
+            ),
           ),
-          const SizedBox(height: 2),
-          Text(
-            'JV ALMA CIS',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'JVA Safety',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'JV ALMA CIS',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Colors.white.withValues(alpha: 0.85),
+                  ),
+                ),
+                if (userName?.trim().isNotEmpty ?? false) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    userName!.trim(),
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+                if (role != null) ...[
+                  const SizedBox(height: 4),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: DashboardHeader.roleColor(role!),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Text(
+                      role!.label,
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.onColor(
+                          DashboardHeader.roleColor(role!),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Lets the user pick System/Light/Dark for this app specifically — see
+/// [ThemeController]'s doc comment for why an in-app override exists
+/// alongside following the OS setting. A checkmark on the entry matching
+/// [ThemeController.mode] shows the current choice; the icon itself reflects
+/// which theme is ACTUALLY being rendered right now (relevant when the
+/// choice is System, where the rendered theme depends on the OS/browser
+/// signal, not a fixed icon).
+class _ThemeModeAction extends StatelessWidget {
+  const _ThemeModeAction();
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = context.watch<ThemeController>();
+    final isDarkNow = Theme.of(context).brightness == Brightness.dark;
+    return PopupMenuButton<ThemeMode>(
+      tooltip: 'Appearance',
+      icon: Icon(
+        isDarkNow ? Icons.dark_mode_outlined : Icons.light_mode_outlined,
+      ),
+      onSelected: controller.setMode,
+      itemBuilder: (context) => [
+        for (final mode in ThemeMode.values)
+          CheckedPopupMenuItem(
+            value: mode,
+            checked: controller.mode == mode,
+            child: Text(switch (mode) {
+              ThemeMode.system => 'System',
+              ThemeMode.light => 'Light',
+              ThemeMode.dark => 'Dark',
+            }),
+          ),
+      ],
     );
   }
 }
@@ -391,8 +613,9 @@ class _NotificationBellActionState extends State<_NotificationBellAction> {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<List<AppNotification>>(
-      stream: _repositoryFor(
+    return LiveStreamBuilder<List<AppNotification>>(
+      streamKey: (widget.organizationId, widget.uid),
+      stream: () => _repositoryFor(
         widget.organizationId,
       ).watchUnreadForRecipient(widget.uid),
       builder: (context, snapshot) {

@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_core/firebase_core.dart';
 import '../../../core/constants/firestore_paths.dart';
+import '../../corrective_actions/domain/corrective_action_evidence.dart';
 import '../../../core/errors/app_exception.dart';
 import '../../../core/services/firestore_service.dart';
 import '../../../core/services/storage_service.dart';
@@ -106,6 +107,7 @@ class HazardService {
     required String siteId,
     required String category,
     required String description,
+    String kind = 'hazard',
     String? location,
     String? photoFileName,
     Uint8List? photoBytes,
@@ -126,6 +128,7 @@ class HazardService {
       organizationId: organizationId,
       siteId: siteId,
       hazardId: hazardId,
+      kind: kind,
       category: category,
       description: description,
       location: location,
@@ -144,6 +147,7 @@ class HazardService {
     required String hazardId,
     required String category,
     required String description,
+    String kind = 'hazard',
     String? location,
     String? photoUrl,
   }) async {
@@ -151,6 +155,7 @@ class HazardService {
       'organizationId': organizationId,
       'siteId': siteId,
       'hazardId': hazardId,
+      'kind': kind,
       'category': category,
       'description': description,
       'location': ?location,
@@ -181,6 +186,8 @@ class HazardService {
     required String assignedTo,
     required DateTime dueDate,
     bool evidenceRequired = false,
+    List<CorrectiveActionEvidenceKind> evidenceKinds = const [],
+    String? evidenceInstructions,
   }) async {
     final result = await _call<Map<Object?, Object?>>(
       'linkHazardCorrectiveAction',
@@ -191,7 +198,9 @@ class HazardService {
         'description': description,
         'assignedTo': assignedTo,
         'dueDate': dueDate.toIso8601String(),
-        'evidenceRequired': evidenceRequired,
+        'evidenceRequired': evidenceRequired || evidenceKinds.isNotEmpty,
+        'evidenceKinds': [for (final kind in evidenceKinds) kind.id],
+        'evidenceInstructions': ?evidenceInstructions,
       },
     );
     return result['id'] as String? ?? '';

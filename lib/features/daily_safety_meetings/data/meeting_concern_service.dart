@@ -13,8 +13,7 @@ import '../../organizations/data/organization_admin_service.dart';
 /// `reportedBy` argument: the server derives the acting foreman from
 /// `request.auth.uid`, mirroring every other write surface in this feature.
 class MeetingConcernService {
-  MeetingConcernService({FirebaseFunctions? functions})
-    : _injected = functions;
+  MeetingConcernService({FirebaseFunctions? functions}) : _injected = functions;
 
   final FirebaseFunctions? _injected;
 

@@ -85,12 +85,8 @@ void main() {
         'platformRole': 'siteManager',
       });
 
-      expect(
-        UserProfile.fromFirestore(doc).platformRole,
-        AppRole.siteManager,
-      );
+      expect(UserProfile.fromFirestore(doc).platformRole, AppRole.siteManager);
     });
-
   });
 
   group('UserProfile.fromFirestore (pending users)', () {
@@ -119,8 +115,7 @@ void main() {
     });
   });
 
-  group(
-      'UserProfile.platformRole (assigned by a reviewer, never '
+  group('UserProfile.platformRole (assigned by a reviewer, never '
       'self-granted)', () {
     test('defaults to null when the field is absent', () async {
       // Every profile written before this field existed, and every pending
@@ -143,8 +138,7 @@ void main() {
       }
     });
 
-    test('an unrecognised role reads as no role, not a thrown error',
-        () async {
+    test('an unrecognised role reads as no role, not a thrown error', () async {
       // Fails closed like isOrgApprover did: a malformed authorization value
       // must deny the capability, not deny the whole profile the way a
       // malformed accountStatus does.
@@ -206,14 +200,14 @@ void main() {
         expect(
           entry.key.canReviewPendingAccounts,
           entry.value,
-          reason: '${entry.key} canReviewPendingAccounts should be '
+          reason:
+              '${entry.key} canReviewPendingAccounts should be '
               '${entry.value}',
         );
       }
     });
 
-    test(
-        'UserProfile.isPlatformAdministrator mirrors '
+    test('UserProfile.isPlatformAdministrator mirrors '
         'platformRole.isPlatformLevel', () {
       const admin = UserProfile(
         uid: 'uid-admin',
@@ -304,7 +298,6 @@ void main() {
         throwsA(isA<DataException>()),
       );
     });
-
   });
 
   group('UserProfile.registrationPayload (grants nothing)', () {
@@ -319,8 +312,7 @@ void main() {
       expect(payload['accountStatus'], AccountStatus.pending.id);
     });
 
-    test(
-        'never carries organizationId, approval fields, platformRole or '
+    test('never carries organizationId, approval fields, platformRole or '
         'active', () {
       final payload = UserProfile.registrationPayload(
         uid: 'uid-a',
@@ -357,18 +349,15 @@ void main() {
         phone: '+254700000000',
       );
 
-      expect(
-        payload.keys.toSet(),
-        {
-          'uid',
-          'name',
-          'email',
-          'phone',
-          'accountStatus',
-          'createdAt',
-          'updatedAt',
-        },
-      );
+      expect(payload.keys.toSet(), {
+        'uid',
+        'name',
+        'email',
+        'phone',
+        'accountStatus',
+        'createdAt',
+        'updatedAt',
+      });
     });
 
     test('timestamps are server-side, not client clock values', () {

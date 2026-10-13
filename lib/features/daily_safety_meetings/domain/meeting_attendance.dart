@@ -24,6 +24,8 @@ class MeetingAttendance {
     required this.siteId,
     required this.workerId,
     required this.status,
+    this.briefedInPerson = false,
+    this.briefedLearningTitles = const [],
     this.recordedAt,
     this.recordedBy,
   });
@@ -33,6 +35,12 @@ class MeetingAttendance {
   final String siteId;
   final String workerId;
   final MeetingAttendanceStatus status;
+
+  /// The Foreman marked this worker present after briefing them in person
+  /// on lessons they had not yet completed — [briefedLearningTitles] names
+  /// them. Those lessons stay due.
+  final bool briefedInPerson;
+  final List<String> briefedLearningTitles;
   final DateTime? recordedAt;
   final String? recordedBy;
 
@@ -49,9 +57,7 @@ class MeetingAttendance {
   }
 
   factory MeetingAttendance.fromMap(String id, Map<String, dynamic> data) {
-    final status = MeetingAttendanceStatus.tryFromId(
-      data['status'] as String?,
-    );
+    final status = MeetingAttendanceStatus.tryFromId(data['status'] as String?);
     if (status == null) {
       throw const DataException(
         'That attendance record has an unrecognised status.',
@@ -63,9 +69,7 @@ class MeetingAttendance {
     }
     final organizationId = data['organizationId'] as String?;
     if (organizationId == null || organizationId.isEmpty) {
-      throw const DataException(
-        'That attendance record has no organization.',
-      );
+      throw const DataException('That attendance record has no organization.');
     }
     final siteId = data['siteId'] as String?;
     if (siteId == null || siteId.isEmpty) {
@@ -81,6 +85,12 @@ class MeetingAttendance {
       siteId: siteId,
       workerId: workerId,
       status: status,
+      briefedInPerson: data['briefedInPerson'] == true,
+      briefedLearningTitles: [
+        for (final title
+            in (data['briefedLearningTitles'] as List? ?? const []))
+          if (title is String) title,
+      ],
       recordedAt: (data['recordedAt'] as Timestamp?)?.toDate(),
       recordedBy: data['recordedBy'] as String?,
     );

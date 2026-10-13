@@ -44,12 +44,30 @@ class FirestoreRepository<T> {
 
   Stream<List<T>> watchCollection({
     Query<Map<String, dynamic>> Function(Query<Map<String, dynamic>> query)?
-        queryBuilder,
+    queryBuilder,
   }) {
     final query = queryBuilder?.call(_collection) ?? _collection;
     return query.snapshots().map(
-          (snapshot) => snapshot.docs.map(fromFirestore).toList(),
-        );
+      (snapshot) => snapshot.docs.map(fromFirestore).toList(),
+    );
+  }
+
+  /// Fetches a collection once, rather than subscribing to live updates —
+  /// see [OrganizationRepository.getAll]'s own doc comment for why a caller
+  /// that only needs a one-time, settled read should prefer this over
+  /// [watchCollection] (whose `.snapshots()` can emit a stale/empty LOCAL
+  /// CACHE result before the server's real answer arrives).
+  Future<List<T>> getCollection({
+    Query<Map<String, dynamic>> Function(Query<Map<String, dynamic>> query)?
+    queryBuilder,
+  }) async {
+    try {
+      final query = queryBuilder?.call(_collection) ?? _collection;
+      final snapshot = await query.get();
+      return snapshot.docs.map(fromFirestore).toList();
+    } on FirebaseException catch (e) {
+      throw _mapException(e);
+    }
   }
 
   Future<String> create(T value) async {

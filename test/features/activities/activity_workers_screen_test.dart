@@ -37,9 +37,9 @@ class _FakeAssignmentService extends ActivityAssignmentService {
   AppException? removeError;
 
   final List<({String uid, String organizationId, String activityId})>
-      assignCalls = [];
+  assignCalls = [];
   final List<({String uid, String organizationId, String activityId})>
-      removeCalls = [];
+  removeCalls = [];
 
   @override
   Future<void> assignWorkerToActivity({
@@ -49,9 +49,11 @@ class _FakeAssignmentService extends ActivityAssignmentService {
   }) async {
     final error = assignError;
     if (error != null) throw error;
-    assignCalls.add(
-      (uid: uid, organizationId: organizationId, activityId: activityId),
-    );
+    assignCalls.add((
+      uid: uid,
+      organizationId: organizationId,
+      activityId: activityId,
+    ));
   }
 
   @override
@@ -62,9 +64,11 @@ class _FakeAssignmentService extends ActivityAssignmentService {
   }) async {
     final error = removeError;
     if (error != null) throw error;
-    removeCalls.add(
-      (uid: uid, organizationId: organizationId, activityId: activityId),
-    );
+    removeCalls.add((
+      uid: uid,
+      organizationId: organizationId,
+      activityId: activityId,
+    ));
   }
 }
 
@@ -130,13 +134,13 @@ void main() {
     await firestore
         .doc('organizations/org-alpha/activities/activity-1/assignments/$uid')
         .set({
-      'uid': uid,
-      'organizationId': 'org-alpha',
-      'siteId': 'site-1',
-      'activityId': 'activity-1',
-      'assignedAt': Timestamp.now(),
-      'assignedBy': 'admin-uid',
-    });
+          'uid': uid,
+          'organizationId': 'org-alpha',
+          'siteId': 'site-1',
+          'activityId': 'activity-1',
+          'assignedAt': Timestamp.now(),
+          'assignedBy': 'admin-uid',
+        });
   }
 
   Widget wrap({
@@ -279,9 +283,7 @@ void main() {
   });
 
   group('ActivityWorkersScreen (states)', () {
-    testWidgets('shows an empty state when nobody is assigned', (
-      tester,
-    ) async {
+    testWidgets('shows an empty state when nobody is assigned', (tester) async {
       await tester.pumpWidget(wrap());
       await tester.pumpAndSettle();
 

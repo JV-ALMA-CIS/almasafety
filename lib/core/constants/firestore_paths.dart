@@ -20,6 +20,9 @@ class FirestorePaths {
   static const String safetyMeetingPoints = 'safety_meeting_points';
   static const String dailySafetyMeetings = 'daily_safety_meetings';
   static const String hazards = 'hazards';
+  static const String incidents = 'incidents';
+  static const String inspections = 'inspections';
+  static const String inspectionTemplates = 'inspection_templates';
   static const String correctiveActions = 'corrective_actions';
   static const String safetyAlerts = 'safety_alerts';
   static const String notifications = 'notifications';
@@ -44,7 +47,8 @@ class FirestorePaths {
   /// Manager/Foreman may hold more than one membership at once. See
   /// `MembershipRepository`'s doc comment for why this collection has no
   /// client write method.
-  static String membershipsCollection(String uid) => '${userProfile(uid)}/memberships';
+  static String membershipsCollection(String uid) =>
+      '${userProfile(uid)}/memberships';
 
   /// `users/{uid}/memberships/{organizationId}`.
   static String membership(String uid, String organizationId) =>
@@ -134,7 +138,8 @@ class FirestorePaths {
     String organizationId,
     String workerUid,
     String learningId,
-  ) => '${workerLearningRecordsCollection(organizationId)}/'
+  ) =>
+      '${workerLearningRecordsCollection(organizationId)}/'
       '${workerLearningRecordId(workerUid, learningId)}';
 
   /// The deterministic document id for a worker's learning record:
@@ -203,7 +208,8 @@ class FirestorePaths {
     String organizationId,
     String meetingId,
     String meetingPointId,
-  ) => '${meetingPointNotesCollection(organizationId, meetingId)}/$meetingPointId';
+  ) =>
+      '${meetingPointNotesCollection(organizationId, meetingId)}/$meetingPointId';
 
   /// `organizations/{organizationId}/daily_safety_meetings/{meetingId}/evidence`
   /// — a subcollection of one meeting, not a single document. Auto-id,
@@ -242,6 +248,25 @@ class FirestorePaths {
   /// `organizations/{organizationId}/hazards/{id}`.
   static String hazard(String organizationId, String id) =>
       '${hazardsCollection(organizationId)}/$id';
+
+  /// `organizations/{organizationId}/incidents` — flat under the
+  /// organization, like [hazardsCollection]. Readable only by the reporter
+  /// and reviewer roles — see `firestore.rules`.
+  static String incidentsCollection(String organizationId) =>
+      '${organization(organizationId)}/$incidents';
+
+  /// `organizations/{organizationId}/incidents/{id}`.
+  static String incident(String organizationId, String id) =>
+      '${incidentsCollection(organizationId)}/$id';
+
+  /// `organizations/{organizationId}/inspections` — daily site inspections
+  /// and weekly HSE walk-downs (`inspection_callable.ts`).
+  static String inspectionsCollection(String organizationId) =>
+      '${organization(organizationId)}/$inspections';
+
+  /// `organizations/{organizationId}/inspection_templates` — checklists.
+  static String inspectionTemplatesCollection(String organizationId) =>
+      '${organization(organizationId)}/$inspectionTemplates';
 
   /// `organizations/{organizationId}/corrective_actions` — a collection, not
   /// a single document.

@@ -63,9 +63,7 @@ class MeetingPointNote {
     }
     final organizationId = data['organizationId'] as String?;
     if (organizationId == null || organizationId.isEmpty) {
-      throw const DataException(
-        'That meeting point note has no organization.',
-      );
+      throw const DataException('That meeting point note has no organization.');
     }
     final siteId = data['siteId'] as String?;
     if (siteId == null || siteId.isEmpty) {

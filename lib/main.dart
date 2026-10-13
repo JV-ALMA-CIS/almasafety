@@ -10,7 +10,9 @@ void main() async {
   // run if Firebase init fails for any reason (e.g. missing platform config,
   // no network in a test environment).
   try {
-    await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
   } catch (_) {
     // Firebase unavailable; app continues in an unauthenticated/offline state.
   }

@@ -47,9 +47,7 @@ class Activity {
 
   /// Parses an activity document. Throws [DataException] on a missing or
   /// malformed document — see [Site.fromFirestore] for why.
-  factory Activity.fromFirestore(
-    DocumentSnapshot<Map<String, dynamic>> doc,
-  ) {
+  factory Activity.fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     final data = doc.data();
     if (data == null) {
       throw const DataException('That activity could not be loaded.');

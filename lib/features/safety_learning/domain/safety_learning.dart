@@ -11,6 +11,29 @@ import 'safety_learning_type.dart';
 /// reference) — deliberately not a rich content-block model or a file-upload
 /// pipeline; this stage keeps content management minimal.
 ///
+/// [minimumWatchSeconds] applies to ANY [SafetyLearningType] — not just
+/// [SafetyLearningType.video] — see `completeLearning`'s doc comment
+/// (`functions/src/worker_learning_callable.ts`) for the honest verification
+/// this enables and its limitation: it enforces elapsed real time since the
+/// worker's own `startLearning` call (a genuine server timestamp), NOT
+/// verified watch position/percentage or reading completion, which nothing
+/// in this architecture (a direct-URL player or an externally-opened
+/// content link, no hosting/DRM/analytics service) can trust from the
+/// client. Null/zero means no minimum is enforced, matching every
+/// pre-existing item's behavior unchanged.
+///
+/// [passingScorePercent] governs the KNOWLEDGE-CHECK GATE — deliberately
+/// NOT confined to [SafetyLearningType.knowledgeCheck] items. Any item
+/// (including a [SafetyLearningType.video] one) that has at least one
+/// `knowledge_check_questions` document configured is gated on this
+/// threshold; an item with zero configured questions has no knowledge-check
+/// gate at all, regardless of this value — see `completeLearning`'s
+/// "ZERO QUESTIONS -> NO GATE" doc comment
+/// (`functions/src/worker_learning_callable.ts`). This lets a single video
+/// item require BOTH `minimumWatchSeconds` AND a passing quiz score. The
+/// questions themselves (and their correct answers) are never readable
+/// client-side — see `KnowledgeCheckQuestion`'s doc comment.
+///
 /// Created and edited exclusively through the `createSafetyLearning`/
 /// `updateSafetyLearning` callables by a System Administrator or an
 /// Organization Administrator of the item's own organization — see
@@ -25,6 +48,8 @@ class SafetyLearning {
     required this.contentReference,
     required this.status,
     this.description,
+    this.minimumWatchSeconds,
+    this.passingScorePercent,
     this.createdAt,
     this.updatedAt,
     this.createdBy,
@@ -38,6 +63,19 @@ class SafetyLearning {
   final SafetyLearningType type;
   final String contentReference;
   final OrganizationRecordStatus status;
+
+  /// The minimum number of seconds that must elapse between `startLearning`
+  /// and `completeLearning` before a video item can be completed. Only
+  /// meaningful when [type] is [SafetyLearningType.video]; null/zero means
+  /// no minimum. See this class's doc comment for what this does and does
+  /// not verify.
+  final int? minimumWatchSeconds;
+
+  /// The minimum percentage score (0-100) required to pass this item's
+  /// knowledge check. Only meaningful when at least one question is
+  /// configured — see this class's doc comment.
+  final int? passingScorePercent;
+
   final DateTime? createdAt;
   final DateTime? updatedAt;
   final String? createdBy;
@@ -50,8 +88,10 @@ class SafetyLearning {
   ) {
     final data = doc.data();
     if (data == null) {
-      throw const DataException('That safety learning item could not be '
-          'loaded.');
+      throw const DataException(
+        'That safety learning item could not be '
+        'loaded.',
+      );
     }
     return SafetyLearning.fromMap(doc.id, data);
   }
@@ -85,6 +125,8 @@ class SafetyLearning {
       type: type,
       contentReference: data['contentReference'] as String? ?? '',
       status: status,
+      minimumWatchSeconds: (data['minimumWatchSeconds'] as num?)?.toInt(),
+      passingScorePercent: (data['passingScorePercent'] as num?)?.toInt(),
       createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
       updatedAt: (data['updatedAt'] as Timestamp?)?.toDate(),
       createdBy: data['createdBy'] as String?,

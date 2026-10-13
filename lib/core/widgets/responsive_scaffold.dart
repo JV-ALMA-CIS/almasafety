@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../theme/app_colors.dart';
 import '../utils/responsive.dart';
 
 /// A single destination in the app's primary navigation.
@@ -25,11 +26,16 @@ class NavSectionEntry {
     required this.selectedIcon,
     required this.label,
     required this.route,
+    this.color,
   });
 
   final IconData icon;
   final IconData selectedIcon;
   final String label;
+
+  /// The feature accent this entry's icon badge is drawn in — the same
+  /// color the feature uses on dashboards. Defaults to the brand primary.
+  final Color? color;
 
   /// The route this entry navigates to when tapped. Compared against the
   /// current location (not a positional index) to decide which entry is
@@ -233,10 +239,7 @@ class ResponsiveScaffold extends StatelessWidget {
           children: [
             SizedBox(
               width: 280,
-              child: Material(
-                elevation: 1,
-                child: drawerContent,
-              ),
+              child: Material(elevation: 1, child: drawerContent),
             ),
             const VerticalDivider(width: 1),
             Expanded(child: body),
@@ -282,10 +285,10 @@ class _NavDrawerContent extends StatelessWidget {
                 child: Text(
                   section.title!.toUpperCase(),
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        letterSpacing: 0.8,
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        fontWeight: FontWeight.w600,
-                      ),
+                    letterSpacing: 0.8,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ),
             for (final entry in section.entries)
@@ -314,25 +317,42 @@ class _NavEntryTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final brightness = Theme.of(context).brightness;
+    final accent = entry.color ?? AppColors.primaryBright;
+    final textColor = AppColors.readable(accent, brightness);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       child: Material(
-        color: selected ? colorScheme.secondaryContainer : Colors.transparent,
+        color: selected
+            ? accent.withValues(
+                alpha: brightness == Brightness.dark ? 0.28 : 0.14,
+              )
+            : Colors.transparent,
         borderRadius: BorderRadius.circular(10),
         child: ListTile(
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(10),
           ),
-          leading: Icon(
-            selected ? entry.selectedIcon : entry.icon,
-            color: selected ? colorScheme.onSecondaryContainer : null,
+          // A rounded badge in the feature's color: solid when selected,
+          // a soft tint otherwise, so every entry is colored but the
+          // current one still stands out.
+          leading: Container(
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color: selected ? accent : accent.withValues(alpha: 0.16),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(
+              selected ? entry.selectedIcon : entry.icon,
+              size: 20,
+              color: selected ? AppColors.onColor(accent) : textColor,
+            ),
           ),
           title: Text(
             entry.label,
             style: TextStyle(
-              color: selected ? colorScheme.onSecondaryContainer : null,
-              fontWeight: selected ? FontWeight.w600 : null,
+              color: selected ? textColor : null,
+              fontWeight: selected ? FontWeight.w700 : null,
             ),
           ),
           onTap: onTap,

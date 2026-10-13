@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../core/widgets/live_stream_builder.dart';
 import 'package:provider/provider.dart';
 import '../../../core/errors/app_exception.dart';
 import '../../../core/services/firestore_service.dart';
@@ -11,6 +12,8 @@ import '../data/notification_repository.dart';
 import '../data/notification_service.dart';
 import '../domain/app_notification.dart';
 import '../domain/notification_type.dart';
+import '../../../core/widgets/feature_header.dart';
+import '../../../core/widgets/status_badge.dart';
 
 /// The signed-in user's own notification list.
 ///
@@ -50,7 +53,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     if (existing != null && existing.organizationId == organizationId) {
       return existing;
     }
-    final created = widget.repository ??
+    final created =
+        widget.repository ??
         NotificationRepository(
           firestoreService: FirestoreService(),
           organizationId: organizationId,
@@ -59,7 +63,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     return created;
   }
 
-  Future<void> _markRead(String organizationId, AppNotification notification) async {
+  Future<void> _markRead(
+    String organizationId,
+    AppNotification notification,
+  ) async {
     if (notification.isRead) return;
     setState(() {
       _isSaving = true;
@@ -114,8 +121,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       );
     }
 
-    return StreamBuilder<List<AppNotification>>(
-      stream: _repositoryFor(organizationId).watchForRecipient(uid),
+    return LiveStreamBuilder<List<AppNotification>>(
+      streamKey: (_repositoryFor(organizationId), uid),
+      stream: () => _repositoryFor(organizationId).watchForRecipient(uid),
       builder: (context, snapshot) {
         final notifications = snapshot.data ?? const <AppNotification>[];
         final isLoading = snapshot.connectionState == ConnectionState.waiting;
@@ -126,27 +134,29 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             padding: const EdgeInsets.all(AppSpacing.md),
             physics: const AlwaysScrollableScrollPhysics(),
             children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      'Notifications',
-                      style: AppTextStyles.headlineMedium,
-                    ),
-                  ),
-                  if (unreadCount > 0)
-                    TextButton(
-                      onPressed: _isSaving
-                          ? null
-                          : () => _markAllRead(organizationId),
-                      child: const Text('Mark all read'),
-                    ),
-                ],
-              ),
-              const SizedBox(height: AppSpacing.xs),
-              Text(
-                unreadCount > 0 ? '$unreadCount unread' : 'All caught up',
-                style: AppTextStyles.bodyMedium,
+              FeatureHeader(
+                title: 'Notifications',
+                subtitle: unreadCount > 0
+                    ? '$unreadCount unread'
+                    : 'All caught up',
+                icon: unreadCount > 0
+                    ? Icons.notifications_active
+                    : Icons.notifications_none,
+                color: AppColors.primaryBright,
+                footer: unreadCount == 0
+                    ? null
+                    : ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.white,
+                          foregroundColor: AppColors.primaryBright,
+                          minimumSize: const Size(0, AppSpacing.minTouchTarget),
+                        ),
+                        onPressed: _isSaving
+                            ? null
+                            : () => _markAllRead(organizationId),
+                        icon: const Icon(Icons.done_all),
+                        label: const Text('Mark all read'),
+                      ),
               ),
               const SizedBox(height: AppSpacing.md),
               if (_errorMessage != null) ...[
@@ -205,23 +215,43 @@ class _NotificationCard extends StatelessWidget {
   final VoidCallback onTap;
 
   IconData get _typeIcon => switch (notification.type) {
-    AppNotificationType.safetyAlert => Icons.warning_amber_outlined,
-    AppNotificationType.correctiveAction => Icons.build_outlined,
-    AppNotificationType.safetyMeeting => Icons.fact_check_outlined,
-    AppNotificationType.safetyLearning => Icons.school_outlined,
-    AppNotificationType.system => Icons.info_outline,
+    AppNotificationType.safetyAlert => Icons.campaign,
+    AppNotificationType.correctiveAction => Icons.build_circle,
+    AppNotificationType.safetyMeeting => Icons.groups,
+    AppNotificationType.safetyLearning => Icons.school,
+    AppNotificationType.system => Icons.info,
+  };
+
+  /// Each notification type in its feature's own color.
+  Color get _typeColor => switch (notification.type) {
+    AppNotificationType.safetyAlert => AppColors.safetyAlerts,
+    AppNotificationType.correctiveAction => AppColors.correctiveActions,
+    AppNotificationType.safetyMeeting => AppColors.meetings,
+    AppNotificationType.safetyLearning => AppColors.learning,
+    AppNotificationType.system => AppColors.primaryBright,
   };
 
   @override
   Widget build(BuildContext context) {
     final isUnread = !notification.isRead;
+    final color = _typeColor;
+    final surface = Theme.of(context).colorScheme.surface;
 
     return Card(
       margin: EdgeInsets.zero,
-      color: isUnread ? AppColors.info.withValues(alpha: 0.06) : null,
+      color: isUnread
+          ? Color.alphaBlend(color.withValues(alpha: 0.09), surface)
+          : null,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(
+          color: color.withValues(alpha: isUnread ? 0.7 : 0.25),
+          width: isUnread ? 1.5 : 1,
+        ),
+      ),
       child: InkWell(
         onTap: isUnread && !isSaving ? onTap : null,
-        borderRadius: BorderRadius.circular(AppSpacing.sm),
+        borderRadius: BorderRadius.circular(14),
         child: ConstrainedBox(
           constraints: const BoxConstraints(
             minHeight: AppSpacing.minTouchTarget,
@@ -231,32 +261,34 @@ class _NotificationCard extends StatelessWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (isUnread)
-                  Container(
-                    width: 8,
-                    height: 8,
-                    margin: const EdgeInsets.only(
-                      top: AppSpacing.xs,
-                      right: AppSpacing.sm,
-                    ),
-                    decoration: const BoxDecoration(
-                      color: AppColors.info,
-                      shape: BoxShape.circle,
-                    ),
-                  )
-                else
-                  const SizedBox(width: 8 + AppSpacing.sm),
-                Icon(_typeIcon, size: 20, color: AppColors.textSecondary),
-                const SizedBox(width: AppSpacing.sm),
+                CircleAvatar(
+                  radius: 20,
+                  backgroundColor: isUnread
+                      ? color
+                      : color.withValues(alpha: 0.15),
+                  child: Icon(
+                    _typeIcon,
+                    size: 20,
+                    color: isUnread ? AppColors.onColor(color) : color,
+                  ),
+                ),
+                const SizedBox(width: AppSpacing.md),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        notification.title,
-                        style: isUnread
-                            ? AppTextStyles.titleLarge
-                            : AppTextStyles.bodyMedium,
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              notification.title,
+                              style: isUnread
+                                  ? AppTextStyles.titleLarge
+                                  : AppTextStyles.bodyLarge,
+                            ),
+                          ),
+                          if (isUnread) StatusBadge(label: 'New', color: color),
+                        ],
                       ),
                       const SizedBox(height: AppSpacing.xs),
                       Text(
@@ -264,9 +296,16 @@ class _NotificationCard extends StatelessWidget {
                         style: AppTextStyles.bodyMedium,
                       ),
                       const SizedBox(height: AppSpacing.xs),
-                      Text(
-                        _formatDate(notification.createdAt),
-                        style: AppTextStyles.label,
+                      Row(
+                        children: [
+                          Icon(Icons.schedule, size: 14, color: color),
+                          const SizedBox(width: 4),
+                          Text(
+                            '${notification.type.label} · '
+                            '${_formatDate(notification.createdAt)}',
+                            style: AppTextStyles.label,
+                          ),
+                        ],
                       ),
                     ],
                   ),

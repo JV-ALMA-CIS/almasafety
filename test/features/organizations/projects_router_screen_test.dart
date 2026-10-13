@@ -111,6 +111,15 @@ void main() {
     required AppRole? role,
     String? organizationId,
     OrganizationAdminService? adminService,
+    // The organization id ProjectsScreen's own repository ends up scoped
+    // to once resolved without an incoming `organizationId` — either the
+    // bootstrap flow's fixed 'jv-alma-cis' membership, or (for an Admin)
+    // whichever single organization OrganizationScopeSelector auto-selects.
+    // Callers whose test seeds a different id for that case must pass it
+    // here, or ProjectsScreen's project list would be scoped to the wrong
+    // organization (its own header/name still comes from the resolved
+    // Organization document either way, so this only affects the list).
+    String resolvedOrganizationIdFallback = 'jv-alma-cis',
   }) {
     final firestoreService = FirestoreService(firestore: firestore);
     return ChangeNotifierProvider<SessionController>(
@@ -129,17 +138,9 @@ void main() {
               firestoreService: firestoreService,
             ),
             firestoreService: firestoreService,
-            // Scoped to 'jv-alma-cis' unconditionally: once the bootstrap
-            // flow resolves a membership (see
-            // _FakeSession.simulateMembershipCreated), ProjectsScreen is
-            // built with whatever organization id that membership names —
-            // every bootstrap test in this file uses 'jv-alma-cis'. A
-            // caller that already has an organizationId at wrap() time
-            // still gets the same repository, since it's organization-id
-            // scoped identically either way.
             projectRepository: ProjectRepository(
               firestoreService: firestoreService,
-              organizationId: organizationId ?? 'jv-alma-cis',
+              organizationId: organizationId ?? resolvedOrganizationIdFallback,
             ),
             adminService: adminService,
           ),
@@ -241,4 +242,51 @@ void main() {
       findsOneWidget,
     );
   });
+
+  testWidgets('an Admin (no membership of their own) is taken straight to the '
+      'existing organization\'s Projects — never the "Set up JV ALMA CIS" '
+      'bootstrap prompt, which would create a duplicate orphan organization', (
+    tester,
+  ) async {
+    await seedOrganization('org-alpha', name: 'JV Alma CIS');
+
+    await tester.pumpWidget(
+      wrap(
+        role: AppRole.admin,
+        organizationId: null,
+        resolvedOrganizationIdFallback: 'org-alpha',
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Never the Site-Manager-only bootstrap prompt — an Admin has no
+    // membership of their own PERMANENTLY, which must never be confused
+    // with "nobody has set up JV ALMA CIS yet." See ProjectsRouterScreen's
+    // own doc comment on why this used to be actively harmful.
+    expect(find.text('JV ALMA CIS has not been set up yet.'), findsNothing);
+    expect(
+      find.widgetWithText(ElevatedButton, 'Set up JV ALMA CIS'),
+      findsNothing,
+    );
+    // The sole organization is auto-selected (OrganizationScopeSelector),
+    // so the Admin lands directly on its Projects — no picker either.
+    expect(find.text('Organization'), findsNothing);
+    expect(find.text('Projects'), findsOneWidget);
+    expect(find.textContaining('JV Alma CIS'), findsWidgets);
+  });
+
+  testWidgets(
+    'an Admin with two organizations sees a real picker instead of the '
+    'bootstrap prompt',
+    (tester) async {
+      await seedOrganization('org-alpha', name: 'JV Alma CIS');
+      await seedOrganization('org-beta', name: 'Another Company');
+
+      await tester.pumpWidget(wrap(role: AppRole.admin, organizationId: null));
+      await tester.pumpAndSettle();
+
+      expect(find.text('JV ALMA CIS has not been set up yet.'), findsNothing);
+      expect(find.text('Organization'), findsOneWidget);
+    },
+  );
 }

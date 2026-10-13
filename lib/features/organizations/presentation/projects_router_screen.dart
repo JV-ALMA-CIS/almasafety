@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import '../../../core/widgets/live_stream_builder.dart';
 import 'package:provider/provider.dart';
 import '../../../core/errors/app_exception.dart';
 import '../../../core/services/firestore_service.dart';
 import '../../../core/services/session_controller.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../../core/widgets/organization_scope_selector.dart';
 import '../../authentication/presentation/auth_error_banner.dart';
 import '../data/organization_admin_service.dart';
 import '../data/organization_repository.dart';
@@ -26,17 +28,30 @@ import 'projects_screen.dart';
 /// document directly makes Projects the primary navigation entry, while
 /// [ProjectsScreen] itself is unchanged.
 ///
-/// BOOTSTRAP CASE: a Site Manager approved with no organization yet (see
-/// `account_approval.ts`'s `approveAccount` — an Admin approving a Site
-/// Manager they know by name typically has no way to know which
-/// organization to name, so the new Site Manager creates it themselves
-/// afterward) has `activeOrganizationId == null` here. Rather than a dead
-/// end, this screen shows a one-time "Set up JV ALMA CIS" prompt that
-/// calls `createOrganization` directly with the company's fixed name/code
-/// — there is only ever one company, so there is nothing to ask the Site
-/// Manager to type. Once created, this screen (and every other Site
-/// Manager's) resolves it normally from then on; the prompt never appears
-/// again for this or any other account.
+/// BOOTSTRAP CASE (Site Manager only): a Site Manager approved with no
+/// organization yet (see `account_approval.ts`'s `approveAccount` — an
+/// Admin approving a Site Manager they know by name typically has no way to
+/// know which organization to name, so the new Site Manager creates it
+/// themselves afterward) has `activeOrganizationId == null` here. Rather
+/// than a dead end, this screen shows a one-time "Set up JV ALMA CIS"
+/// prompt that calls `createOrganization` directly with the company's
+/// fixed name/code — there is only ever one company, so there is nothing
+/// to ask the Site Manager to type. Once created, this screen (and every
+/// other Site Manager's) resolves it normally from then on; the prompt
+/// never appears again for this or any other account.
+///
+/// ADMIN CASE: a System Administrator has `activeOrganizationId == null`
+/// PERMANENTLY — Admin holds platform-level authority scoped to no
+/// organization at all (PROJECT_CONTEXT.md §12), which is never the
+/// bootstrap case above. Showing an Admin the "Set up JV ALMA CIS" prompt
+/// once the real Site Manager-created org already exists would be actively
+/// harmful, since `createOrganization` does not refuse a duplicate name —
+/// pressing it creates a second, orphaned organization document with no
+/// membership attached (an `admin` caller gets no membership from
+/// `createOrganization`, unlike a `siteManager` caller), which looked like
+/// the button "did nothing." An Admin instead picks the organization that
+/// already exists via [OrganizationScopeSelector], matching
+/// `SafetyLearningLibraryScreen`/`SafetyRequirementsScreen`'s own fallback.
 class ProjectsRouterScreen extends StatefulWidget {
   const ProjectsRouterScreen({
     super.key,
@@ -72,6 +87,7 @@ class _ProjectsRouterScreenState extends State<ProjectsRouterScreen> {
 
   bool _isCreating = false;
   String? _errorMessage;
+  String? _selectedOrganizationId;
 
   Future<void> _setUpCompany() async {
     setState(() {
@@ -103,9 +119,39 @@ class _ProjectsRouterScreenState extends State<ProjectsRouterScreen> {
   @override
   Widget build(BuildContext context) {
     final sessionController = context.watch<SessionController>();
-    final organizationId = sessionController.activeOrganizationId;
+    final isPlatformAdministrator =
+        sessionController.profile?.isPlatformAdministrator ?? false;
+    final organizationId =
+        sessionController.activeOrganizationId ??
+        (isPlatformAdministrator ? _selectedOrganizationId : null);
 
     if (organizationId == null) {
+      // A System Administrator has no membership of their own — that is
+      // never the "nobody has set up JV ALMA CIS yet" bootstrap case below,
+      // it is the normal, permanent state for this role (PROJECT_CONTEXT.md
+      // §12: Admin holds platform-level authority scoped to no organization
+      // at all). Showing them the "Set up JV ALMA CIS" prompt here would be
+      // actively harmful: `createOrganization` does not refuse a second
+      // company with the same name, so pressing it after a Site Manager has
+      // already created the real org silently creates a DUPLICATE orphan
+      // organization document with no membership pointing at it (see
+      // `createOrganization`'s own comment on why it only creates a
+      // membership for a `siteManager` caller) — which is exactly why the
+      // button used to look like it "did nothing." An Admin instead picks
+      // the organization that already exists, the same
+      // [OrganizationScopeSelector] pattern used by
+      // `SafetyLearningLibraryScreen`/`SafetyRequirementsScreen`.
+      if (isPlatformAdministrator) {
+        return Padding(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          child: OrganizationScopeSelector(
+            selectedOrganizationId: _selectedOrganizationId,
+            onChanged: (value) =>
+                setState(() => _selectedOrganizationId = value),
+            repository: widget.organizationRepository,
+          ),
+        );
+      }
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(AppSpacing.lg),
@@ -146,8 +192,9 @@ class _ProjectsRouterScreenState extends State<ProjectsRouterScreen> {
       );
     }
 
-    return StreamBuilder<Organization?>(
-      stream: _organizationRepository.watchById(organizationId),
+    return LiveStreamBuilder<Organization?>(
+      streamKey: (_organizationRepository, organizationId),
+      stream: () => _organizationRepository.watchById(organizationId),
       builder: (context, snapshot) {
         final organization = snapshot.data;
         final isLoading = snapshot.connectionState == ConnectionState.waiting;

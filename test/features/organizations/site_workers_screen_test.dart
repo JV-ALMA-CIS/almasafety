@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:jva_safety/core/errors/app_exception.dart';
 import 'package:jva_safety/core/services/session_controller.dart';
+import 'package:jva_safety/core/widgets/feature_header.dart';
 import 'package:jva_safety/features/authentication/data/account_approval_service.dart';
 import 'package:jva_safety/features/authentication/domain/account_status.dart';
 import 'package:jva_safety/features/authentication/domain/app_role.dart';
@@ -319,7 +320,14 @@ void main() {
         await tester.tap(find.text('John Kamau'));
         await tester.pumpAndSettle();
 
-        expect(find.text('John Kamau — Crew'), findsOneWidget);
+        // The banner is the screen's title (the top bar has none).
+        expect(
+          find.descendant(
+            of: find.byType(FeatureHeader),
+            matching: find.text('John Kamau'),
+          ),
+          findsOneWidget,
+        );
         expect(find.text('David Otieno'), findsOneWidget);
         expect(find.textContaining('Electrician'), findsOneWidget);
       },

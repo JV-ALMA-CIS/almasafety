@@ -83,8 +83,7 @@ void main() {
     }
   });
 
-  test('optional acknowledgement/resolution fields default to null',
-      () async {
+  test('optional acknowledgement/resolution fields default to null', () async {
     final doc = await seed({
       'organizationId': 'org-alpha',
       'projectId': 'project-1',
@@ -117,10 +116,7 @@ void main() {
       'createdBy': 'manager-1',
     });
 
-    expect(
-      () => SafetyAlert.fromFirestore(doc),
-      throwsA(isA<DataException>()),
-    );
+    expect(() => SafetyAlert.fromFirestore(doc), throwsA(isA<DataException>()));
   });
 
   test('throws when projectId is missing', () async {
@@ -135,10 +131,7 @@ void main() {
       'createdBy': 'manager-1',
     });
 
-    expect(
-      () => SafetyAlert.fromFirestore(doc),
-      throwsA(isA<DataException>()),
-    );
+    expect(() => SafetyAlert.fromFirestore(doc), throwsA(isA<DataException>()));
   });
 
   test('throws when siteId is missing', () async {
@@ -153,10 +146,7 @@ void main() {
       'createdBy': 'manager-1',
     });
 
-    expect(
-      () => SafetyAlert.fromFirestore(doc),
-      throwsA(isA<DataException>()),
-    );
+    expect(() => SafetyAlert.fromFirestore(doc), throwsA(isA<DataException>()));
   });
 
   test('throws when title is missing', () async {
@@ -171,10 +161,7 @@ void main() {
       'createdBy': 'manager-1',
     });
 
-    expect(
-      () => SafetyAlert.fromFirestore(doc),
-      throwsA(isA<DataException>()),
-    );
+    expect(() => SafetyAlert.fromFirestore(doc), throwsA(isA<DataException>()));
   });
 
   test('throws when description is missing', () async {
@@ -189,10 +176,7 @@ void main() {
       'createdBy': 'manager-1',
     });
 
-    expect(
-      () => SafetyAlert.fromFirestore(doc),
-      throwsA(isA<DataException>()),
-    );
+    expect(() => SafetyAlert.fromFirestore(doc), throwsA(isA<DataException>()));
   });
 
   test('throws when createdBy is missing', () async {
@@ -207,10 +191,7 @@ void main() {
       'status': 'active',
     });
 
-    expect(
-      () => SafetyAlert.fromFirestore(doc),
-      throwsA(isA<DataException>()),
-    );
+    expect(() => SafetyAlert.fromFirestore(doc), throwsA(isA<DataException>()));
   });
 
   test('throws on an unrecognised status', () async {
@@ -226,10 +207,7 @@ void main() {
       'createdBy': 'manager-1',
     });
 
-    expect(
-      () => SafetyAlert.fromFirestore(doc),
-      throwsA(isA<DataException>()),
-    );
+    expect(() => SafetyAlert.fromFirestore(doc), throwsA(isA<DataException>()));
   });
 
   test('throws on an unrecognised severity', () async {
@@ -245,10 +223,7 @@ void main() {
       'createdBy': 'manager-1',
     });
 
-    expect(
-      () => SafetyAlert.fromFirestore(doc),
-      throwsA(isA<DataException>()),
-    );
+    expect(() => SafetyAlert.fromFirestore(doc), throwsA(isA<DataException>()));
   });
 
   test('throws on an unrecognised category', () async {
@@ -264,10 +239,7 @@ void main() {
       'createdBy': 'manager-1',
     });
 
-    expect(
-      () => SafetyAlert.fromFirestore(doc),
-      throwsA(isA<DataException>()),
-    );
+    expect(() => SafetyAlert.fromFirestore(doc), throwsA(isA<DataException>()));
   });
 
   test('every SafetyAlertStatus round-trips through its stored id', () {
@@ -295,23 +267,30 @@ void main() {
   });
 
   test('the four expected statuses exist', () {
-    expect(
-      SafetyAlertStatus.values.map((s) => s.id).toSet(),
-      {'active', 'acknowledged', 'resolved'},
-    );
+    expect(SafetyAlertStatus.values.map((s) => s.id).toSet(), {
+      'active',
+      'acknowledged',
+      'resolved',
+    });
   });
 
   test('the four expected severities exist', () {
-    expect(
-      SafetyAlertSeverity.values.map((s) => s.id).toSet(),
-      {'low', 'medium', 'high', 'critical'},
-    );
+    expect(SafetyAlertSeverity.values.map((s) => s.id).toSet(), {
+      'low',
+      'medium',
+      'high',
+      'critical',
+    });
   });
 
   test('the six expected categories exist', () {
-    expect(
-      SafetyAlertCategory.values.map((c) => c.id).toSet(),
-      {'safety', 'equipment', 'environment', 'weather', 'site', 'other'},
-    );
+    expect(SafetyAlertCategory.values.map((c) => c.id).toSet(), {
+      'safety',
+      'equipment',
+      'environment',
+      'weather',
+      'site',
+      'other',
+    });
   });
 }

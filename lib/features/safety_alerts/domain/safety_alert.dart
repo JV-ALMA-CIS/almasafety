@@ -85,17 +85,13 @@ class SafetyAlert {
         'That safety alert has an unrecognised status.',
       );
     }
-    final severity = SafetyAlertSeverity.tryFromId(
-      data['severity'] as String?,
-    );
+    final severity = SafetyAlertSeverity.tryFromId(data['severity'] as String?);
     if (severity == null) {
       throw const DataException(
         'That safety alert has an unrecognised severity.',
       );
     }
-    final category = SafetyAlertCategory.tryFromId(
-      data['category'] as String?,
-    );
+    final category = SafetyAlertCategory.tryFromId(data['category'] as String?);
     if (category == null) {
       throw const DataException(
         'That safety alert has an unrecognised category.',

@@ -1,6 +1,10 @@
+import 'dart:typed_data';
+
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_core/firebase_core.dart';
 import '../../../core/errors/app_exception.dart';
+import '../../../core/services/storage_service.dart';
+import '../domain/corrective_action_evidence.dart';
 import '../../organizations/data/organization_admin_service.dart';
 
 /// Client for the `createCorrectiveAction`/`updateCorrectiveActionStatus`
@@ -12,10 +16,14 @@ import '../../organizations/data/organization_admin_service.dart';
 /// argument: the server derives the acting foreman from `request.auth.uid`,
 /// mirroring every other write surface in this feature.
 class CorrectiveActionService {
-  CorrectiveActionService({FirebaseFunctions? functions})
-    : _injected = functions;
+  CorrectiveActionService({
+    FirebaseFunctions? functions,
+    StorageService? storageService,
+  }) : _injected = functions,
+       _storageService = storageService ?? StorageService();
 
   final FirebaseFunctions? _injected;
+  final StorageService _storageService;
 
   FirebaseFunctions? get _functions {
     if (_injected != null) return _injected;
@@ -61,11 +69,14 @@ class CorrectiveActionService {
     String? meetingId,
     String? concernId,
     String? hazardId,
+    String? incidentId,
     bool evidenceRequired = false,
+    List<CorrectiveActionEvidenceKind> evidenceKinds = const [],
+    String? evidenceInstructions,
   }) async {
     assert(
-      (meetingId == null) != (hazardId == null),
-      'Exactly one of meetingId or hazardId must be given.',
+      [meetingId, hazardId, incidentId].nonNulls.length == 1,
+      'Exactly one of meetingId, hazardId or incidentId must be given.',
     );
     final result = await _call<Map<Object?, Object?>>(
       'createCorrectiveAction',
@@ -78,7 +89,10 @@ class CorrectiveActionService {
         'meetingId': ?meetingId,
         'concernId': ?concernId,
         'hazardId': ?hazardId,
-        'evidenceRequired': evidenceRequired,
+        'incidentId': ?incidentId,
+        'evidenceRequired': evidenceRequired || evidenceKinds.isNotEmpty,
+        'evidenceKinds': [for (final kind in evidenceKinds) kind.id],
+        'evidenceInstructions': ?evidenceInstructions,
       },
     );
     return result['id'] as String? ?? '';
@@ -87,16 +101,68 @@ class CorrectiveActionService {
   /// Transitions [actionId]'s status. The server re-validates the caller
   /// holds an authorized supervisor/manager role (`admin`/`siteManager`)
   /// within [organizationId] — see `requireOrganizationScopedReviewer` in
-  /// the callable file.
+  /// the callable file. `completed` is only accepted from
+  /// `submittedForReview` — see [submitForReview] for the assignee's own
+  /// half of that split.
   Future<void> updateCorrectiveActionStatus({
     required String organizationId,
     required String actionId,
     required String status,
+    String? reviewFeedback,
   }) => _call<Object?>('updateCorrectiveActionStatus', {
     'organizationId': organizationId,
     'actionId': actionId,
     'status': status,
+    'reviewFeedback': ?reviewFeedback,
   });
+
+  /// Submits [actionId] for review — the assignee's own claim that the work
+  /// is done, moving `open`/`inProgress` to `submittedForReview`. The server
+  /// re-validates the caller IS the action's own `assignedTo`; a reviewer
+  /// role has no special standing here and is refused, exactly like anyone
+  /// else who is not the assignee. See `updateCorrectiveActionStatus` for
+  /// the reviewer's subsequent verification step.
+  ///
+  /// [completionNote] is the assignee's account of what was done and
+  /// [evidencePhotos] the photos already uploaded with [uploadEvidencePhoto];
+  /// the server refuses a submission missing evidence the action requires.
+  Future<void> submitForReview({
+    required String organizationId,
+    required String actionId,
+    String? completionNote,
+    List<EvidencePhoto> evidencePhotos = const [],
+  }) => _call<Object?>('submitCorrectiveActionForReview', {
+    'organizationId': organizationId,
+    'actionId': actionId,
+    'completionNote': ?completionNote,
+    'evidencePhotos': [for (final photo in evidencePhotos) photo.toJson()],
+  });
+
+  /// Uploads one evidence photo to this action's own Storage folder,
+  /// `organizations/{organizationId}/corrective_actions/{actionId}/` — the
+  /// only folder `submitCorrectiveActionForReview` accepts photos from.
+  Future<EvidencePhoto> uploadEvidencePhoto({
+    required String organizationId,
+    required String actionId,
+    required String fileName,
+    required Uint8List bytes,
+  }) async {
+    final stamp = DateTime.now().millisecondsSinceEpoch;
+    final path = 'corrective_actions/$actionId/${stamp}_$fileName';
+    try {
+      final ref = _storageService.orgRef(organizationId).child(path);
+      await ref.putData(bytes);
+      return EvidencePhoto(
+        storagePath: 'organizations/$organizationId/$path',
+        downloadUrl: await ref.getDownloadURL(),
+      );
+    } on FirebaseException catch (e) {
+      throw DataException(
+        e.message ?? 'Failed to upload the evidence photo.',
+        cause: e,
+      );
+    }
+  }
 
   Future<T> _call<T>(String name, [Map<String, Object?>? data]) async {
     try {

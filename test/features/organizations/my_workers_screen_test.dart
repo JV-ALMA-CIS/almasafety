@@ -6,6 +6,9 @@ import 'package:provider/provider.dart';
 import 'package:jva_safety/core/errors/app_exception.dart';
 import 'package:jva_safety/core/services/firestore_service.dart';
 import 'package:jva_safety/core/services/session_controller.dart';
+import 'package:jva_safety/features/activities/data/activity_admin_service.dart';
+import 'package:jva_safety/features/activities/data/activity_assignment_repository.dart';
+import 'package:jva_safety/features/activities/domain/activity.dart';
 import 'package:jva_safety/features/authentication/data/account_approval_service.dart';
 import 'package:jva_safety/features/authentication/domain/account_status.dart';
 import 'package:jva_safety/features/authentication/domain/app_role.dart';
@@ -13,7 +16,10 @@ import 'package:jva_safety/features/authentication/domain/membership.dart';
 import 'package:jva_safety/features/authentication/domain/organization_user.dart';
 import 'package:jva_safety/features/authentication/domain/user_profile.dart';
 import 'package:jva_safety/features/authentication/domain/worker_type.dart';
+import 'package:jva_safety/features/organizations/data/organization_repository.dart';
+import 'package:jva_safety/features/organizations/data/project_repository.dart';
 import 'package:jva_safety/features/organizations/data/site_repository.dart';
+import 'package:jva_safety/features/organizations/domain/organization_record_status.dart';
 import 'package:jva_safety/features/organizations/presentation/my_workers_screen.dart';
 
 /// A fake user-listing service, subclassing the real one rather than mocking
@@ -34,6 +40,24 @@ class _FakeApprovalService extends AccountApprovalService {
     if (error != null) throw error;
     return users;
   }
+}
+
+/// Stands in for the `getSiteActivities` callable — returns [activities]
+/// filtered to the requested [siteId], matching the real callable's own
+/// scoping. Most tests in this file don't need real activity data, only
+/// that the call succeeds instead of reaching for a real, unconfigured
+/// Cloud Functions transport — the "assign worker" drill-down test below
+/// is the one that actually seeds [activities].
+class _FakeActivityAdminService extends ActivityAdminService {
+  _FakeActivityAdminService({this.activities = const []});
+
+  final List<Activity> activities;
+
+  @override
+  Future<List<Activity>> getSiteActivities({
+    required String organizationId,
+    required String siteId,
+  }) async => activities.where((a) => a.siteId == siteId).toList();
 }
 
 class _FakeSession extends SessionController {
@@ -94,6 +118,27 @@ void main() {
     });
   }
 
+  Future<void> seedOrganization() async {
+    await firestore.doc('organizations/org-alpha').set({
+      'name': 'JV Alma CIS',
+      'code': 'CODE-org-alpha',
+      'status': 'active',
+      'createdAt': Timestamp.now(),
+      'updatedAt': Timestamp.now(),
+    });
+  }
+
+  Future<void> seedProject() async {
+    await firestore.doc('organizations/org-alpha/projects/project-1').set({
+      'organizationId': 'org-alpha',
+      'name': 'Project One',
+      'code': 'CODE-project-1',
+      'status': 'active',
+      'createdAt': Timestamp.now(),
+      'updatedAt': Timestamp.now(),
+    });
+  }
+
   OrganizationUser worker(
     String uid, {
     String name = 'Worker',
@@ -117,6 +162,7 @@ void main() {
     AppRole? role = AppRole.foreman,
     String? organizationId = 'org-alpha',
     List<String> siteIds = const ['site-1'],
+    List<Activity> activities = const [],
   }) {
     return ChangeNotifierProvider<SessionController>(
       create: (_) => _FakeSession(
@@ -132,6 +178,21 @@ void main() {
               firestoreService: FirestoreService(firestore: firestore),
               organizationId: orgId,
             ),
+            activityAdminService: _FakeActivityAdminService(
+              activities: activities,
+            ),
+            organizationRepository: OrganizationRepository(
+              firestoreService: FirestoreService(firestore: firestore),
+            ),
+            projectRepository: (orgId) => ProjectRepository(
+              firestoreService: FirestoreService(firestore: firestore),
+              organizationId: orgId,
+            ),
+            activityAssignmentRepositoryFor: (orgId) =>
+                ActivityAssignmentRepository(
+                  firestoreService: FirestoreService(firestore: firestore),
+                  organizationId: orgId,
+                ),
           ),
         ),
       ),
@@ -147,7 +208,11 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(
-        find.text('My Workers is available to a Foreman assigned to a site.'),
+        find.text(
+          'You have not been assigned to a site yet. Ask your Site '
+          'Manager to assign you one from Operations → your project → '
+          'your site → Workforce.',
+        ),
         findsOneWidget,
       );
     });
@@ -243,7 +308,60 @@ void main() {
         findsOneWidget,
       );
     });
+  });
 
+  group('MyWorkersScreen (assigning a worker to an activity)', () {
+    testWidgets(
+      'shows the Foreman\'s own site\'s activities, and tapping one opens '
+      'ActivityWorkersScreen — the actual assign/remove UI',
+      (tester) async {
+        await seedOrganization();
+        await seedProject();
+        await seedSite('site-1', name: 'North Yard');
+        const activity = Activity(
+          id: 'activity-1',
+          organizationId: 'org-alpha',
+          projectId: 'project-1',
+          siteId: 'site-1',
+          name: 'Roofing',
+          code: 'CODE-activity-1',
+          status: OrganizationRecordStatus.active,
+        );
+
+        await tester.pumpWidget(
+          wrap(_FakeApprovalService(), activities: const [activity]),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('Roofing'), findsOneWidget);
+        expect(find.textContaining('North Yard'), findsWidgets);
+
+        await tester.tap(find.text('Roofing'));
+        await tester.pumpAndSettle();
+
+        // ActivityWorkersScreen's own header — proves the Foreman actually
+        // reached the assign/remove screen, not just a static card.
+        expect(find.text('Assigned Workers'), findsOneWidget);
+        expect(find.byTooltip('Assign worker'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'a Foreman with no active activities at their site sees a clear '
+      'message instead of an empty gap',
+      (tester) async {
+        await tester.pumpWidget(wrap(_FakeApprovalService()));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.text('No active activities are recorded at your site(s) yet.'),
+          findsOneWidget,
+        );
+      },
+    );
+  });
+
+  group('MyWorkersScreen (list content, continued)', () {
     testWidgets('surfaces a load failure without crashing', (tester) async {
       final service = _FakeApprovalService(
         listError: const DataException('Could not load workers.'),

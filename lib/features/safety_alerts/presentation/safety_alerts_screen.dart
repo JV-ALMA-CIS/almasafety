@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import '../../../core/widgets/live_stream_builder.dart';
+import '../../../core/widgets/choice_list.dart';
 import 'package:provider/provider.dart';
 import '../../../core/errors/app_exception.dart';
 import '../../../core/services/firestore_service.dart';
@@ -6,17 +8,24 @@ import '../../../core/services/session_controller.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../../core/widgets/accent_card.dart';
+import '../../../core/widgets/color_choice_chips.dart';
+import '../../../core/widgets/empty_state.dart';
+import '../../../core/widgets/feature_header.dart';
 import '../../../core/widgets/organization_scope_selector.dart';
 import '../../authentication/presentation/auth_error_banner.dart';
 import '../../organizations/data/organization_repository.dart';
 import '../../organizations/data/site_repository.dart';
 import '../../organizations/domain/site.dart';
+import '../../organizations/presentation/site_select_list.dart';
 import '../data/safety_alert_repository.dart';
 import '../data/safety_alert_service.dart';
 import '../domain/safety_alert.dart';
 import '../domain/safety_alert_category.dart';
 import '../domain/safety_alert_severity.dart';
 import '../domain/safety_alert_status.dart';
+import '../../authentication/domain/app_role.dart';
+import '../../daily_safety_meetings/data/daily_safety_meeting_repository.dart';
 
 /// The Safety Alerts screen.
 ///
@@ -40,6 +49,7 @@ class SafetyAlertsScreen extends StatefulWidget {
     this.service,
     this.siteRepository,
     this.organizationRepository,
+    this.todaysMeetingSiteLookup,
   });
 
   /// Injected in tests. Production builds pass nothing and the state
@@ -53,6 +63,12 @@ class SafetyAlertsScreen extends StatefulWidget {
   /// Administrator, who has no organization of their own to scope
   /// [repository]/[siteRepository] to.
   final OrganizationRepository? organizationRepository;
+
+  /// Injected in tests. Finds the site of the Foreman's own meeting today,
+  /// used to pre-select "where you are" on a new alert when they have more
+  /// than one site. Defaults to reading their meeting history.
+  final Future<String?> Function(String organizationId, String foremanUid)?
+  todaysMeetingSiteLookup;
 
   @override
   State<SafetyAlertsScreen> createState() => _SafetyAlertsScreenState();
@@ -130,15 +146,70 @@ class _SafetyAlertsScreenState extends State<SafetyAlertsScreen> {
     }
   }
 
+  /// The site of [foremanUid]'s own meeting today, if they have started
+  /// one — the best available signal of where they are right now.
+  Future<String?> _todaysMeetingSite(
+    String organizationId,
+    String foremanUid,
+  ) async {
+    final lookup = widget.todaysMeetingSiteLookup;
+    if (lookup != null) return lookup(organizationId, foremanUid);
+    try {
+      final meetings =
+          await DailySafetyMeetingRepository(
+                firestoreService: FirestoreService(),
+                organizationId: organizationId,
+              )
+              .watchHistoryForForeman(foremanUid)
+              .first
+              .timeout(const Duration(seconds: 5));
+      // Meetings are dated by the server's UTC day.
+      final today = DateTime.now().toUtc().toIso8601String().substring(0, 10);
+      for (final meeting in meetings) {
+        if (meeting.date == today) return meeting.siteId;
+      }
+    } catch (_) {
+      // No hint — the Foreman simply picks the site.
+    }
+    return null;
+  }
+
   Future<void> _openCreateDialog(
     String organizationId,
-    List<Site> sites,
-  ) async {
-    if (sites.isEmpty) return;
-    final result = await showDialog<_SafetyAlertFormResult>(
-      context: context,
-      builder: (_) => _SafetyAlertFormDialog(sites: sites),
-    );
+    List<Site> sites, {
+    String? foremanUid,
+  }) async {
+    if (sites.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'You are not assigned to a site yet, so there is nowhere to '
+            'send an alert. Ask your Site Manager to add you to a site.',
+          ),
+        ),
+      );
+      return;
+    }
+    String? initialSiteId;
+    if (sites.length == 1) {
+      initialSiteId = sites.single.id;
+    } else if (foremanUid != null) {
+      initialSiteId = await _todaysMeetingSite(organizationId, foremanUid);
+      if (!sites.any((site) => site.id == initialSiteId)) {
+        initialSiteId = null;
+      }
+    }
+    if (!mounted) return;
+    final result = await Navigator.of(context, rootNavigator: true)
+        .push<_SafetyAlertFormResult>(
+          MaterialPageRoute(
+            fullscreenDialog: true,
+            builder: (_) => _SafetyAlertFormDialog(
+              sites: sites,
+              initialSiteId: initialSiteId,
+            ),
+          ),
+        );
     if (result == null) return;
     await _run(
       () => _service.createSafetyAlert(
@@ -159,9 +230,17 @@ class _SafetyAlertsScreenState extends State<SafetyAlertsScreen> {
     final profile = sessionController.profile;
     final membership = sessionController.activeMembership;
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
-    final canManage = isPlatformAdministrator ||
+    final canManage =
+        isPlatformAdministrator ||
         (membership?.role.canReviewPendingAccounts ?? false);
     final siteIds = membership?.siteIds ?? const <String>[];
+    // Admin and Site Manager work across the whole organization; a Foreman
+    // raises and manages alerts only at their own site(s) — the server
+    // enforces the same rule (`requireForemanSiteScope`).
+    final isOrganizationWide =
+        isPlatformAdministrator || membership?.role == AppRole.siteManager;
+    final isForeman =
+        !isPlatformAdministrator && membership?.role == AppRole.foreman;
     final organizationId = isPlatformAdministrator
         ? _selectedOrganizationId
         : sessionController.activeOrganizationId;
@@ -172,7 +251,8 @@ class _SafetyAlertsScreenState extends State<SafetyAlertsScreen> {
           padding: const EdgeInsets.all(AppSpacing.md),
           child: OrganizationScopeSelector(
             selectedOrganizationId: _selectedOrganizationId,
-            onChanged: (value) => setState(() => _selectedOrganizationId = value),
+            onChanged: (value) =>
+                setState(() => _selectedOrganizationId = value),
             repository: widget.organizationRepository,
           ),
         );
@@ -190,8 +270,9 @@ class _SafetyAlertsScreenState extends State<SafetyAlertsScreen> {
       );
     }
 
-    return StreamBuilder<List<SafetyAlert>>(
-      stream: _repositoryFor(organizationId).watchForOrganization(),
+    return LiveStreamBuilder<List<SafetyAlert>>(
+      streamKey: _repositoryFor(organizationId),
+      stream: () => _repositoryFor(organizationId).watchForOrganization(),
       builder: (context, alertSnapshot) {
         final allAlerts = alertSnapshot.data ?? const <SafetyAlert>[];
         final isLoading =
@@ -201,7 +282,7 @@ class _SafetyAlertsScreenState extends State<SafetyAlertsScreen> {
         // their own assigned site(s) — UX narrowing only, since the
         // underlying read grant (see firestore.rules) is org-wide for any
         // active member; the callables are what actually gate writes.
-        final visibleAlerts = canManage
+        final visibleAlerts = isOrganizationWide
             ? allAlerts
             : allAlerts.where((a) => siteIds.contains(a.siteId)).toList();
 
@@ -215,8 +296,18 @@ class _SafetyAlertsScreenState extends State<SafetyAlertsScreen> {
           return true;
         }).toList();
 
-        return StreamBuilder<List<Site>>(
-          stream: _siteRepositoryFor(organizationId).watchAll(),
+        // A worker/foreman's `firestore.rules` read grant on `sites` is
+        // scoped to their own `siteIds` only — an unconstrained `watchAll()`
+        // listing is refused outright for them (see
+        // SiteRepository.watchByIds's own doc comment), so a non-reviewer
+        // must query by id directly.
+        final siteStream = isOrganizationWide
+            ? _siteRepositoryFor(organizationId).watchAll()
+            : _siteRepositoryFor(organizationId).watchByIds(siteIds);
+
+        return LiveStreamBuilder<List<Site>>(
+          streamKey: (organizationId, isOrganizationWide, siteIds.join(',')),
+          stream: () => siteStream,
           builder: (context, siteSnapshot) {
             final sites = siteSnapshot.data ?? const <Site>[];
             final sitesById = {for (final site in sites) site.id: site};
@@ -224,7 +315,11 @@ class _SafetyAlertsScreenState extends State<SafetyAlertsScreen> {
             return Scaffold(
               floatingActionButton: canManage
                   ? FloatingActionButton.extended(
-                      onPressed: () => _openCreateDialog(organizationId, sites),
+                      onPressed: () => _openCreateDialog(
+                        organizationId,
+                        sites,
+                        foremanUid: isForeman ? profile?.uid : null,
+                      ),
                       icon: const Icon(Icons.add_alert_outlined),
                       label: const Text('New Alert'),
                     )
@@ -233,8 +328,24 @@ class _SafetyAlertsScreenState extends State<SafetyAlertsScreen> {
                 padding: const EdgeInsets.all(AppSpacing.md),
                 physics: const AlwaysScrollableScrollPhysics(),
                 children: [
-                  Text('Safety Alerts', style: AppTextStyles.headlineMedium),
-                  const SizedBox(height: AppSpacing.xs),
+                  FeatureHeader(
+                    title: 'Safety Alerts',
+                    subtitle: isOrganizationWide
+                        ? '${visibleAlerts.length} across every site'
+                        : '${visibleAlerts.length} for your site(s)',
+                    icon: Icons.campaign,
+                    color: AppColors.safetyAlerts,
+                    chips: [
+                      for (final status in SafetyAlertStatus.values)
+                        FeatureChip(
+                          icon: _statusIcon(status),
+                          label:
+                              '${visibleAlerts.where((a) => a.status == status).length} '
+                              '${status.label.toLowerCase()}',
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: AppSpacing.md),
                   if (isPlatformAdministrator)
                     OrganizationScopeSelector(
                       selectedOrganizationId: _selectedOrganizationId,
@@ -242,13 +353,6 @@ class _SafetyAlertsScreenState extends State<SafetyAlertsScreen> {
                           setState(() => _selectedOrganizationId = value),
                       repository: widget.organizationRepository,
                     ),
-                  Text(
-                    canManage
-                        ? '${visibleAlerts.length} across every site'
-                        : '${visibleAlerts.length} for your site(s)',
-                    style: AppTextStyles.bodyMedium,
-                  ),
-                  const SizedBox(height: AppSpacing.md),
                   if (_errorMessage != null) ...[
                     AuthErrorBanner(message: _errorMessage!),
                     const SizedBox(height: AppSpacing.md),
@@ -270,10 +374,9 @@ class _SafetyAlertsScreenState extends State<SafetyAlertsScreen> {
                   if (!isLoading && filteredAlerts.isEmpty)
                     const Padding(
                       padding: EdgeInsets.symmetric(vertical: AppSpacing.xl),
-                      child: Text(
-                        'No safety alerts to show.',
-                        style: AppTextStyles.bodyMedium,
-                        textAlign: TextAlign.center,
+                      child: EmptyState(
+                        icon: Icons.campaign_outlined,
+                        title: 'No safety alerts to show.',
                       ),
                     ),
                   for (final alert in filteredAlerts) ...[
@@ -297,6 +400,50 @@ class _SafetyAlertsScreenState extends State<SafetyAlertsScreen> {
   }
 }
 
+/// Each alert severity's color — low blue, medium amber, high orange,
+/// critical red.
+Color _severityColor(SafetyAlertSeverity severity) => switch (severity) {
+  SafetyAlertSeverity.low => AppColors.meetings,
+  SafetyAlertSeverity.medium => AppColors.warning,
+  SafetyAlertSeverity.high => AppColors.hazards,
+  SafetyAlertSeverity.critical => AppColors.stop,
+};
+
+IconData _severityIcon(SafetyAlertSeverity severity) => switch (severity) {
+  SafetyAlertSeverity.low => Icons.info,
+  SafetyAlertSeverity.medium => Icons.warning_amber,
+  SafetyAlertSeverity.high => Icons.warning,
+  SafetyAlertSeverity.critical => Icons.dangerous,
+};
+
+String _severityHint(SafetyAlertSeverity severity) => switch (severity) {
+  SafetyAlertSeverity.low => 'Good to know',
+  SafetyAlertSeverity.medium => 'Take care today',
+  SafetyAlertSeverity.high => 'Act on it now',
+  SafetyAlertSeverity.critical => 'Stop and act immediately',
+};
+
+Color _statusColor(SafetyAlertStatus status) => switch (status) {
+  SafetyAlertStatus.active => AppColors.stop,
+  SafetyAlertStatus.acknowledged => AppColors.warning,
+  SafetyAlertStatus.resolved => AppColors.success,
+};
+
+IconData _statusIcon(SafetyAlertStatus status) => switch (status) {
+  SafetyAlertStatus.active => Icons.notifications_active,
+  SafetyAlertStatus.acknowledged => Icons.visibility,
+  SafetyAlertStatus.resolved => Icons.check_circle,
+};
+
+IconData _categoryIcon(SafetyAlertCategory category) => switch (category) {
+  SafetyAlertCategory.safety => Icons.health_and_safety,
+  SafetyAlertCategory.equipment => Icons.construction,
+  SafetyAlertCategory.environment => Icons.eco,
+  SafetyAlertCategory.weather => Icons.thunderstorm,
+  SafetyAlertCategory.site => Icons.location_city,
+  SafetyAlertCategory.other => Icons.campaign,
+};
+
 class _AlertFilters extends StatelessWidget {
   const _AlertFilters({
     required this.statusFilter,
@@ -315,42 +462,44 @@ class _AlertFilters extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Status', style: AppTextStyles.label),
-        const SizedBox(height: AppSpacing.xs),
-        Wrap(
-          spacing: AppSpacing.sm,
-          runSpacing: AppSpacing.sm,
-          children: [
-            ChoiceChip(
-              label: const Text('All'),
-              selected: statusFilter == null,
-              onSelected: (_) => onStatusChanged(null),
+        ColorChoiceChips<SafetyAlertStatus?>(
+          label: 'Status',
+          selected: statusFilter,
+          onSelected: onStatusChanged,
+          choices: [
+            const ColorChoice(
+              value: null,
+              label: 'All',
+              color: AppColors.textSecondary,
+              icon: Icons.all_inclusive,
             ),
             for (final status in SafetyAlertStatus.values)
-              ChoiceChip(
-                label: Text(status.label),
-                selected: statusFilter == status,
-                onSelected: (_) => onStatusChanged(status),
+              ColorChoice(
+                value: status,
+                label: status.label,
+                color: _statusColor(status),
+                icon: _statusIcon(status),
               ),
           ],
         ),
-        const SizedBox(height: AppSpacing.sm),
-        Text('Severity', style: AppTextStyles.label),
-        const SizedBox(height: AppSpacing.xs),
-        Wrap(
-          spacing: AppSpacing.sm,
-          runSpacing: AppSpacing.sm,
-          children: [
-            ChoiceChip(
-              label: const Text('All'),
-              selected: severityFilter == null,
-              onSelected: (_) => onSeverityChanged(null),
+        const SizedBox(height: AppSpacing.md),
+        ColorChoiceChips<SafetyAlertSeverity?>(
+          label: 'Severity',
+          selected: severityFilter,
+          onSelected: onSeverityChanged,
+          choices: [
+            const ColorChoice(
+              value: null,
+              label: 'All',
+              color: AppColors.textSecondary,
+              icon: Icons.all_inclusive,
             ),
             for (final severity in SafetyAlertSeverity.values)
-              ChoiceChip(
-                label: Text(severity.label),
-                selected: severityFilter == severity,
-                onSelected: (_) => onSeverityChanged(severity),
+              ColorChoice(
+                value: severity,
+                label: severity.label,
+                color: _severityColor(severity),
+                icon: _severityIcon(severity),
               ),
           ],
         ),
@@ -376,107 +525,50 @@ class _SafetyAlertCard extends StatelessWidget {
   final VoidCallback onAcknowledge;
   final VoidCallback onResolve;
 
-  Color get _severityColor => switch (alert.severity) {
-    SafetyAlertSeverity.low => AppColors.textSecondary,
-    SafetyAlertSeverity.medium => AppColors.warning,
-    SafetyAlertSeverity.high => AppColors.danger,
-    SafetyAlertSeverity.critical => AppColors.danger,
-  };
-
-  Color get _statusColor => switch (alert.status) {
-    SafetyAlertStatus.active => AppColors.danger,
-    SafetyAlertStatus.acknowledged => AppColors.warning,
-    SafetyAlertStatus.resolved => AppColors.success,
-  };
-
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.all(AppSpacing.md),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(alert.title, style: AppTextStyles.titleLarge),
-                ),
-                _Badge(label: alert.severity.label, color: _severityColor),
-                const SizedBox(width: AppSpacing.xs),
-                _Badge(label: alert.status.label, color: _statusColor),
-              ],
-            ),
-            const SizedBox(height: AppSpacing.xs),
-            Text(alert.description, style: AppTextStyles.bodyMedium),
-            const SizedBox(height: AppSpacing.xs),
-            Text(
-              'Site: $siteName · Category: ${alert.category.label}',
-              style: AppTextStyles.bodyMedium,
-            ),
-            Text(
-              'Reported ${_formatDate(alert.createdAt)}',
-              style: AppTextStyles.bodyMedium,
-            ),
-            if (canManage && !alert.isResolved) ...[
-              const SizedBox(height: AppSpacing.sm),
-              Row(
-                children: [
-                  if (alert.isActive)
-                    Expanded(
-                      child: ConstrainedBox(
-                        constraints: const BoxConstraints(
-                          minHeight: AppSpacing.minTouchTarget,
-                        ),
-                        child: OutlinedButton.icon(
-                          onPressed: isSaving ? null : onAcknowledge,
-                          icon: const Icon(Icons.visibility_outlined),
-                          label: const Text('Acknowledge'),
-                        ),
-                      ),
-                    ),
-                  if (alert.isActive) const SizedBox(width: AppSpacing.sm),
-                  Expanded(
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(
-                        minHeight: AppSpacing.minTouchTarget,
-                      ),
-                      child: ElevatedButton.icon(
-                        onPressed: isSaving ? null : onResolve,
-                        icon: const Icon(Icons.check_circle_outline),
-                        label: const Text('Resolve'),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ],
+    final color = _severityColor(alert.severity);
+    return AccentCard(
+      color: color,
+      icon: _categoryIcon(alert.category),
+      title: alert.title,
+      dimmed: alert.isResolved,
+      badges: [
+        AccentBadge(label: alert.severity.label, color: color),
+        AccentBadge(
+          label: alert.status.label,
+          color: _statusColor(alert.status),
         ),
-      ),
-    );
-  }
-}
-
-class _Badge extends StatelessWidget {
-  const _Badge({required this.label, required this.color});
-
-  final String label;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: AppSpacing.sm,
-        vertical: AppSpacing.xs,
-      ),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(AppSpacing.sm),
-      ),
-      child: Text(label, style: AppTextStyles.label.copyWith(color: color)),
+      ],
+      body: alert.description,
+      details: [
+        AccentDetail(icon: Icons.place, text: siteName),
+        AccentDetail(
+          icon: _categoryIcon(alert.category),
+          text: alert.category.label,
+        ),
+        AccentDetail(
+          icon: Icons.schedule,
+          text: 'Reported ${_formatDate(alert.createdAt)}',
+        ),
+      ],
+      actions: [
+        if (canManage && alert.isActive)
+          AccentButton(
+            label: 'Acknowledge',
+            icon: Icons.visibility,
+            color: AppColors.warning,
+            outlined: true,
+            onPressed: isSaving ? null : onAcknowledge,
+          ),
+        if (canManage && !alert.isResolved)
+          AccentButton(
+            label: 'Resolve',
+            icon: Icons.check_circle,
+            color: AppColors.success,
+            onPressed: isSaving ? null : onResolve,
+          ),
+      ],
     );
   }
 }
@@ -509,19 +601,23 @@ class _SafetyAlertFormResult {
 /// [_SafetyAlertsScreenState._openCreateDialog]) — the server re-checks the
 /// same role regardless.
 class _SafetyAlertFormDialog extends StatefulWidget {
-  const _SafetyAlertFormDialog({required this.sites});
+  const _SafetyAlertFormDialog({required this.sites, this.initialSiteId});
 
   final List<Site> sites;
 
+  /// Pre-selected site, or null to make the Foreman choose.
+  final String? initialSiteId;
+
   @override
-  State<_SafetyAlertFormDialog> createState() =>
-      _SafetyAlertFormDialogState();
+  State<_SafetyAlertFormDialog> createState() => _SafetyAlertFormDialogState();
 }
 
 class _SafetyAlertFormDialogState extends State<_SafetyAlertFormDialog> {
   final _titleController = TextEditingController();
   final _descriptionController = TextEditingController();
-  late Site _site = widget.sites.first;
+  late Site? _site = widget.sites.length == 1
+      ? widget.sites.single
+      : widget.sites.where((s) => s.id == widget.initialSiteId).firstOrNull;
   SafetyAlertSeverity _severity = SafetyAlertSeverity.medium;
   SafetyAlertCategory _category = SafetyAlertCategory.safety;
 
@@ -535,10 +631,11 @@ class _SafetyAlertFormDialogState extends State<_SafetyAlertFormDialog> {
   void _submit() {
     final title = _titleController.text.trim();
     final description = _descriptionController.text.trim();
-    if (title.isEmpty || description.isEmpty) return;
+    final site = _site;
+    if (title.isEmpty || description.isEmpty || site == null) return;
     Navigator.of(context).pop(
       _SafetyAlertFormResult(
-        site: _site,
+        site: site,
         title: title,
         description: description,
         severity: _severity,
@@ -549,80 +646,192 @@ class _SafetyAlertFormDialogState extends State<_SafetyAlertFormDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('New Safety Alert'),
-      content: SizedBox(
-        width: double.maxFinite,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              DropdownButtonFormField<Site>(
-                initialValue: _site,
-                decoration: const InputDecoration(labelText: 'Site'),
-                items: [
-                  for (final site in widget.sites)
-                    DropdownMenuItem(value: site, child: Text(site.name)),
-                ],
-                onChanged: (value) {
-                  if (value != null) setState(() => _site = value);
-                },
+    final color = _severityColor(_severity);
+    return Scaffold(
+      appBar: AppBar(),
+      body: ListView(
+        padding: const EdgeInsets.all(AppSpacing.md),
+        children: [
+          FeatureHeader(
+            title: _titleController.text.trim().isEmpty
+                ? 'New Safety Alert'
+                : _titleController.text.trim(),
+            subtitle: _site == null
+                ? 'Choose the site you are at.'
+                : 'Everyone at ${_site!.name} will see this alert.',
+            icon: _categoryIcon(_category),
+            color: color,
+            chips: [
+              FeatureChip(
+                icon: _severityIcon(_severity),
+                label: _severity.label,
               ),
-              const SizedBox(height: AppSpacing.sm),
-              TextField(
-                controller: _titleController,
-                decoration: const InputDecoration(labelText: 'Title'),
-                autofocus: true,
-              ),
-              const SizedBox(height: AppSpacing.sm),
-              TextField(
-                controller: _descriptionController,
-                decoration: const InputDecoration(labelText: 'Description'),
-                minLines: 1,
-                maxLines: 3,
-              ),
-              const SizedBox(height: AppSpacing.sm),
-              Text('Severity', style: AppTextStyles.label),
-              const SizedBox(height: AppSpacing.xs),
-              Wrap(
-                spacing: AppSpacing.sm,
-                runSpacing: AppSpacing.sm,
-                children: [
-                  for (final severity in SafetyAlertSeverity.values)
-                    ChoiceChip(
-                      label: Text(severity.label),
-                      selected: _severity == severity,
-                      onSelected: (_) => setState(() => _severity = severity),
-                    ),
-                ],
-              ),
-              const SizedBox(height: AppSpacing.sm),
-              Text('Category', style: AppTextStyles.label),
-              const SizedBox(height: AppSpacing.xs),
-              Wrap(
-                spacing: AppSpacing.sm,
-                runSpacing: AppSpacing.sm,
-                children: [
-                  for (final category in SafetyAlertCategory.values)
-                    ChoiceChip(
-                      label: Text(category.label),
-                      selected: _category == category,
-                      onSelected: (_) => setState(() => _category = category),
-                    ),
-                ],
+              FeatureChip(
+                icon: _categoryIcon(_category),
+                label: _category.label,
               ),
             ],
           ),
+          const SizedBox(height: AppSpacing.md),
+          FormSection(
+            title: 'Where',
+            icon: Icons.place,
+            color: AppColors.projects,
+            child: SiteSelectList(
+              sites: widget.sites,
+              selectedSiteId: _site?.id,
+              onChanged: (id) => setState(() {
+                _site = id == null
+                    ? null
+                    : widget.sites.firstWhere((site) => site.id == id);
+              }),
+            ),
+          ),
+          const SizedBox(height: AppSpacing.md),
+          FormSection(
+            title: "What's happening",
+            icon: Icons.edit_note,
+            color: AppColors.meetings,
+            child: Column(
+              children: [
+                TextField(
+                  controller: _titleController,
+                  decoration: const InputDecoration(
+                    labelText: 'Title',
+                    hintText: 'e.g. Strong winds this afternoon',
+                  ),
+                  autofocus: true,
+                  onChanged: (_) => setState(() {}),
+                ),
+                const SizedBox(height: AppSpacing.sm),
+                TextField(
+                  controller: _descriptionController,
+                  decoration: const InputDecoration(
+                    labelText: 'Description',
+                    hintText: 'What should people know or do?',
+                  ),
+                  minLines: 2,
+                  maxLines: 4,
+                  onChanged: (_) => setState(() {}),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: AppSpacing.md),
+          FormSection(
+            title: 'How serious is it?',
+            icon: Icons.priority_high,
+            color: color,
+            child: Column(
+              children: [
+                for (final severity in SafetyAlertSeverity.values)
+                  _SeverityOption(
+                    severity: severity,
+                    selected: _severity == severity,
+                    onTap: () => setState(() => _severity = severity),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: AppSpacing.md),
+          FormSection(
+            title: 'Type',
+            icon: Icons.category,
+            color: AppColors.analytics,
+            child: ChoiceList<SafetyAlertCategory>(
+              selected: _category,
+              onChanged: (category) {
+                if (category != null) setState(() => _category = category);
+              },
+              items: [
+                for (final category in SafetyAlertCategory.values)
+                  ChoiceItem(
+                    value: category,
+                    title: category.label,
+                    color: AppColors.analytics,
+                    icon: _categoryIcon(category),
+                  ),
+              ],
+              allowDeselect: false,
+            ),
+          ),
+          const SizedBox(height: AppSpacing.lg),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: color,
+              foregroundColor: AppColors.onColor(color),
+            ),
+            onPressed:
+                _site == null ||
+                    _titleController.text.trim().isEmpty ||
+                    _descriptionController.text.trim().isEmpty
+                ? null
+                : _submit,
+            icon: const Icon(Icons.campaign),
+            label: const Text('Send Alert'),
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// One large, colored severity choice with a plain-language hint.
+class _SeverityOption extends StatelessWidget {
+  const _SeverityOption({
+    required this.severity,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final SafetyAlertSeverity severity;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _severityColor(severity);
+    final foreground = selected ? AppColors.onColor(color) : null;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+      child: Material(
+        color: selected ? color : color.withValues(alpha: 0.08),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(color: color, width: selected ? 2 : 1),
+        ),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.sm + 2),
+            child: Row(
+              children: [
+                Icon(_severityIcon(severity), color: foreground ?? color),
+                const SizedBox(width: AppSpacing.sm),
+                Expanded(
+                  child: Text(
+                    severity.label,
+                    style: AppTextStyles.bodyLarge.copyWith(
+                      color: foreground,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                Text(
+                  _severityHint(severity),
+                  style: AppTextStyles.bodyMedium.copyWith(color: foreground),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        TextButton(onPressed: _submit, child: const Text('Create')),
-      ],
     );
   }
 }

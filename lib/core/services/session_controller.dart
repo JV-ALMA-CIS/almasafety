@@ -114,6 +114,20 @@ class SessionController extends ChangeNotifier {
   AppException? _lastError;
   List<Membership> _memberships = const [];
 
+  /// Whether the CURRENT uid's membership subscription has reported at
+  /// least once (successfully or not) since it started — distinct from
+  /// [memberships] being empty, which is also true before the very first
+  /// snapshot arrives. Without this distinction, a UI reading
+  /// [activeMembership] the instant [status] reaches
+  /// [AuthStatus.authenticated] (profile loaded) cannot tell "this user
+  /// truly has no membership yet" apart from "memberships just haven't
+  /// arrived yet" — the profile and membership streams resolve
+  /// independently, so there is a real window where the former has loaded
+  /// and the latter has not. [DashboardRouterScreen] previously showed its
+  /// "no role yet" message during exactly that window, for every
+  /// authenticated Foreman/Worker/Site Manager on first load.
+  bool _membershipsLoadedForCurrentUid = false;
+
   /// The organization explicitly selected via [setActiveOrganization] for
   /// the current uid, when the user holds more than one membership.
   ///
@@ -143,6 +157,16 @@ class SessionController extends ChangeNotifier {
   /// profile/memberships have loaded, and empty for an [AppRole.admin], who
   /// holds no memberships (platform-level, org-less by construction).
   List<Membership> get memberships => _memberships;
+
+  /// Whether the signed-in user's membership subscription has reported at
+  /// least once, so a caller can tell "this user has no membership" (true,
+  /// [memberships] empty) apart from "memberships have not loaded yet"
+  /// (false, [memberships] also empty) — see [_membershipsLoadedForCurrentUid]'s
+  /// own doc comment. Always `true` for an [AppRole.admin] (no membership
+  /// subscription is ever started for them — see [_updateMembershipSubscription]).
+  bool get membershipsLoaded =>
+      _profile?.isPlatformAdministrator == true ||
+      _membershipsLoadedForCurrentUid;
 
   /// The organization the signed-in user is currently acting within, or null.
   ///
@@ -406,6 +430,7 @@ class SessionController extends ChangeNotifier {
 
     unawaited(_cancelMembershipSubscription());
     _membershipUid = uid;
+    _membershipsLoadedForCurrentUid = false;
     _membershipSubscription = _membershipRepository
         .watchAll(uid)
         .listen(_onMembershipsChanged, onError: _onMembershipsError);
@@ -437,6 +462,7 @@ class SessionController extends ChangeNotifier {
   void _onMembershipsChanged(List<Membership> memberships) {
     if (_disposed) return;
     _memberships = memberships;
+    _membershipsLoadedForCurrentUid = true;
     _safeNotify();
   }
 
@@ -447,6 +473,7 @@ class SessionController extends ChangeNotifier {
     // activeOrganizationId/activeMembership fall back to empty until the
     // stream recovers, which the UI can treat like "no organizations yet".
     _memberships = const [];
+    _membershipsLoadedForCurrentUid = true;
     _safeNotify();
   }
 
@@ -496,6 +523,7 @@ class SessionController extends ChangeNotifier {
     final subscription = _membershipSubscription;
     _membershipSubscription = null;
     _membershipUid = null;
+    _membershipsLoadedForCurrentUid = false;
     await subscription?.cancel();
   }
 

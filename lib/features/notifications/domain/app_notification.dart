@@ -85,9 +85,7 @@ class AppNotification {
   factory AppNotification.fromMap(String id, Map<String, dynamic> data) {
     final type = AppNotificationType.tryFromId(data['type'] as String?);
     if (type == null) {
-      throw const DataException(
-        'That notification has an unrecognised type.',
-      );
+      throw const DataException('That notification has an unrecognised type.');
     }
     final organizationId = data['organizationId'] as String?;
     if (organizationId == null || organizationId.isEmpty) {
@@ -114,7 +112,8 @@ class AppNotification {
       type: type,
       title: title,
       message: message,
-      relatedEntityType: (relatedEntityType != null && relatedEntityType.isNotEmpty)
+      relatedEntityType:
+          (relatedEntityType != null && relatedEntityType.isNotEmpty)
           ? relatedEntityType
           : null,
       relatedEntityId: (relatedEntityId != null && relatedEntityId.isNotEmpty)

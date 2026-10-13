@@ -22,13 +22,10 @@ class NotificationRepository {
   }) : _organizationId = organizationId,
        _repository = FirestoreRepository<AppNotification>(
          firestoreService: firestoreService,
-         collectionPath: FirestorePaths.notificationsCollection(
-           organizationId,
-         ),
+         collectionPath: FirestorePaths.notificationsCollection(organizationId),
          fromFirestore: AppNotification.fromFirestore,
-         toFirestore: (_) => throw UnsupportedError(
-           'Notifications are written server-side.',
-         ),
+         toFirestore: (_) =>
+             throw UnsupportedError('Notifications are written server-side.'),
        );
 
   final String _organizationId;

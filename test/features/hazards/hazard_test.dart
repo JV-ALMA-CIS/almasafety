@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:jva_safety/core/errors/app_exception.dart';
 import 'package:jva_safety/features/hazards/domain/hazard.dart';
 import 'package:jva_safety/features/hazards/domain/hazard_category.dart';
+import 'package:jva_safety/features/hazards/domain/hazard_kind.dart';
 import 'package:jva_safety/features/hazards/domain/hazard_status.dart';
 
 void main() {
@@ -61,23 +62,22 @@ void main() {
     expect(hazard.canCloseDirectly, isTrue);
   });
 
-  test('location and photoUrl are null when absent (both optional)',
-    () async {
-      final doc = await seed({
-        'organizationId': 'org-alpha',
-        'projectId': 'project-1',
-        'siteId': 'site-1',
-        'reportedByUid': 'worker-1',
-        'category': 'ppe',
-        'description': 'Worker without hard hat',
-        'status': 'reported',
-      });
-
-      final hazard = Hazard.fromFirestore(doc);
-
-      expect(hazard.location, isNull);
-      expect(hazard.photoUrl, isNull);
+  test('location and photoUrl are null when absent (both optional)', () async {
+    final doc = await seed({
+      'organizationId': 'org-alpha',
+      'projectId': 'project-1',
+      'siteId': 'site-1',
+      'reportedByUid': 'worker-1',
+      'category': 'ppe',
+      'description': 'Worker without hard hat',
+      'status': 'reported',
     });
+
+    final hazard = Hazard.fromFirestore(doc);
+
+    expect(hazard.location, isNull);
+    expect(hazard.photoUrl, isNull);
+  });
 
   test('isClosed and canCloseDirectly reflect status correctly', () async {
     final cases = {
@@ -204,26 +204,55 @@ void main() {
   });
 
   test('the nine expected categories exist', () {
-    expect(
-      HazardCategory.values.map((c) => c.id).toSet(),
-      {
-        'workingAtHeight',
-        'electrical',
-        'equipment',
-        'ppe',
-        'housekeeping',
-        'environment',
-        'chemical',
-        'fire',
-        'other',
-      },
-    );
+    expect(HazardCategory.values.map((c) => c.id).toSet(), {
+      'workingAtHeight',
+      'electrical',
+      'equipment',
+      'ppe',
+      'housekeeping',
+      'environment',
+      'chemical',
+      'fire',
+      'other',
+    });
   });
 
   test('the four expected statuses exist', () {
-    expect(
-      HazardStatus.values.map((s) => s.id).toSet(),
-      {'reported', 'acknowledged', 'correctiveActionCreated', 'closed'},
+    expect(HazardStatus.values.map((s) => s.id).toSet(), {
+      'reported',
+      'acknowledged',
+      'correctiveActionCreated',
+      'closed',
+    });
+  });
+
+  Map<String, dynamic> minimal([Map<String, dynamic> extra = const {}]) => {
+    'organizationId': 'org-alpha',
+    'projectId': 'project-1',
+    'siteId': 'site-1',
+    'reportedByUid': 'worker-1',
+    'category': 'workingAtHeight',
+    'description': 'Hammer fell from scaffold',
+    'status': 'reported',
+    ...extra,
+  };
+
+  test('kind defaults to hazard when absent (reports filed before '
+      'near-misses existed)', () async {
+    final hazard = Hazard.fromFirestore(await seed(minimal()));
+    expect(hazard.kind, HazardKind.hazard);
+  });
+
+  test('parses a near-miss', () async {
+    final hazard = Hazard.fromFirestore(
+      await seed(minimal({'kind': 'nearMiss'})),
     );
+    expect(hazard.kind, HazardKind.nearMiss);
+    expect(hazard.category, HazardCategory.workingAtHeight);
+  });
+
+  test('throws on an unrecognised kind', () async {
+    final doc = await seed(minimal({'kind': 'incident'}));
+    expect(() => Hazard.fromFirestore(doc), throwsA(isA<DataException>()));
   });
 }

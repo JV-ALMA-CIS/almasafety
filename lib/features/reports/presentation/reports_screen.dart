@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import '../../../core/widgets/live_stream_builder.dart';
+import '../../organizations/presentation/site_select_list.dart';
+import '../../../core/widgets/choice_list.dart';
 import 'package:provider/provider.dart';
 import '../../../core/errors/app_exception.dart';
 import '../../../core/services/firestore_service.dart';
@@ -7,6 +10,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../core/widgets/organization_scope_selector.dart';
+import '../../authentication/domain/app_role.dart';
 import '../../authentication/presentation/auth_error_banner.dart';
 import '../../corrective_actions/domain/corrective_action_status.dart';
 import '../../organizations/data/organization_repository.dart';
@@ -20,6 +24,7 @@ import '../domain/daily_safety_meeting_report_row.dart';
 import '../domain/report_category.dart';
 import '../domain/safety_alert_report_row.dart';
 import '../domain/safety_learning_report_row.dart';
+import '../../../core/widgets/feature_header.dart';
 
 /// The Reports screen — read-only operational summaries across the four
 /// report categories this foundation supports.
@@ -178,13 +183,20 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final sessionController = context.watch<SessionController>();
     final profile = sessionController.profile;
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
+    final membershipRole = sessionController.activeMembership?.role;
     final canManage =
         isPlatformAdministrator ||
-        (sessionController.activeMembership?.role.canReviewPendingAccounts ??
-            false);
+        (membershipRole?.canReviewPendingAccounts ?? false);
     final organizationId = isPlatformAdministrator
         ? _selectedOrganizationId
         : sessionController.activeOrganizationId;
+    // A Foreman's `firestore.rules` read grant on `sites` is scoped to their
+    // own `siteIds` only — an unconstrained `watchAll()` listing is refused
+    // outright for them (unlike Admin/Site Manager) — see
+    // SiteRepository.watchByIds's own doc comment.
+    final foremanSiteIds = membershipRole == AppRole.foreman
+        ? sessionController.activeMembership?.siteIds
+        : null;
 
     if (!canManage) {
       return const Center(
@@ -210,13 +222,19 @@ class _ReportsScreenState extends State<ReportsScreen> {
       );
     }
 
-    return StreamBuilder<List<Project>>(
-      stream: _projectRepositoryFor(organizationId).watchAll(),
+    return LiveStreamBuilder<List<Project>>(
+      streamKey: _projectRepositoryFor(organizationId),
+      stream: () => _projectRepositoryFor(organizationId).watchAll(),
       builder: (context, projectSnapshot) {
         final projects = projectSnapshot.data ?? const <Project>[];
 
-        return StreamBuilder<List<Site>>(
-          stream: _siteRepositoryFor(organizationId).watchAll(),
+        final siteStream = foremanSiteIds != null
+            ? _siteRepositoryFor(organizationId).watchByIds(foremanSiteIds)
+            : _siteRepositoryFor(organizationId).watchAll();
+
+        return LiveStreamBuilder<List<Site>>(
+          streamKey: (organizationId, foremanSiteIds?.join(',')),
+          stream: () => siteStream,
           builder: (context, siteSnapshot) {
             final sites = siteSnapshot.data ?? const <Site>[];
             final visibleSites = _projectId == null
@@ -227,7 +245,12 @@ class _ReportsScreenState extends State<ReportsScreen> {
               padding: const EdgeInsets.all(AppSpacing.md),
               physics: const AlwaysScrollableScrollPhysics(),
               children: [
-                Text('Reports', style: AppTextStyles.headlineMedium),
+                FeatureHeader(
+                  title: 'Reports',
+                  subtitle: 'Generate a report on ${_category.label}.',
+                  icon: Icons.summarize,
+                  color: _categoryColor(_category),
+                ),
                 const SizedBox(height: AppSpacing.md),
                 if (isPlatformAdministrator)
                   OrganizationScopeSelector(
@@ -240,43 +263,39 @@ class _ReportsScreenState extends State<ReportsScreen> {
                   AuthErrorBanner(message: _errorMessage!),
                   const SizedBox(height: AppSpacing.md),
                 ],
-                Text('Report', style: AppTextStyles.label),
-                const SizedBox(height: AppSpacing.xs),
-                Wrap(
-                  spacing: AppSpacing.sm,
-                  runSpacing: AppSpacing.sm,
-                  children: [
+                ChoiceList<ReportCategory>(
+                  label: 'Report',
+                  selected: _category,
+                  onChanged: (category) {
+                    if (category != null) {
+                      setState(() {
+                        _category = category;
+                        _hasGenerated = false;
+                      });
+                    }
+                  },
+                  items: [
                     for (final category in ReportCategory.values)
-                      ChoiceChip(
-                        label: Text(category.label),
-                        selected: _category == category,
-                        onSelected: (_) {
-                          setState(() {
-                            _category = category;
-                            _hasGenerated = false;
-                          });
-                        },
+                      ChoiceItem(
+                        value: category,
+                        title: category.label,
+                        color: _categoryColor(category),
+                        icon: _categoryIcon(category),
                       ),
                   ],
+                  allowDeselect: false,
                 ),
                 if (_category == ReportCategory.dailySafetyMeetings) ...[
                   const SizedBox(height: AppSpacing.sm),
                   Text('Project', style: AppTextStyles.label),
                   const SizedBox(height: AppSpacing.xs),
-                  DropdownButtonFormField<String?>(
-                    initialValue: _projectId,
-                    decoration: const InputDecoration(hintText: 'All projects'),
+                  ChoiceList<String>(
                     items: [
-                      const DropdownMenuItem(
-                        value: null,
-                        child: Text('All projects'),
-                      ),
-                      for (final project in projects)
-                        DropdownMenuItem(
-                          value: project.id,
-                          child: Text(project.name),
-                        ),
+                      for (final project in projects) projectChoice(project),
                     ],
+                    selected: _projectId,
+                    noneLabel: 'All projects',
+                    searchHint: 'Search projects',
                     onChanged: (value) => setState(() {
                       _projectId = value;
                       _siteId = null;
@@ -287,20 +306,11 @@ class _ReportsScreenState extends State<ReportsScreen> {
                   const SizedBox(height: AppSpacing.sm),
                   Text('Site', style: AppTextStyles.label),
                   const SizedBox(height: AppSpacing.xs),
-                  DropdownButtonFormField<String?>(
-                    initialValue: _siteId,
-                    decoration: const InputDecoration(hintText: 'All sites'),
-                    items: [
-                      const DropdownMenuItem(
-                        value: null,
-                        child: Text('All sites'),
-                      ),
-                      for (final site in visibleSites)
-                        DropdownMenuItem(
-                          value: site.id,
-                          child: Text(site.name),
-                        ),
-                    ],
+                  ChoiceList<String>(
+                    items: [for (final site in visibleSites) siteChoice(site)],
+                    selected: _siteId,
+                    noneLabel: 'All sites',
+                    searchHint: 'Search sites by name, code or location',
                     onChanged: (value) => setState(() => _siteId = value),
                   ),
                   const SizedBox(height: AppSpacing.sm),
@@ -421,22 +431,69 @@ class _EmptyReport extends StatelessWidget {
   }
 }
 
+/// Each report's accent color and icon — matching its feature elsewhere.
+Color _categoryColor(ReportCategory category) => switch (category) {
+  ReportCategory.dailySafetyMeetings => AppColors.meetings,
+  ReportCategory.safetyAlerts => AppColors.safetyAlerts,
+  ReportCategory.correctiveActions => AppColors.correctiveActions,
+  ReportCategory.safetyLearning => AppColors.learning,
+};
+
+IconData _categoryIcon(ReportCategory category) => switch (category) {
+  ReportCategory.dailySafetyMeetings => Icons.groups,
+  ReportCategory.safetyAlerts => Icons.campaign,
+  ReportCategory.correctiveActions => Icons.build_circle,
+  ReportCategory.safetyLearning => Icons.school,
+};
+
+/// The shape for one result row in a report, edged in its report's color.
+RoundedRectangleBorder _rowShape(Color color) => RoundedRectangleBorder(
+  borderRadius: BorderRadius.circular(12),
+  side: BorderSide(color: color.withValues(alpha: 0.45)),
+);
+
 class _SummaryCard extends StatelessWidget {
   const _SummaryCard({required this.label, required this.value});
 
   final String label;
   final String value;
 
+  static Color _colorFor(String label) {
+    final lower = label.toLowerCase();
+    if (lower.contains('overdue') || lower == 'active') {
+      return AppColors.danger;
+    }
+    if (lower.contains('completed') || lower == 'resolved') {
+      return AppColors.success;
+    }
+    if (lower.contains('concern')) return AppColors.hazards;
+    if (lower.contains('%') || lower.contains('rate')) {
+      return AppColors.learning;
+    }
+    return AppColors.meetings;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final accent = _colorFor(label);
     return Card(
       margin: EdgeInsets.zero,
+      color: Color.alphaBlend(
+        accent.withValues(alpha: 0.09),
+        Theme.of(context).colorScheme.surface,
+      ),
+      shape: _rowShape(accent),
       child: Padding(
         padding: const EdgeInsets.all(AppSpacing.md),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(value, style: AppTextStyles.headlineMedium),
+            Text(
+              value,
+              style: AppTextStyles.headlineMedium.copyWith(
+                color: AppColors.readable(accent, Theme.of(context).brightness),
+              ),
+            ),
             const SizedBox(height: AppSpacing.xs),
             Text(label, style: AppTextStyles.bodyMedium),
           ],
@@ -486,6 +543,7 @@ class _DailySafetyMeetingReportView extends StatelessWidget {
         for (final row in rows) ...[
           Card(
             margin: EdgeInsets.zero,
+            shape: _rowShape(AppColors.meetings),
             child: Padding(
               padding: const EdgeInsets.all(AppSpacing.md),
               child: Column(
@@ -564,6 +622,7 @@ class _SafetyAlertsReportView extends StatelessWidget {
         for (final row in rows) ...[
           Card(
             margin: EdgeInsets.zero,
+            shape: _rowShape(AppColors.safetyAlerts),
             child: Padding(
               padding: const EdgeInsets.all(AppSpacing.md),
               child: Column(
@@ -628,6 +687,7 @@ class _CorrectiveActionsReportView extends StatelessWidget {
         for (final row in rows) ...[
           Card(
             margin: EdgeInsets.zero,
+            shape: _rowShape(AppColors.correctiveActions),
             child: Padding(
               padding: const EdgeInsets.all(AppSpacing.md),
               child: Column(
@@ -644,7 +704,7 @@ class _CorrectiveActionsReportView extends StatelessWidget {
                   ),
                   Text(row.siteName, style: AppTextStyles.bodyMedium),
                   Text(
-                    'Assigned: ${row.assignedTo}',
+                    'Assigned: ${row.assignedToName}',
                     style: AppTextStyles.bodyMedium,
                   ),
                   Text(
@@ -705,12 +765,16 @@ class _SafetyLearningReportView extends StatelessWidget {
         for (final row in rows) ...[
           Card(
             margin: EdgeInsets.zero,
+            shape: _rowShape(AppColors.learning),
             child: Padding(
               padding: const EdgeInsets.all(AppSpacing.md),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(row.workerUid, style: AppTextStyles.titleLarge),
+                  Text(
+                    row.workerName ?? 'Unknown person',
+                    style: AppTextStyles.titleLarge,
+                  ),
                   Text(
                     'Required: ${row.requiredCount} · '
                     'Completed: ${row.completedCount} · '
@@ -743,10 +807,13 @@ class _Badge extends StatelessWidget {
         vertical: AppSpacing.xs,
       ),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(AppSpacing.sm),
+        color: color,
+        borderRadius: BorderRadius.circular(999),
       ),
-      child: Text(label, style: AppTextStyles.label.copyWith(color: color)),
+      child: Text(
+        label,
+        style: AppTextStyles.label.copyWith(color: AppColors.onColor(color)),
+      ),
     );
   }
 }

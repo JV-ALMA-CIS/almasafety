@@ -106,9 +106,7 @@ void main() {
       }
     });
 
-    testWidgets('offers no dropdown at all — only text fields', (
-      tester,
-    ) async {
+    testWidgets('offers no dropdown at all — only text fields', (tester) async {
       // Role, trade and site assignment are decided by a foreman or
       // superintendent at approval time, never chosen by the registrant.
       useTallViewport(tester);
@@ -123,10 +121,7 @@ void main() {
       useTallViewport(tester);
       await tester.pumpWidget(wrap(const RegisterScreen()));
 
-      expect(
-        find.textContaining('reviewed and approved'),
-        findsOneWidget,
-      );
+      expect(find.textContaining('reviewed and approved'), findsOneWidget);
     });
   });
 
@@ -135,9 +130,7 @@ void main() {
       useTallViewport(tester);
       await tester.pumpWidget(wrap(const RegisterScreen()));
 
-      await tester.tap(
-        find.widgetWithText(ElevatedButton, 'Create account'),
-      );
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Create account'));
       await tester.pump();
 
       expect(find.text('Enter your full name.'), findsOneWidget);
@@ -155,9 +148,7 @@ void main() {
         find.widgetWithText(TextFormField, 'Email'),
         'not-an-email',
       );
-      await tester.tap(
-        find.widgetWithText(ElevatedButton, 'Create account'),
-      );
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Create account'));
       await tester.pump();
 
       expect(find.text('Enter a valid email address.'), findsOneWidget);
@@ -172,9 +163,7 @@ void main() {
         find.widgetWithText(TextFormField, 'Password'),
         'short',
       );
-      await tester.tap(
-        find.widgetWithText(ElevatedButton, 'Create account'),
-      );
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Create account'));
       await tester.pump();
 
       expect(find.text('Use at least 8 characters.'), findsOneWidget);
@@ -189,9 +178,7 @@ void main() {
         find.widgetWithText(TextFormField, 'Confirm password'),
         'different123',
       );
-      await tester.tap(
-        find.widgetWithText(ElevatedButton, 'Create account'),
-      );
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Create account'));
       await tester.pump();
 
       expect(find.text('Passwords do not match.'), findsOneWidget);
@@ -206,9 +193,7 @@ void main() {
       await tester.pumpWidget(wrap(const RegisterScreen()));
 
       await fillValidForm(tester);
-      await tester.tap(
-        find.widgetWithText(ElevatedButton, 'Create account'),
-      );
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Create account'));
       await tester.pumpAndSettle();
 
       expect(

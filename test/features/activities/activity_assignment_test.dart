@@ -73,10 +73,7 @@ void main() {
     });
 
     test('throws when activityId is missing', () async {
-      final doc = await seedAssignment(
-        'worker-1',
-        validData(activityId: null),
-      );
+      final doc = await seedAssignment('worker-1', validData(activityId: null));
 
       expect(
         () => ActivityAssignment.fromFirestore(doc),

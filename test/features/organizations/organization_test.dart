@@ -51,7 +51,10 @@ void main() {
 
     test('round-trips every status', () async {
       for (final status in OrganizationRecordStatus.values) {
-        final doc = await seedOrg('org-${status.id}', validData(status: status.id));
+        final doc = await seedOrg(
+          'org-${status.id}',
+          validData(status: status.id),
+        );
         expect(Organization.fromFirestore(doc).status, status);
       }
     });

@@ -25,15 +25,15 @@ void main() {
           '$concernId',
         )
         .set({
-      'meetingId': meetingId,
-      'organizationId': orgId,
-      'siteId': siteId,
-      'description': 'Concern $concernId',
-      'category': category,
-      'reportedBy': 'foreman-1',
-      'status': status,
-      'createdAt': Timestamp.now(),
-    });
+          'meetingId': meetingId,
+          'organizationId': orgId,
+          'siteId': siteId,
+          'description': 'Concern $concernId',
+          'category': category,
+          'reportedBy': 'foreman-1',
+          'status': status,
+          'createdAt': Timestamp.now(),
+        });
   }
 
   test('watchAll returns only concerns for this meeting', () async {
@@ -68,16 +68,18 @@ void main() {
     expect(concerns.single.organizationId, 'org-alpha');
   });
 
-  test('watchAll returns an empty list for a meeting with no concerns',
-      () async {
-    final repository = MeetingConcernRepository(
-      firestoreService: FirestoreService(firestore: firestore),
-      organizationId: 'org-alpha',
-      meetingId: 'm1',
-    );
+  test(
+    'watchAll returns an empty list for a meeting with no concerns',
+    () async {
+      final repository = MeetingConcernRepository(
+        firestoreService: FirestoreService(firestore: firestore),
+        organizationId: 'org-alpha',
+        meetingId: 'm1',
+      );
 
-    expect(await repository.watchAll().first, isEmpty);
-  });
+      expect(await repository.watchAll().first, isEmpty);
+    },
+  );
 
   test('organizationId and meetingId expose the scope this repository was '
       'built with', () {

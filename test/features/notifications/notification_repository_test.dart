@@ -30,8 +30,7 @@ void main() {
     });
   }
 
-  test('watchForRecipient returns only notifications for that user',
-      () async {
+  test('watchForRecipient returns only notifications for that user', () async {
     await seedNotification('org-alpha', 'n1', recipientUid: 'worker-1');
     await seedNotification('org-alpha', 'n2', recipientUid: 'worker-1');
     await seedNotification('org-alpha', 'n3', recipientUid: 'worker-2');
@@ -70,21 +69,25 @@ void main() {
     expect(notifications.map((n) => n.id).toList(), ['newer', 'older']);
   });
 
-  test("watchForRecipient excludes another organization's notifications",
-      () async {
-    await seedNotification('org-alpha', 'n1', recipientUid: 'worker-1');
-    await seedNotification('org-beta', 'n1', recipientUid: 'worker-1');
+  test(
+    "watchForRecipient excludes another organization's notifications",
+    () async {
+      await seedNotification('org-alpha', 'n1', recipientUid: 'worker-1');
+      await seedNotification('org-beta', 'n1', recipientUid: 'worker-1');
 
-    final repository = NotificationRepository(
-      firestoreService: FirestoreService(firestore: firestore),
-      organizationId: 'org-alpha',
-    );
+      final repository = NotificationRepository(
+        firestoreService: FirestoreService(firestore: firestore),
+        organizationId: 'org-alpha',
+      );
 
-    final notifications = await repository.watchForRecipient('worker-1').first;
+      final notifications = await repository
+          .watchForRecipient('worker-1')
+          .first;
 
-    expect(notifications, hasLength(1));
-    expect(notifications.single.organizationId, 'org-alpha');
-  });
+      expect(notifications, hasLength(1));
+      expect(notifications.single.organizationId, 'org-alpha');
+    },
+  );
 
   test('watchUnreadForRecipient returns only unread notifications for that '
       'user', () async {
@@ -144,8 +147,7 @@ void main() {
     expect(await repository.getById('missing'), isNull);
   });
 
-  test('organizationId exposes the scope this repository was built with',
-      () {
+  test('organizationId exposes the scope this repository was built with', () {
     final repository = NotificationRepository(
       firestoreService: FirestoreService(firestore: firestore),
       organizationId: 'org-alpha',

@@ -61,6 +61,87 @@ void main() {
     expect(learning.description, isNull);
   });
 
+  test('minimumWatchSeconds parses when present', () async {
+    final doc = await seed({
+      'organizationId': 'org-alpha',
+      'title': 'Working at Height',
+      'type': 'video',
+      'contentReference': 'https://example.com/video.mp4',
+      'status': 'active',
+      'minimumWatchSeconds': 90,
+    });
+
+    final learning = SafetyLearning.fromFirestore(doc);
+
+    expect(learning.minimumWatchSeconds, 90);
+  });
+
+  test(
+    'minimumWatchSeconds is null when absent — a pre-existing video '
+    'item (created before this field existed) still parses cleanly',
+    () async {
+      final doc = await seed({
+        'organizationId': 'org-alpha',
+        'title': 'Working at Height',
+        'type': 'video',
+        'contentReference': 'https://example.com/video.mp4',
+        'status': 'active',
+      });
+
+      final learning = SafetyLearning.fromFirestore(doc);
+
+      expect(learning.minimumWatchSeconds, isNull);
+    },
+  );
+
+  test('passingScorePercent parses when present', () async {
+    final doc = await seed({
+      'organizationId': 'org-alpha',
+      'title': 'Working at Height',
+      'type': 'video',
+      'contentReference': 'https://example.com/video.mp4',
+      'status': 'active',
+      'passingScorePercent': 80,
+    });
+
+    final learning = SafetyLearning.fromFirestore(doc);
+
+    expect(learning.passingScorePercent, 80);
+  });
+
+  test('passingScorePercent is null when absent — a pre-existing item '
+      '(created before this field existed) still parses cleanly', () async {
+    final doc = await seed({
+      'organizationId': 'org-alpha',
+      'title': 'Working at Height',
+      'type': 'knowledgeCheck',
+      'contentReference': 'ref-1',
+      'status': 'active',
+    });
+
+    final learning = SafetyLearning.fromFirestore(doc);
+
+    expect(learning.passingScorePercent, isNull);
+  });
+
+  test('a video item can carry both minimumWatchSeconds and '
+      'passingScorePercent at once', () async {
+    final doc = await seed({
+      'organizationId': 'org-alpha',
+      'title': 'Working at Height',
+      'type': 'video',
+      'contentReference': 'https://example.com/video.mp4',
+      'status': 'active',
+      'minimumWatchSeconds': 60,
+      'passingScorePercent': 80,
+    });
+
+    final learning = SafetyLearning.fromFirestore(doc);
+
+    expect(learning.minimumWatchSeconds, 60);
+    expect(learning.passingScorePercent, 80);
+  });
+
   test('throws when organizationId is missing', () async {
     final doc = await seed({
       'title': 'PPE Course',

@@ -119,10 +119,25 @@ class AppRoutes {
   /// other role [AppRole.canReviewDailySafetyMeetings] grants.
   static const String dailySafetyMeetings = '/daily-safety-meetings';
   static const String hazards = '/hazards';
+  static const String incidents = '/incidents';
+
+  /// The "Report a Safety Issue" chooser — one way in for hazards,
+  /// near-misses and incidents.
+  static const String reportSafetyIssue = '/report-safety-issue';
+
+  /// Daily site inspections and weekly HSE walk-downs.
+  static const String inspections = '/inspections';
   static const String correctiveActions = '/corrective-actions';
   static const String safetyAlerts = '/safety-alerts';
   static const String notifications = '/notifications';
   static const String reports = '/reports';
   static const String analytics = '/analytics';
+
+  /// Site Manager/Admin oversight: **Site -> Activity -> Workers** Safety
+  /// Learning readiness — "which workers are ready for the work happening
+  /// at my site, and what are they missing." Gated the same as
+  /// [reports]/[analytics] (`canManageOrgContent`) — see
+  /// [SafetyLearningComplianceScreen]'s own `canManage` getter.
+  static const String safetyLearningCompliance = '/safety-learning-compliance';
   static const String administration = '/administration';
 }

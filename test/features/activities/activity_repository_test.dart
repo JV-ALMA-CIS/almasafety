@@ -28,21 +28,23 @@ void main() {
     });
   }
 
-  test('watchAll streams only the activities under this organization',
-      () async {
-    await seedActivity('org-alpha', 'a1', siteId: 's1');
-    await seedActivity('org-alpha', 'a2', siteId: 's2');
-    await seedActivity('org-beta', 'a3', siteId: 's1');
+  test(
+    'watchAll streams only the activities under this organization',
+    () async {
+      await seedActivity('org-alpha', 'a1', siteId: 's1');
+      await seedActivity('org-alpha', 'a2', siteId: 's2');
+      await seedActivity('org-beta', 'a3', siteId: 's1');
 
-    final repository = ActivityRepository(
-      firestoreService: FirestoreService(firestore: firestore),
-      organizationId: 'org-alpha',
-    );
+      final repository = ActivityRepository(
+        firestoreService: FirestoreService(firestore: firestore),
+        organizationId: 'org-alpha',
+      );
 
-    final activities = await repository.watchAll().first;
+      final activities = await repository.watchAll().first;
 
-    expect(activities.map((a) => a.id).toSet(), {'a1', 'a2'});
-  });
+      expect(activities.map((a) => a.id).toSet(), {'a1', 'a2'});
+    },
+  );
 
   test('watchBySite narrows to one site within the organization', () async {
     await seedActivity('org-alpha', 'a1', siteId: 's1');
@@ -60,8 +62,7 @@ void main() {
     expect(activities.every((a) => a.siteId == 's1'), isTrue);
   });
 
-  test('organizationId exposes the scope this repository was built with',
-      () {
+  test('organizationId exposes the scope this repository was built with', () {
     final repository = ActivityRepository(
       firestoreService: FirestoreService(firestore: firestore),
       organizationId: 'org-alpha',

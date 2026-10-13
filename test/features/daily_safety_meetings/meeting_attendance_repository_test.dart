@@ -24,14 +24,14 @@ void main() {
           '$workerId',
         )
         .set({
-      'meetingId': meetingId,
-      'organizationId': orgId,
-      'siteId': siteId,
-      'workerId': workerId,
-      'status': status,
-      'recordedAt': Timestamp.now(),
-      'recordedBy': 'foreman-1',
-    });
+          'meetingId': meetingId,
+          'organizationId': orgId,
+          'siteId': siteId,
+          'workerId': workerId,
+          'status': status,
+          'recordedAt': Timestamp.now(),
+          'recordedBy': 'foreman-1',
+        });
   }
 
   test('watchAll returns only records for this meeting', () async {

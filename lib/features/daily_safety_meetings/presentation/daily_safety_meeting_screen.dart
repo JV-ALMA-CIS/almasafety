@@ -1,25 +1,39 @@
 import 'dart:async';
+import '../../../core/widgets/photo_capture.dart';
+import '../../corrective_actions/presentation/evidence_requirement_picker.dart';
+import '../../corrective_actions/domain/corrective_action_evidence.dart';
+import '../../../core/widgets/live_stream_builder.dart';
+import '../../../core/widgets/choice_list.dart';
 
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
+import '../../../core/widgets/feature_header.dart';
 import '../../../core/errors/app_exception.dart';
 import '../../../core/services/firestore_service.dart';
 import '../../../core/services/session_controller.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../../routing/app_routes.dart';
+import '../../activities/data/activity_admin_service.dart';
 import '../../activities/data/activity_assignment_repository.dart';
-import '../../activities/data/activity_repository.dart';
 import '../../activities/domain/activity.dart';
 import '../../activities/domain/activity_assignment.dart';
+import '../../authentication/data/account_approval_service.dart';
+import '../../authentication/domain/account_status.dart';
 import '../../authentication/domain/app_role.dart';
+import '../../authentication/domain/organization_user.dart';
 import '../../authentication/presentation/auth_error_banner.dart';
 import '../../corrective_actions/data/corrective_action_repository.dart';
 import '../../corrective_actions/data/corrective_action_service.dart';
 import '../../corrective_actions/domain/corrective_action.dart';
 import '../../organizations/data/site_repository.dart';
 import '../../organizations/domain/site.dart';
+import '../../safety_learning/data/worker_learning_repository.dart';
+import '../../safety_learning/domain/worker_learning_record.dart';
+import '../../safety_learning/domain/worker_learning_status.dart';
 import '../../safety_meeting_points/data/safety_meeting_point_repository.dart';
 import '../../safety_meeting_points/domain/safety_meeting_point.dart';
 import '../data/daily_safety_meeting_repository.dart';
@@ -38,7 +52,14 @@ import '../domain/meeting_concern_category.dart';
 import '../domain/meeting_evidence.dart';
 import '../domain/meeting_evidence_type.dart';
 import '../domain/meeting_point_note.dart';
+import '../../../core/widgets/status_badge.dart';
+import '../../pre_start_checks/presentation/crew_outcome_dialog.dart';
+import '../../pre_start_checks/presentation/pre_start_outcome_style.dart';
+import '../../pre_start_checks/presentation/pre_start_visuals.dart';
 import 'daily_safety_meeting_history_screen.dart';
+import 'worker_todays_meeting_card.dart';
+import '../../../core/widgets/color_choice_chips.dart';
+import '../../../core/widgets/person_picker.dart';
 
 String _today() {
   final now = DateTime.now();
@@ -76,7 +97,6 @@ class DailySafetyMeetingScreen extends StatefulWidget {
     this.resumeMeetingId,
     this.meetingRepository,
     this.meetingService,
-    this.activityRepository,
     this.meetingPointRepository,
     this.siteRepository,
     this.activityAssignmentRepository,
@@ -89,6 +109,9 @@ class DailySafetyMeetingScreen extends StatefulWidget {
     this.pointNoteRepositoryBuilder,
     this.evidenceRepositoryBuilder,
     this.imagePicker,
+    this.workerLearningRepository,
+    this.approvalService,
+    this.activityAdminService,
   });
 
   /// When given, this screen resumes that SPECIFIC meeting instead of
@@ -105,7 +128,6 @@ class DailySafetyMeetingScreen extends StatefulWidget {
   /// organization.
   final DailySafetyMeetingRepository? meetingRepository;
   final DailySafetyMeetingService? meetingService;
-  final ActivityRepository? activityRepository;
   final SafetyMeetingPointRepository? meetingPointRepository;
   final SiteRepository? siteRepository;
   final ActivityAssignmentRepository? activityAssignmentRepository;
@@ -147,6 +169,22 @@ class DailySafetyMeetingScreen extends StatefulWidget {
   /// mirroring [ReportHazardScreen]'s own injection.
   final ImagePicker? imagePicker;
 
+  /// Injected in tests. Backs `getSiteActivities` — a Foreman's
+  /// `firestore.rules` grant on `activities` does not cover LIST queries
+  /// at all (see that rule's own doc comment), so today's site activities
+  /// are resolved via this callable instead of [ActivityRepository
+  /// .watchBySite].
+  final ActivityAdminService? activityAdminService;
+
+  /// Injected in tests: lets the Safety Learning gate preview drop lessons
+  /// the moment they are completed — see [_LearningGateBanner].
+  final WorkerLearningRepository? workerLearningRepository;
+
+  /// Injected in tests: resolves an attendee's uid to a display name for
+  /// [_AttendanceSection] — see [AdminDailySafetyMeetingsScreen]'s matching
+  /// `_nameFor` pattern.
+  final AccountApprovalService? approvalService;
+
   @override
   State<DailySafetyMeetingScreen> createState() =>
       _DailySafetyMeetingScreenState();
@@ -162,13 +200,23 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
   late final CorrectiveActionService _correctiveActionService =
       widget.correctiveActionService ?? CorrectiveActionService();
   late final ImagePicker _imagePicker = widget.imagePicker ?? ImagePicker();
+  late final AccountApprovalService _approvalService =
+      widget.approvalService ?? AccountApprovalService();
+  late final ActivityAdminService _activityAdminService =
+      widget.activityAdminService ?? ActivityAdminService();
+
+  /// The organization's active members, loaded once — resolves an
+  /// attendee's uid to a display name, matching
+  /// [AdminDailySafetyMeetingsScreen]'s established `_nameFor` pattern.
+  List<OrganizationUser> _members = const [];
+  String? _membersLoadedForOrganizationId;
 
   DailySafetyMeetingRepository? _meetingRepository;
-  ActivityRepository? _activityRepository;
   SafetyMeetingPointRepository? _meetingPointRepository;
   SiteRepository? _siteRepository;
   ActivityAssignmentRepository? _activityAssignmentRepository;
   CorrectiveActionRepository? _correctiveActionRepository;
+  WorkerLearningRepository? _workerLearningRepository;
 
   String? _errorMessage;
   bool _isSaving = false;
@@ -179,26 +227,13 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
     if (existing != null && existing.organizationId == organizationId) {
       return existing;
     }
-    final created = widget.meetingRepository ??
+    final created =
+        widget.meetingRepository ??
         DailySafetyMeetingRepository(
           firestoreService: FirestoreService(),
           organizationId: organizationId,
         );
     _meetingRepository = created;
-    return created;
-  }
-
-  ActivityRepository _activityRepositoryFor(String organizationId) {
-    final existing = _activityRepository;
-    if (existing != null && existing.organizationId == organizationId) {
-      return existing;
-    }
-    final created = widget.activityRepository ??
-        ActivityRepository(
-          firestoreService: FirestoreService(),
-          organizationId: organizationId,
-        );
-    _activityRepository = created;
     return created;
   }
 
@@ -209,7 +244,8 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
     if (existing != null && existing.organizationId == organizationId) {
       return existing;
     }
-    final created = widget.meetingPointRepository ??
+    final created =
+        widget.meetingPointRepository ??
         SafetyMeetingPointRepository(
           firestoreService: FirestoreService(),
           organizationId: organizationId,
@@ -223,7 +259,8 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
     if (existing != null && existing.organizationId == organizationId) {
       return existing;
     }
-    final created = widget.siteRepository ??
+    final created =
+        widget.siteRepository ??
         SiteRepository(
           firestoreService: FirestoreService(),
           organizationId: organizationId,
@@ -239,7 +276,8 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
     if (existing != null && existing.organizationId == organizationId) {
       return existing;
     }
-    final created = widget.activityAssignmentRepository ??
+    final created =
+        widget.activityAssignmentRepository ??
         ActivityAssignmentRepository(
           firestoreService: FirestoreService(),
           organizationId: organizationId,
@@ -311,13 +349,59 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
     if (existing != null && existing.organizationId == organizationId) {
       return existing;
     }
-    final created = widget.correctiveActionRepository ??
+    final created =
+        widget.correctiveActionRepository ??
         CorrectiveActionRepository(
           firestoreService: FirestoreService(),
           organizationId: organizationId,
         );
     _correctiveActionRepository = created;
     return created;
+  }
+
+  WorkerLearningRepository _workerLearningRepositoryFor(String organizationId) {
+    final existing = _workerLearningRepository;
+    if (existing != null && existing.organizationId == organizationId) {
+      return existing;
+    }
+    final created =
+        widget.workerLearningRepository ??
+        WorkerLearningRepository(
+          firestoreService: FirestoreService(),
+          organizationId: organizationId,
+        );
+    _workerLearningRepository = created;
+    return created;
+  }
+
+  String? _siteActivitiesKey;
+  Future<List<Activity>>? _siteActivitiesFuture;
+
+  /// The site's active activities, fetched once per (organization, site)
+  /// pair and cached across rebuilds — `getSiteActivities` is a Cloud
+  /// Functions call, not a live Firestore stream, so without this cache a
+  /// fresh call (and its own brief empty-then-populated flash) would fire
+  /// on every rebuild this screen goes through (e.g. every keystroke or
+  /// unrelated `setState`, since this widget is otherwise built entirely
+  /// from nested `StreamBuilder`s). See this screen's own flicker fix —
+  /// caching the future is what lets `_StartMeetingView` and
+  /// `_MeetingWorkspace` settle once instead of re-flashing on every
+  /// rebuild.
+  Future<List<Activity>> _siteActivitiesFor(
+    String organizationId,
+    String siteId,
+  ) {
+    final key = '$organizationId/$siteId';
+    if (_siteActivitiesKey == key && _siteActivitiesFuture != null) {
+      return _siteActivitiesFuture!;
+    }
+    _siteActivitiesKey = key;
+    final future = _activityAdminService.getSiteActivities(
+      organizationId: organizationId,
+      siteId: siteId,
+    );
+    _siteActivitiesFuture = future;
+    return future;
   }
 
   Future<void> _startMeeting({
@@ -362,6 +446,21 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
     }
   }
 
+  Future<void> _loadMembers(String organizationId) async {
+    try {
+      final users = await _approvalService.listUsers(
+        status: AccountStatus.active,
+        organizationId: organizationId,
+      );
+      if (!mounted) return;
+      setState(() => _members = users);
+    } catch (_) {
+      // A failed name lookup degrades to showing uids in the attendance
+      // list rather than blocking the whole workspace — mirrors
+      // AdminDailySafetyMeetingsScreen's own _loadMembers.
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final sessionController = context.watch<SessionController>();
@@ -372,6 +471,61 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
     final siteId = membership?.siteIds.isNotEmpty == true
         ? membership!.siteIds.first
         : null;
+
+    // A Worker reaching here (via DailySafetyMeetingsRouterScreen's
+    // fallthrough — see that screen's doc comment) has no operational
+    // workspace of their own on this screen: they never run or attend the
+    // meeting IN the app, only the physical toolbox talk on site (see this
+    // class's own header doc comment). They should still see the real
+    // thing, though — today's meeting for their site and their own
+    // present/absent status — rather than a static pointer to ask their
+    // foreman, reusing exactly the query [WorkerDashboardScreen]'s "Today's
+    // Meeting" card already uses, so both surfaces agree.
+    if (membership?.role == AppRole.worker && organizationId != null) {
+      final workerSiteIds = membership?.siteIds ?? const [];
+      final workerUid = profile?.uid;
+      if (workerUid == null) {
+        return const Center(
+          child: Padding(
+            padding: EdgeInsets.all(AppSpacing.lg),
+            child: Text(
+              'Your account could not be loaded.',
+              style: AppTextStyles.bodyMedium,
+              textAlign: TextAlign.center,
+            ),
+          ),
+        );
+      }
+      return Padding(
+        padding: const EdgeInsets.all(AppSpacing.md),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const FeatureHeader(
+              title: "Today's Meeting",
+              icon: Icons.groups,
+              color: AppColors.meetings,
+            ),
+            const SizedBox(height: AppSpacing.md),
+            const Text(
+              'Daily Safety Meetings are run by your foreman as an '
+              'in-person briefing — this shows what was recorded for your '
+              'site today.',
+              style: AppTextStyles.bodyMedium,
+            ),
+            const SizedBox(height: AppSpacing.md),
+            WorkerTodaysMeetingCard(
+              meetingRepository: _meetingRepositoryFor(organizationId),
+              attendanceRepositoryFor: (meetingId) =>
+                  _attendanceRepositoryFor(organizationId, meetingId),
+              siteIds: workerSiteIds,
+              workerUid: workerUid,
+            ),
+          ],
+        ),
+      );
+    }
 
     if (!isForeman || organizationId == null || siteId == null) {
       return const Center(
@@ -387,6 +541,11 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
       );
     }
 
+    if (_membersLoadedForOrganizationId != organizationId) {
+      _membersLoadedForOrganizationId = organizationId;
+      unawaited(_loadMembers(organizationId));
+    }
+
     final date = _today();
     final resumeMeetingId = widget.resumeMeetingId;
 
@@ -398,16 +557,17 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
     final uid = profile!.uid;
     final meetingStream = resumeMeetingId != null
         ? _meetingRepositoryFor(organizationId)
-            .watchById(resumeMeetingId)
-            .map((m) => m == null ? const <DailySafetyMeeting>[] : [m])
+              .watchById(resumeMeetingId)
+              .map((m) => m == null ? const <DailySafetyMeeting>[] : [m])
         : _meetingRepositoryFor(organizationId).watchForForemanSiteAndDate(
             foremanId: uid,
             siteId: siteId,
             date: date,
           );
 
-    return StreamBuilder<List<DailySafetyMeeting>>(
-      stream: meetingStream,
+    return LiveStreamBuilder<List<DailySafetyMeeting>>(
+      streamKey: (organizationId, resumeMeetingId, uid, siteId, date),
+      stream: () => meetingStream,
       builder: (context, meetingSnapshot) {
         if (meetingSnapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
@@ -438,10 +598,8 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
             attendanceService: _attendanceService,
             concernService: _concernService,
             correctiveActionService: _correctiveActionService,
-            activityRepository: _activityRepositoryFor(organizationId),
-            meetingPointRepository: _meetingPointRepositoryFor(
-              organizationId,
-            ),
+            siteActivitiesFuture: _siteActivitiesFor,
+            meetingPointRepository: _meetingPointRepositoryFor(organizationId),
             activityAssignmentRepository: _activityAssignmentRepositoryFor(
               organizationId,
             ),
@@ -465,6 +623,10 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
               existing.id,
             ),
             imagePicker: _imagePicker,
+            workerLearningRepository: _workerLearningRepositoryFor(
+              organizationId,
+            ),
+            members: _members,
             isSaving: _isSaving,
             errorMessage: _errorMessage,
             onSave: _save,
@@ -489,9 +651,14 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
         return _StartMeetingView(
           organizationId: organizationId,
           siteId: siteId,
+          currentUid: uid,
           siteRepository: _siteRepositoryFor(organizationId),
-          activityRepository: _activityRepositoryFor(organizationId),
+          siteActivitiesFuture: _siteActivitiesFor,
           meetingPointRepository: _meetingPointRepositoryFor(organizationId),
+          meetingService: _meetingService,
+          workerLearningRepository: _workerLearningRepositoryFor(
+            organizationId,
+          ),
           isStarting: _isStartingMeeting,
           errorMessage: _errorMessage,
           onStart: _startMeeting,
@@ -522,9 +689,12 @@ class _StartMeetingView extends StatefulWidget {
   const _StartMeetingView({
     required this.organizationId,
     required this.siteId,
+    required this.currentUid,
     required this.siteRepository,
-    required this.activityRepository,
+    required this.siteActivitiesFuture,
     required this.meetingPointRepository,
+    required this.meetingService,
+    required this.workerLearningRepository,
     required this.isStarting,
     required this.errorMessage,
     required this.onStart,
@@ -532,9 +702,17 @@ class _StartMeetingView extends StatefulWidget {
 
   final String organizationId;
   final String siteId;
+  final String currentUid;
   final SiteRepository siteRepository;
-  final ActivityRepository activityRepository;
+
+  /// Resolves and caches today's site activities across rebuilds — see
+  /// [_DailySafetyMeetingScreenState._siteActivitiesFor]'s doc comment for
+  /// why this must not be a fresh `Stream.fromFuture` per build.
+  final Future<List<Activity>> Function(String organizationId, String siteId)
+  siteActivitiesFuture;
   final SafetyMeetingPointRepository meetingPointRepository;
+  final DailySafetyMeetingService meetingService;
+  final WorkerLearningRepository workerLearningRepository;
   final bool isStarting;
   final String? errorMessage;
   final Future<void> Function({
@@ -543,7 +721,8 @@ class _StartMeetingView extends StatefulWidget {
     required String siteId,
     required List<Activity> todaysActivities,
     required List<SafetyMeetingPoint> recommendedPoints,
-  }) onStart;
+  })
+  onStart;
 
   @override
   State<_StartMeetingView> createState() => _StartMeetingViewState();
@@ -588,13 +767,13 @@ class _StartMeetingViewState extends State<_StartMeetingView> {
     final organizationId = widget.organizationId;
     final siteId = widget.siteId;
     final siteRepository = widget.siteRepository;
-    final activityRepository = widget.activityRepository;
     final meetingPointRepository = widget.meetingPointRepository;
     final isStarting = widget.isStarting;
     final errorMessage = widget.errorMessage;
     final onStart = widget.onStart;
-    return StreamBuilder<Site?>(
-      stream: siteRepository.watchById(siteId),
+    return LiveStreamBuilder<Site?>(
+      streamKey: (siteRepository, siteId),
+      stream: () => siteRepository.watchById(siteId),
       builder: (context, siteSnapshot) {
         final site = siteSnapshot.data;
         if (siteSnapshot.connectionState == ConnectionState.waiting) {
@@ -613,15 +792,24 @@ class _StartMeetingViewState extends State<_StartMeetingView> {
           );
         }
 
-        return StreamBuilder<List<Activity>>(
-          stream: activityRepository.watchBySite(siteId),
+        return FutureBuilder<List<Activity>>(
+          // A Foreman's firestore.rules grant on `activities` does not
+          // cover LIST queries at all (see that rule's own doc comment)
+          // — this fetches once via the getSiteActivities callable
+          // instead of a live ActivityRepository.watchBySite stream. The
+          // future itself is cached by the parent screen (not recreated
+          // per build) so this settles once instead of re-flashing on
+          // every unrelated rebuild — see [siteActivitiesFuture]'s doc
+          // comment.
+          future: widget.siteActivitiesFuture(organizationId, siteId),
           builder: (context, activitySnapshot) {
             final activities = (activitySnapshot.data ?? const <Activity>[])
                 .where((a) => a.status.id == 'active')
                 .toList();
 
-            return StreamBuilder<List<SafetyMeetingPoint>>(
-              stream: meetingPointRepository.watchActive(),
+            return LiveStreamBuilder<List<SafetyMeetingPoint>>(
+              streamKey: meetingPointRepository,
+              stream: () => meetingPointRepository.watchActive(),
               builder: (context, pointSnapshot) {
                 final allPoints =
                     pointSnapshot.data ?? const <SafetyMeetingPoint>[];
@@ -635,94 +823,141 @@ class _StartMeetingViewState extends State<_StartMeetingView> {
                     .where((p) => _selectedPointIds.contains(p.id))
                     .toList();
 
-                return ListView(
-                  padding: const EdgeInsets.all(AppSpacing.md),
-                  children: [
-                    Text("Today's Meeting", style: AppTextStyles.headlineMedium),
-                    const SizedBox(height: AppSpacing.xs),
-                    Text(site.name, style: AppTextStyles.bodyMedium),
-                    const SizedBox(height: AppSpacing.md),
-                    if (errorMessage != null) ...[
-                      AuthErrorBanner(message: errorMessage),
-                      const SizedBox(height: AppSpacing.md),
-                    ],
-                    Text(
-                      "Today's Activities (${activities.length})",
-                      style: AppTextStyles.titleLarge,
-                    ),
-                    const SizedBox(height: AppSpacing.sm),
-                    if (activities.isEmpty)
-                      const Text(
-                        'No active activities are recorded at this site.',
-                        style: AppTextStyles.bodyMedium,
-                      ),
-                    for (final activity in activities)
-                      _ListRow(icon: Icons.engineering_outlined, label: activity.name),
-                    const SizedBox(height: AppSpacing.lg),
-                    Text(
-                      'Safety Meeting Points '
-                      '(${_selectedPointIds.length}/${candidates.length} '
-                      'selected)',
-                      style: AppTextStyles.titleLarge,
-                    ),
-                    const SizedBox(height: AppSpacing.xs),
-                    const Text(
-                      "Check the points you'll actually cover this "
-                      "morning — the library covers every activity this "
-                      "site runs, not just today's.",
-                      style: AppTextStyles.bodyMedium,
-                    ),
-                    const SizedBox(height: AppSpacing.sm),
-                    if (candidates.isEmpty)
-                      const Text(
-                        'No meeting points apply to these activities yet.',
-                        style: AppTextStyles.bodyMedium,
-                      ),
-                    for (final point in candidates)
-                      CheckboxListTile(
-                        value: _selectedPointIds.contains(point.id),
-                        onChanged: (checked) => setState(() {
-                          if (checked ?? false) {
-                            _selectedPointIds.add(point.id);
-                          } else {
-                            _selectedPointIds.remove(point.id);
-                          }
-                        }),
-                        title: Text(point.title),
-                        subtitle: Text(point.category),
-                        controlAffinity: ListTileControlAffinity.leading,
-                        contentPadding: EdgeInsets.zero,
-                      ),
-                    const SizedBox(height: AppSpacing.lg),
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(
-                        minHeight: AppSpacing.minTouchTarget,
-                      ),
-                      child: ElevatedButton.icon(
-                        onPressed: isStarting || activities.isEmpty
-                            ? null
-                            : () => onStart(
-                                  organizationId: organizationId,
-                                  projectId: site.projectId,
-                                  siteId: siteId,
-                                  todaysActivities: activities,
-                                  recommendedPoints: selectedPoints,
-                                ),
-                        icon: const Icon(Icons.play_arrow_outlined),
-                        label: Text(
-                          isStarting ? 'Starting…' : "Start Today's Meeting",
+                return _LearningGateBanner(
+                  meetingService: widget.meetingService,
+                  workerLearningRepository: widget.workerLearningRepository,
+                  organizationId: organizationId,
+                  foremanUid: widget.currentUid,
+                  meetingId: null,
+                  siteId: siteId,
+                  activityIds: activities.map((a) => a.id).toList(),
+                  builder: (context, outstandingTitles) {
+                    final isForemanReady =
+                        outstandingTitles != null && outstandingTitles.isEmpty;
+                    return ListView(
+                      // Remembers the scroll position, so ticking a point
+                      // never sends the foreman back to the top.
+                      key: const PageStorageKey('meeting-start'),
+                      padding: const EdgeInsets.all(AppSpacing.md),
+                      children: [
+                        FeatureHeader(
+                          eyebrow: 'Not started yet',
+                          title: "Today's Meeting",
+                          subtitle: site.name,
+                          icon: Icons.groups,
+                          color: AppColors.meetings,
+                          chips: [
+                            FeatureChip(
+                              icon: Icons.handyman,
+                              label:
+                                  '${activities.length} '
+                                  '${activities.length == 1 ? 'activity' : 'activities'}',
+                            ),
+                            FeatureChip(
+                              icon: Icons.checklist,
+                              label:
+                                  '${_selectedPointIds.length} meeting '
+                                  '${_selectedPointIds.length == 1 ? 'point' : 'points'}',
+                            ),
+                          ],
                         ),
-                      ),
-                    ),
-                    if (activities.isEmpty) ...[
-                      const SizedBox(height: AppSpacing.sm),
-                      const Text(
-                        'At least one active activity is required to start '
-                        'a meeting.',
-                        style: AppTextStyles.bodyMedium,
-                      ),
-                    ],
-                  ],
+                        const SizedBox(height: AppSpacing.md),
+                        if (errorMessage != null) ...[
+                          AuthErrorBanner(message: errorMessage),
+                          const SizedBox(height: AppSpacing.md),
+                        ],
+                        _ForemanReadinessBanner(
+                          outstandingTitles: outstandingTitles,
+                        ),
+                        const SizedBox(height: AppSpacing.md),
+                        FeatureSectionTitle(
+                          title: "Today's Activities (${activities.length})",
+                          icon: Icons.handyman,
+                          color: AppColors.projects,
+                        ),
+                        const SizedBox(height: AppSpacing.sm),
+                        if (activities.isEmpty)
+                          const Text(
+                            'No active activities are recorded at this site.',
+                            style: AppTextStyles.bodyMedium,
+                          ),
+                        for (final activity in activities)
+                          _ActivityChipRow(name: activity.name),
+                        const SizedBox(height: AppSpacing.lg),
+                        FeatureSectionTitle(
+                          title:
+                              'Safety Meeting Points '
+                              '(${_selectedPointIds.length}/${candidates.length} '
+                              'selected)',
+                          icon: Icons.checklist,
+                          color: AppColors.meetings,
+                        ),
+                        const SizedBox(height: AppSpacing.xs),
+                        const Text(
+                          "Check the points you'll actually cover this "
+                          "morning — the library covers every activity this "
+                          "site runs, not just today's.",
+                          style: AppTextStyles.bodyMedium,
+                        ),
+                        const SizedBox(height: AppSpacing.sm),
+                        if (candidates.isEmpty)
+                          const Text(
+                            'No meeting points apply to these activities yet.',
+                            style: AppTextStyles.bodyMedium,
+                          ),
+                        for (final point in candidates)
+                          _ColorCheckTile(
+                            checked: _selectedPointIds.contains(point.id),
+                            emoji: hazardEmojiFor(
+                              '${point.title} ${point.category}',
+                            ),
+                            title: point.title,
+                            category: point.category,
+                            onChanged: (checked) => setState(() {
+                              if (checked) {
+                                _selectedPointIds.add(point.id);
+                              } else {
+                                _selectedPointIds.remove(point.id);
+                              }
+                            }),
+                          ),
+                        const SizedBox(height: AppSpacing.lg),
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(
+                            minHeight: AppSpacing.minTouchTarget,
+                          ),
+                          child: ElevatedButton.icon(
+                            onPressed:
+                                isStarting ||
+                                    activities.isEmpty ||
+                                    !isForemanReady
+                                ? null
+                                : () => onStart(
+                                    organizationId: organizationId,
+                                    projectId: site.projectId,
+                                    siteId: siteId,
+                                    todaysActivities: activities,
+                                    recommendedPoints: selectedPoints,
+                                  ),
+                            icon: const Icon(Icons.play_arrow_outlined),
+                            label: Text(
+                              isStarting
+                                  ? 'Starting…'
+                                  : "Start Today's Meeting",
+                            ),
+                          ),
+                        ),
+                        if (activities.isEmpty) ...[
+                          const SizedBox(height: AppSpacing.sm),
+                          const Text(
+                            'At least one active activity is required to start '
+                            'a meeting.',
+                            style: AppTextStyles.bodyMedium,
+                          ),
+                        ],
+                      ],
+                    );
+                  },
                 );
               },
             );
@@ -745,7 +980,7 @@ class _MeetingWorkspace extends StatefulWidget {
     required this.attendanceService,
     required this.concernService,
     required this.correctiveActionService,
-    required this.activityRepository,
+    required this.siteActivitiesFuture,
     required this.meetingPointRepository,
     required this.activityAssignmentRepository,
     required this.attendanceRepository,
@@ -754,6 +989,8 @@ class _MeetingWorkspace extends StatefulWidget {
     required this.pointNoteRepository,
     required this.evidenceRepository,
     required this.imagePicker,
+    required this.workerLearningRepository,
+    required this.members,
     required this.isSaving,
     required this.errorMessage,
     required this.onSave,
@@ -767,7 +1004,10 @@ class _MeetingWorkspace extends StatefulWidget {
   final MeetingAttendanceService attendanceService;
   final MeetingConcernService concernService;
   final CorrectiveActionService correctiveActionService;
-  final ActivityRepository activityRepository;
+
+  /// See [_StartMeetingView.siteActivitiesFuture]'s doc comment.
+  final Future<List<Activity>> Function(String organizationId, String siteId)
+  siteActivitiesFuture;
   final SafetyMeetingPointRepository meetingPointRepository;
   final ActivityAssignmentRepository activityAssignmentRepository;
   final MeetingAttendanceRepository attendanceRepository;
@@ -776,6 +1016,11 @@ class _MeetingWorkspace extends StatefulWidget {
   final MeetingPointNoteRepository pointNoteRepository;
   final MeetingEvidenceRepository evidenceRepository;
   final ImagePicker imagePicker;
+  final WorkerLearningRepository workerLearningRepository;
+
+  /// The organization's active members — resolves an attendee's uid to a
+  /// display name. See [_DailySafetyMeetingScreenState._loadMembers].
+  final List<OrganizationUser> members;
   final bool isSaving;
   final String? errorMessage;
   final Future<void> Function(Future<void> Function()) onSave;
@@ -858,7 +1103,10 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
     await _addPoint(selected);
   }
 
-  Future<void> _addConcern(String description, MeetingConcernCategory category) {
+  Future<void> _addConcern(
+    String description,
+    MeetingConcernCategory category,
+  ) {
     return widget.onSave(
       () => widget.concernService.addMeetingConcern(
         organizationId: widget.organizationId,
@@ -892,6 +1140,8 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
     required String assignedTo,
     required DateTime dueDate,
     required bool evidenceRequired,
+    List<CorrectiveActionEvidenceKind> evidenceKinds = const [],
+    String? evidenceInstructions,
   }) {
     return widget.onSave(
       () => widget.correctiveActionService.createCorrectiveAction(
@@ -903,6 +1153,8 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
         assignedTo: assignedTo,
         dueDate: dueDate,
         evidenceRequired: evidenceRequired,
+        evidenceKinds: evidenceKinds,
+        evidenceInstructions: evidenceInstructions,
       ),
     );
   }
@@ -917,23 +1169,36 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
     );
   }
 
-  Future<void> _recordAttendance(String workerId, MeetingAttendanceStatus status) {
+  Future<void> _recordAttendance(
+    String workerId,
+    MeetingAttendanceStatus status, {
+    bool briefedInPerson = false,
+  }) {
     return widget.onSave(
       () => widget.attendanceService.recordMeetingAttendance(
         organizationId: widget.organizationId,
         meetingId: widget.meeting.id,
         workerId: workerId,
         status: status.id,
+        briefedInPerson: briefedInPerson,
       ),
     );
   }
 
-  Future<void> _complete() => widget.onSave(
-    () => widget.meetingService.completeDailySafetyMeeting(
-      widget.organizationId,
-      widget.meeting.id,
-    ),
-  );
+  /// Asks for the crew's GO / GO corrected / STOP result first; cancelling
+  /// that dialog leaves the meeting in progress.
+  Future<void> _complete() async {
+    final result = await showCrewOutcomeDialog(context);
+    if (result == null || !mounted) return;
+    await widget.onSave(
+      () => widget.meetingService.completeDailySafetyMeeting(
+        widget.organizationId,
+        widget.meeting.id,
+        crewOutcome: result.outcome,
+        crewOutcomeNote: result.note,
+      ),
+    );
+  }
 
   bool _isCapturingEvidence = false;
   String? _evidenceError;
@@ -952,11 +1217,7 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
       _evidenceError = null;
     });
     try {
-      final photo = await widget.imagePicker.pickImage(
-        source: ImageSource.camera,
-        maxWidth: 1600,
-        imageQuality: 85,
-      );
+      final photo = await takePhoto(context, picker: widget.imagePicker);
       if (photo == null) return;
       final bytes = await photo.readAsBytes();
       await widget.meetingService.uploadMeetingEvidence(
@@ -973,7 +1234,8 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
     } on Object catch (_) {
       if (!mounted) return;
       setState(
-        () => _evidenceError = 'Could not capture evidence. Please try '
+        () => _evidenceError =
+            'Could not capture evidence. Please try '
             'again.',
       );
     } finally {
@@ -1054,65 +1316,89 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
     final canEdit = !meeting.isCompleted;
     const canAddConcernOrNote = true;
 
-    return StreamBuilder<List<Activity>>(
-      stream: widget.activityRepository.watchBySite(widget.siteId),
+    return FutureBuilder<List<Activity>>(
+      // See _StartMeetingView's own matching comment: a Foreman's
+      // firestore.rules grant on `activities` does not cover LIST
+      // queries, so this fetches once via getSiteActivities instead — and
+      // the future is cached by the parent screen so it settles once
+      // instead of re-flashing on every rebuild.
+      future: widget.siteActivitiesFuture(widget.organizationId, widget.siteId),
       builder: (context, activitySnapshot) {
         final siteActivities = (activitySnapshot.data ?? const <Activity>[])
             .where((a) => a.status.id == 'active')
             .toList();
 
-        return StreamBuilder<List<SafetyMeetingPoint>>(
-          stream: widget.meetingPointRepository.watchActive(),
+        return LiveStreamBuilder<List<SafetyMeetingPoint>>(
+          streamKey: widget.meetingPointRepository,
+          stream: () => widget.meetingPointRepository.watchActive(),
           builder: (context, pointSnapshot) {
             final allPoints =
                 pointSnapshot.data ?? const <SafetyMeetingPoint>[];
 
             return ListView(
+              // Remembers the scroll position across rebuilds — see
+              // 'meeting-start' above.
+              key: const PageStorageKey('meeting-workspace'),
               padding: const EdgeInsets.all(AppSpacing.md),
               children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        meeting.isCompleted
-                            ? "Today's Meeting — Completed"
-                            : "Today's Meeting — In Progress",
-                        style: AppTextStyles.headlineMedium,
-                      ),
+                FeatureHeader(
+                  title: meeting.isCompleted
+                      ? "Today's Meeting — Completed"
+                      : "Today's Meeting — In Progress",
+                  icon: meeting.isCompleted ? Icons.task_alt : Icons.groups,
+                  color: meeting.isCompleted
+                      ? AppColors.success
+                      : AppColors.meetings,
+                  chips: [
+                    FeatureChip(icon: Icons.event, label: meeting.date),
+                    FeatureChip(
+                      icon: Icons.handyman,
+                      label:
+                          '${meeting.activityIds.length} '
+                          '${meeting.activityIds.length == 1 ? 'activity' : 'activities'}',
+                    ),
+                    FeatureChip(
+                      icon: Icons.checklist,
+                      label:
+                          '${meeting.meetingPointIds.length} meeting '
+                          '${meeting.meetingPointIds.length == 1 ? 'point' : 'points'}',
                     ),
                   ],
+                  trailing: meeting.crewOutcome == null
+                      ? null
+                      : CrewOutcomeBadge(outcome: meeting.crewOutcome!),
                 ),
-                const SizedBox(height: AppSpacing.md),
+                const SizedBox(height: AppSpacing.lg),
                 if (widget.errorMessage != null) ...[
                   AuthErrorBanner(message: widget.errorMessage!),
                   const SizedBox(height: AppSpacing.md),
                 ],
-                Text('Activities Discussed', style: AppTextStyles.titleLarge),
+                const FeatureSectionTitle(
+                  title: 'Activities Discussed',
+                  icon: Icons.handyman,
+                  color: AppColors.projects,
+                ),
                 const SizedBox(height: AppSpacing.sm),
                 for (final activity in siteActivities)
-                  CheckboxListTile(
-                    value: meeting.activityIds.contains(activity.id),
+                  _ColorCheckTile(
+                    checked: meeting.activityIds.contains(activity.id),
+                    emoji: hazardEmojiFor(activity.name),
+                    title: activity.name,
                     onChanged: canEdit && !widget.isSaving
                         ? (_) => _toggleActivity(activity)
                         : null,
-                    title: Text(activity.name),
-                    controlAffinity: ListTileControlAffinity.leading,
-                    contentPadding: EdgeInsets.zero,
                   ),
                 const SizedBox(height: AppSpacing.md),
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        'Safety Meeting Points',
-                        style: AppTextStyles.titleLarge,
-                      ),
-                    ),
-                    if (canEdit)
-                      TextButton.icon(
-                        onPressed: widget.isSaving
-                            ? null
-                            : () => _openAddPointPicker(
+                FeatureSectionTitle(
+                  title: 'Safety Meeting Points',
+                  icon: Icons.checklist,
+                  color: AppColors.meetings,
+                  trailing: !canEdit
+                      ? null
+                      : TextButton.icon(
+                          onPressed: widget.isSaving
+                              ? null
+                              : () => _openAddPointPicker(
                                   allPoints
                                       .where(
                                         (p) => !meeting.meetingPointIds
@@ -1120,10 +1406,9 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
                                       )
                                       .toList(),
                                 ),
-                        icon: const Icon(Icons.add_outlined),
-                        label: const Text('Add Safety Point'),
-                      ),
-                  ],
+                          icon: const Icon(Icons.add_outlined),
+                          label: const Text('Add Safety Point'),
+                        ),
                 ),
                 const SizedBox(height: AppSpacing.sm),
                 // "Recommended" = every point currently on this meeting,
@@ -1137,8 +1422,9 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
                 // was actually explained/covered about it, kept deliberately
                 // separate from Concerns (an issue record, not discussion
                 // context) — see MeetingPointNote's doc comment.
-                StreamBuilder<List<MeetingPointNote>>(
-                  stream: widget.pointNoteRepository.watchAll(),
+                LiveStreamBuilder<List<MeetingPointNote>>(
+                  streamKey: widget.pointNoteRepository,
+                  stream: () => widget.pointNoteRepository.watchAll(),
                   builder: (context, noteSnapshot) {
                     final notesByPointId = {
                       for (final n
@@ -1180,22 +1466,34 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
                   },
                 ),
                 const SizedBox(height: AppSpacing.md),
-                Text('Attendance', style: AppTextStyles.titleLarge),
+                const FeatureSectionTitle(
+                  title: 'Attendance',
+                  icon: Icons.how_to_reg,
+                  color: AppColors.people,
+                ),
                 const SizedBox(height: AppSpacing.sm),
                 _AttendanceSection(
                   meeting: meeting,
+                  organizationId: widget.organizationId,
                   currentUid: widget.currentUid,
                   canEdit: canEdit,
                   isSaving: widget.isSaving,
                   activityAssignmentRepository:
                       widget.activityAssignmentRepository,
                   attendanceRepository: widget.attendanceRepository,
+                  attendanceService: widget.attendanceService,
+                  members: widget.members,
                   onRecordAttendance: _recordAttendance,
                 ),
                 const SizedBox(height: AppSpacing.md),
-                Text('Concerns', style: AppTextStyles.titleLarge),
+                const FeatureSectionTitle(
+                  title: 'Concerns',
+                  icon: Icons.report_problem,
+                  color: AppColors.hazards,
+                ),
                 const SizedBox(height: AppSpacing.sm),
                 _ConcernsSection(
+                  members: widget.members,
                   concernRepository: widget.concernRepository,
                   correctiveActionRepository: widget.correctiveActionRepository,
                   activityAssignmentRepository:
@@ -1211,7 +1509,11 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
                   onCreateCorrectiveAction: _createCorrectiveAction,
                 ),
                 const SizedBox(height: AppSpacing.md),
-                Text('Evidence', style: AppTextStyles.titleLarge),
+                const FeatureSectionTitle(
+                  title: 'Evidence',
+                  icon: Icons.photo_camera,
+                  color: AppColors.analytics,
+                ),
                 const SizedBox(height: AppSpacing.xs),
                 const Text(
                   'Supporting photos — a handwritten safety-book page, a '
@@ -1230,19 +1532,47 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
                 ),
                 const SizedBox(height: AppSpacing.lg),
                 if (canEdit)
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(
-                      minHeight: AppSpacing.minTouchTarget,
-                    ),
-                    child: ElevatedButton.icon(
-                      onPressed: widget.isSaving ||
-                              meeting.activityIds.isEmpty ||
-                              meeting.meetingPointIds.isEmpty
-                          ? null
-                          : _complete,
-                      icon: const Icon(Icons.check_circle_outline),
-                      label: const Text('Complete Meeting'),
-                    ),
+                  _LearningGateBanner(
+                    meetingService: widget.meetingService,
+                    workerLearningRepository: widget.workerLearningRepository,
+                    organizationId: widget.organizationId,
+                    foremanUid: widget.currentUid,
+                    meetingId: meeting.id,
+                    siteId: widget.siteId,
+                    activityIds: meeting.activityIds,
+                    builder: (context, outstandingTitles) {
+                      final hasOutstandingLearning =
+                          outstandingTitles == null ||
+                          outstandingTitles.isNotEmpty;
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          if (outstandingTitles != null &&
+                              outstandingTitles.isNotEmpty) ...[
+                            _OutstandingLearningBanner(
+                              titles: outstandingTitles,
+                            ),
+                            const SizedBox(height: AppSpacing.md),
+                          ],
+                          ConstrainedBox(
+                            constraints: const BoxConstraints(
+                              minHeight: AppSpacing.minTouchTarget,
+                            ),
+                            child: ElevatedButton.icon(
+                              onPressed:
+                                  widget.isSaving ||
+                                      meeting.activityIds.isEmpty ||
+                                      meeting.meetingPointIds.isEmpty ||
+                                      hasOutstandingLearning
+                                  ? null
+                                  : _complete,
+                              icon: const Icon(Icons.check_circle_outline),
+                              label: const Text('Complete Meeting'),
+                            ),
+                          ),
+                        ],
+                      );
+                    },
                   ),
                 if (canEdit &&
                     (meeting.activityIds.isEmpty ||
@@ -1259,6 +1589,226 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
           },
         );
       },
+    );
+  }
+}
+
+/// The Foreman's own outstanding "Needed today" lessons for this meeting —
+/// fetched from `getMyMeetingLearningGate`, i.e. exactly what
+/// `createDailySafetyMeeting`/`completeDailySafetyMeeting` will check
+/// server-side, so the Foreman finds out before tapping Start/Complete
+/// rather than only from the refusal after. Lessons drop off live (via
+/// [WorkerLearningRepository.watchMine]) as the Foreman completes them.
+///
+/// Calls [builder] with the outstanding titles, or `null` while still
+/// loading — the caller never enables Start/Complete on `null`. If the
+/// lookup itself fails (e.g. no signal) the banner shows nothing and lets
+/// the Foreman try: the server still enforces the rule on Start/Complete.
+class _LearningGateBanner extends StatefulWidget {
+  const _LearningGateBanner({
+    required this.meetingService,
+    required this.workerLearningRepository,
+    required this.organizationId,
+    required this.foremanUid,
+    required this.meetingId,
+    required this.siteId,
+    required this.activityIds,
+    required this.builder,
+  });
+
+  final DailySafetyMeetingService meetingService;
+  final WorkerLearningRepository workerLearningRepository;
+  final String organizationId;
+  final String foremanUid;
+
+  /// Null before the meeting has been started.
+  final String? meetingId;
+  final String siteId;
+  final List<String> activityIds;
+  final Widget Function(BuildContext context, List<String>? outstandingTitles)
+  builder;
+
+  @override
+  State<_LearningGateBanner> createState() => _LearningGateBannerState();
+}
+
+class _LearningGateBannerState extends State<_LearningGateBanner> {
+  late Future<List<({String learningId, String title})>> _outstanding = _load();
+  late final Stream<List<WorkerLearningRecord>> _records = widget
+      .workerLearningRepository
+      .watchMine(widget.foremanUid);
+
+  Future<List<({String learningId, String title})>> _load() async {
+    try {
+      return await widget.meetingService.getMyMeetingLearningGate(
+        organizationId: widget.organizationId,
+        siteId: widget.siteId,
+        activityIds: widget.activityIds,
+        meetingId: widget.meetingId,
+      );
+    } on AppException {
+      return const [];
+    }
+  }
+
+  @override
+  void didUpdateWidget(_LearningGateBanner oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final changed =
+        oldWidget.siteId != widget.siteId ||
+        oldWidget.meetingId != widget.meetingId ||
+        oldWidget.activityIds.join(',') != widget.activityIds.join(',');
+    if (changed) _outstanding = _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<({String learningId, String title})>>(
+      future: _outstanding,
+      builder: (context, outstandingSnapshot) {
+        final outstanding = outstandingSnapshot.data;
+        if (outstanding == null) return widget.builder(context, null);
+        if (outstanding.isEmpty) return widget.builder(context, const []);
+
+        return StreamBuilder<List<WorkerLearningRecord>>(
+          stream: _records,
+          builder: (context, recordSnapshot) {
+            final records = recordSnapshot.data;
+            if (records == null) return widget.builder(context, null);
+            final completedIds = {
+              for (final record in records)
+                if (record.status == WorkerLearningStatus.completed)
+                  record.learningId,
+            };
+            return widget.builder(context, [
+              for (final lesson in outstanding)
+                if (!completedIds.contains(lesson.learningId)) lesson.title,
+            ]);
+          },
+        );
+      },
+    );
+  }
+}
+
+/// The Foreman's own pre-meeting readiness summary, shown in
+/// [_StartMeetingView] before "Start Today's Meeting" is even tappable —
+/// reuses [_LearningGateBanner]'s same server-authorized, ATTENDANCE-GATING
+/// resolution ([SafetyRequirementRepository
+/// .watchAttendanceGatingLearningForScope] + [WorkerLearningRepository
+/// .watchMine], the exact scope `createDailySafetyMeeting`'s own
+/// `requireForemanLearningComplete` gate checks) so the foreman finds out
+/// BEFORE tapping Start, not only from the refusal after. Purely
+/// informational: `createDailySafetyMeeting` remains the sole authority,
+/// re-deriving and enforcing this same check server-side regardless of what
+/// this banner shows.
+///
+/// [outstandingTitles] null means "not yet resolved" — renders nothing
+/// (never claims Ready before the read has actually completed), matching
+/// [_LearningGateBanner]'s own "never fail-open" convention.
+class _ForemanReadinessBanner extends StatelessWidget {
+  const _ForemanReadinessBanner({required this.outstandingTitles});
+
+  final List<String>? outstandingTitles;
+
+  @override
+  Widget build(BuildContext context) {
+    final titles = outstandingTitles;
+    if (titles == null) return const SizedBox.shrink();
+    if (titles.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(AppSpacing.md),
+        decoration: BoxDecoration(
+          color: AppColors.success.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(AppSpacing.sm),
+          border: Border.all(color: AppColors.success.withValues(alpha: 0.4)),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.check_circle_outline, color: AppColors.success),
+            const SizedBox(width: AppSpacing.sm),
+            Text(
+              'Your safety learning — Ready',
+              style: AppTextStyles.bodyMedium.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+      child: _OutstandingLearningBanner(
+        titles: titles,
+        message:
+            'Complete the following before you can start today\'s '
+            'meeting',
+      ),
+    );
+  }
+}
+
+/// The warning shown when [_LearningGateBanner] finds the acting foreman
+/// has not completed all learning this meeting requires of them — lists
+/// what's outstanding and links to [MySafetyLearningScreen] so the foreman
+/// can act on it without leaving to find that screen on their own. Shared
+/// by [_ForemanReadinessBanner] (pre-creation) and the in-workspace
+/// pre-completion check, via [message].
+class _OutstandingLearningBanner extends StatelessWidget {
+  const _OutstandingLearningBanner({
+    required this.titles,
+    this.message =
+        'Complete your required safety learning before you can '
+        'complete this meeting',
+  });
+
+  final List<String> titles;
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: BoxDecoration(
+        color: AppColors.warning.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(AppSpacing.sm),
+        border: Border.all(color: AppColors.warning.withValues(alpha: 0.4)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.school_outlined, color: AppColors.warning),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Text(
+                  message,
+                  style: AppTextStyles.bodyMedium.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          for (final title in titles)
+            Padding(
+              padding: const EdgeInsets.only(left: 32, top: 2),
+              child: Text('• $title', style: AppTextStyles.bodyMedium),
+            ),
+          const SizedBox(height: AppSpacing.sm),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () => context.go(AppRoutes.safetyLearning),
+              icon: const Icon(Icons.arrow_forward_outlined, size: 18),
+              label: const Text('Go to My Safety Learning'),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -1349,29 +1899,47 @@ class _MeetingPointTileState extends State<_MeetingPointTile> {
 
     return Card(
       margin: const EdgeInsets.only(bottom: AppSpacing.sm),
+      color: Color.alphaBlend(
+        AppColors.meetings.withValues(alpha: 0.07),
+        Theme.of(context).colorScheme.surface,
+      ),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: AppColors.meetings.withValues(alpha: 0.45)),
+      ),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            CheckboxListTile(
-              value: true,
-              onChanged: widget.canEdit && !widget.isSaving
-                  ? (_) => widget.onRemovePoint()
-                  : null,
-              title: Text(widget.point.title),
-              subtitle: Text(widget.point.category),
-              secondary: widget.canEdit
-                  ? IconButton(
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
+              child: Row(
+                children: [
+                  Expanded(
+                    // Ticked = on today's meeting; tapping it unticks
+                    // (removes) the point, exactly like the ✕ beside it.
+                    child: ChoiceTile(
+                      multi: true,
+                      selected: true,
+                      title: widget.point.title,
+                      subtitle: widget.point.category,
+                      badge: hazardEmojiFor(
+                        '${widget.point.title} ${widget.point.category}',
+                      ),
+                      color: AppColors.forLabel(widget.point.category),
+                      onTap: widget.canEdit && !widget.isSaving
+                          ? widget.onRemovePoint
+                          : null,
+                    ),
+                  ),
+                  if (widget.canEdit)
+                    IconButton(
                       tooltip: 'Remove',
-                      onPressed:
-                          widget.isSaving ? null : widget.onRemovePoint,
+                      onPressed: widget.isSaving ? null : widget.onRemovePoint,
                       icon: const Icon(Icons.close),
-                    )
-                  : null,
-              controlAffinity: ListTileControlAffinity.leading,
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: AppSpacing.md,
+                    ),
+                ],
               ),
             ),
             if (_isEditingNote)
@@ -1389,7 +1957,8 @@ class _MeetingPointTileState extends State<_MeetingPointTile> {
                       controller: _noteController,
                       decoration: const InputDecoration(
                         labelText: 'What was discussed',
-                        hintText: 'e.g. Reminded workers to maintain three '
+                        hintText:
+                            'e.g. Reminded workers to maintain three '
                             'points of contact; team confirmed '
                             'understanding.',
                       ),
@@ -1407,9 +1976,9 @@ class _MeetingPointTileState extends State<_MeetingPointTile> {
                           onPressed: widget.isSaving
                               ? null
                               : () => setState(() {
-                                    _noteController.text = widget.note ?? '';
-                                    _isEditingNote = false;
-                                  }),
+                                  _noteController.text = widget.note ?? '';
+                                  _isEditingNote = false;
+                                }),
                           child: const Text('Cancel'),
                         ),
                         const SizedBox(width: AppSpacing.xs),
@@ -1456,14 +2025,14 @@ class _MeetingPointTileState extends State<_MeetingPointTile> {
                         ),
                       )
                     : (widget.canEditNote
-                        ? TextButton.icon(
-                            onPressed: widget.isSaving
-                                ? null
-                                : () => setState(() => _isEditingNote = true),
-                            icon: const Icon(Icons.notes_outlined, size: 16),
-                            label: const Text('Add note'),
-                          )
-                        : const SizedBox.shrink()),
+                          ? TextButton.icon(
+                              onPressed: widget.isSaving
+                                  ? null
+                                  : () => setState(() => _isEditingNote = true),
+                              icon: const Icon(Icons.notes_outlined, size: 16),
+                              label: const Text('Add note'),
+                            )
+                          : const SizedBox.shrink()),
               ),
           ],
         ),
@@ -1508,8 +2077,9 @@ class _EvidenceSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<List<MeetingEvidence>>(
-      stream: evidenceRepository.watchAll(),
+    return LiveStreamBuilder<List<MeetingEvidence>>(
+      streamKey: evidenceRepository,
+      stream: () => evidenceRepository.watchAll(),
       builder: (context, snapshot) {
         final items = snapshot.data ?? const <MeetingEvidence>[];
 
@@ -1544,8 +2114,7 @@ class _EvidenceSection extends StatelessWidget {
                       minHeight: AppSpacing.minTouchTarget,
                     ),
                     child: OutlinedButton.icon(
-                      onPressed:
-                          isCapturing ? null : () => onCapture(type),
+                      onPressed: isCapturing ? null : () => onCapture(type),
                       icon: const Icon(Icons.camera_alt_outlined, size: 18),
                       label: Text(type.label),
                     ),
@@ -1586,10 +2155,8 @@ class _EvidenceCard extends StatelessWidget {
                   width: 56,
                   height: 56,
                   fit: BoxFit.cover,
-                  errorBuilder: (context, error, stackTrace) => const Icon(
-                    Icons.broken_image_outlined,
-                    size: 56,
-                  ),
+                  errorBuilder: (context, error, stackTrace) =>
+                      const Icon(Icons.broken_image_outlined, size: 56),
                 ),
               )
             else
@@ -1626,22 +2193,90 @@ class _EvidenceCard extends StatelessWidget {
   }
 }
 
-class _ListRow extends StatelessWidget {
-  const _ListRow({required this.icon, required this.label});
+/// One of today's activities on the start view: a colored card with a
+/// hazard picture matched from its name.
+class _ActivityChipRow extends StatelessWidget {
+  const _ActivityChipRow({required this.name});
 
-  final IconData icon;
-  final String label;
+  final String name;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
+    return Container(
+      margin: const EdgeInsets.only(bottom: AppSpacing.sm),
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.md,
+        vertical: AppSpacing.sm + 2,
+      ),
+      decoration: BoxDecoration(
+        color: AppColors.projects.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.projects.withValues(alpha: 0.4)),
+      ),
       child: Row(
         children: [
-          Icon(icon, size: 16, color: AppColors.textSecondary),
-          const SizedBox(width: AppSpacing.sm),
-          Expanded(child: Text(label, style: AppTextStyles.bodyMedium)),
+          Container(
+            width: 40,
+            height: 40,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: AppColors.projects.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              hazardEmojiFor(name),
+              style: const TextStyle(fontSize: 22),
+            ),
+          ),
+          const SizedBox(width: AppSpacing.md),
+          Expanded(
+            child: Text(
+              name,
+              style: AppTextStyles.bodyLarge.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          const Icon(Icons.engineering, color: AppColors.projects),
         ],
+      ),
+    );
+  }
+}
+
+/// A tick-box row: the app's shared [ChoiceTile] with a hazard picture in
+/// its badge, a bold title and the optional category underneath. Each row
+/// gets its own colour; ticked rows turn solid. Tap again to untick.
+class _ColorCheckTile extends StatelessWidget {
+  const _ColorCheckTile({
+    required this.checked,
+    required this.emoji,
+    required this.title,
+    required this.onChanged,
+    this.category,
+  });
+
+  final bool checked;
+  final String emoji;
+  final String title;
+  final String? category;
+  final ValueChanged<bool>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    // Each row its own colour (by category, or by name when there is
+    // none), so a long list of points or activities is easy to scan.
+    final rowColor = AppColors.forLabel(category ?? title);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+      child: ChoiceTile(
+        multi: true,
+        title: title,
+        subtitle: category,
+        badge: emoji,
+        color: rowColor,
+        selected: checked,
+        onTap: onChanged == null ? null : () => onChanged!(!checked),
       ),
     );
   }
@@ -1667,8 +2302,7 @@ class _MeetingPointPickerDialog extends StatefulWidget {
       _MeetingPointPickerDialogState();
 }
 
-class _MeetingPointPickerDialogState
-    extends State<_MeetingPointPickerDialog> {
+class _MeetingPointPickerDialogState extends State<_MeetingPointPickerDialog> {
   String _search = '';
 
   @override
@@ -1677,8 +2311,8 @@ class _MeetingPointPickerDialogState
     final filtered = query.isEmpty
         ? widget.candidates
         : widget.candidates
-            .where((p) => p.title.toLowerCase().contains(query))
-            .toList(growable: false);
+              .where((p) => p.title.toLowerCase().contains(query))
+              .toList(growable: false);
 
     return AlertDialog(
       title: const Text('Add Safety Point'),
@@ -1719,10 +2353,18 @@ class _MeetingPointPickerDialogState
                   itemCount: filtered.length,
                   itemBuilder: (context, index) {
                     final point = filtered[index];
-                    return ListTile(
-                      title: Text(point.title),
-                      subtitle: Text(point.category),
-                      onTap: () => Navigator.of(context).pop(point),
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+                      child: ChoiceTile(
+                        title: point.title,
+                        subtitle: point.category,
+                        badge: hazardEmojiFor(
+                          '${point.title} ${point.category}',
+                        ),
+                        color: AppColors.forLabel(point.category),
+                        selected: false,
+                        onTap: () => Navigator.of(context).pop(point),
+                      ),
                     );
                   },
                 ),
@@ -1761,21 +2403,37 @@ class _MeetingPointPickerDialogState
 class _AttendanceSection extends StatefulWidget {
   const _AttendanceSection({
     required this.meeting,
+    required this.organizationId,
     required this.currentUid,
     required this.canEdit,
     required this.isSaving,
     required this.activityAssignmentRepository,
     required this.attendanceRepository,
+    required this.attendanceService,
+    required this.members,
     required this.onRecordAttendance,
   });
 
   final DailySafetyMeeting meeting;
+  final String organizationId;
   final String currentUid;
   final bool canEdit;
   final bool isSaving;
   final ActivityAssignmentRepository activityAssignmentRepository;
   final MeetingAttendanceRepository attendanceRepository;
-  final Future<void> Function(String workerId, MeetingAttendanceStatus status)
+
+  /// Backs the read-only attendee learning-status preview — see
+  /// [_AttendanceSectionState._loadLearningStatus].
+  final MeetingAttendanceService attendanceService;
+
+  /// Resolves a worker's uid to a display name — see
+  /// [_DailySafetyMeetingScreenState._loadMembers].
+  final List<OrganizationUser> members;
+  final Future<void> Function(
+    String workerId,
+    MeetingAttendanceStatus status, {
+    bool briefedInPerson,
+  })
   onRecordAttendance;
 
   @override
@@ -1785,6 +2443,15 @@ class _AttendanceSection extends StatefulWidget {
 class _AttendanceSectionState extends State<_AttendanceSection> {
   final _searchController = TextEditingController();
   String _search = '';
+
+  /// Each attendee's outstanding required-learning titles, by uid — see
+  /// `MeetingAttendanceService.getMeetingAttendeeLearningStatus`'s doc
+  /// comment. Null while loading (never shown as "clear" until resolved);
+  /// a failed lookup degrades to showing no learning status at all rather
+  /// than blocking the attendance list — this is informational only, so a
+  /// failure here should never be load-bearing.
+  Map<String, List<String>>? _learningStatus;
+  String? _learningStatusLoadedForMeetingId;
 
   @override
   void initState() {
@@ -1800,6 +2467,20 @@ class _AttendanceSectionState extends State<_AttendanceSection> {
     super.dispose();
   }
 
+  Future<void> _loadLearningStatus() async {
+    try {
+      final status = await widget.attendanceService
+          .getMeetingAttendeeLearningStatus(
+            organizationId: widget.organizationId,
+            meetingId: widget.meeting.id,
+          );
+      if (!mounted) return;
+      setState(() => _learningStatus = status);
+    } catch (_) {
+      // Informational only — see this field's doc comment.
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final activityIds = widget.meeting.activityIds;
@@ -1810,8 +2491,15 @@ class _AttendanceSectionState extends State<_AttendanceSection> {
       );
     }
 
-    return StreamBuilder<List<List<ActivityAssignment>>>(
-      stream: _combineAssignmentStreams(activityIds),
+    if (_learningStatusLoadedForMeetingId != widget.meeting.id) {
+      _learningStatusLoadedForMeetingId = widget.meeting.id;
+      _learningStatus = null;
+      unawaited(_loadLearningStatus());
+    }
+
+    return LiveStreamBuilder<List<List<ActivityAssignment>>>(
+      streamKey: activityIds.join(','),
+      stream: () => _combineAssignmentStreams(activityIds),
       builder: (context, assignmentSnapshot) {
         final assignmentLists =
             assignmentSnapshot.data ?? const <List<ActivityAssignment>>[];
@@ -1826,12 +2514,17 @@ class _AttendanceSectionState extends State<_AttendanceSection> {
                   .where((id) => id.toLowerCase().contains(_search))
                   .toList();
 
-        return StreamBuilder<List<MeetingAttendance>>(
-          stream: widget.attendanceRepository.watchAll(),
+        return LiveStreamBuilder<List<MeetingAttendance>>(
+          streamKey: widget.attendanceRepository,
+          stream: () => widget.attendanceRepository.watchAll(),
           builder: (context, attendanceSnapshot) {
             final attendanceByWorker = {
               for (final record in attendanceSnapshot.data ?? const [])
                 record.workerId: record.status,
+            };
+            final briefedWorkers = {
+              for (final record in attendanceSnapshot.data ?? const [])
+                if (record.briefedInPerson) record.workerId,
             };
 
             if (sortedWorkerIds.isEmpty) {
@@ -1864,17 +2557,66 @@ class _AttendanceSectionState extends State<_AttendanceSection> {
                 for (final workerId in filteredWorkerIds)
                   _WorkerAttendanceRow(
                     workerId: workerId,
+                    name: _nameFor(workerId),
                     status: attendanceByWorker[workerId],
+                    briefedInPerson: briefedWorkers.contains(workerId),
+                    outstandingLearning: _learningStatus?[workerId],
                     canEdit: widget.canEdit,
                     isSaving: widget.isSaving,
                     onRecord: (status) =>
                         widget.onRecordAttendance(workerId, status),
+                    onBriefedInPerson: () => _confirmBriefed(
+                      workerId,
+                      _learningStatus?[workerId] ?? const [],
+                    ),
                   ),
               ],
             );
           },
         );
       },
+    );
+  }
+
+  String? _nameFor(String uid) {
+    for (final member in widget.members) {
+      if (member.uid == uid) return member.name;
+    }
+    return null;
+  }
+
+  /// Confirms, then marks [workerId] present as "Briefed in person": the
+  /// Foreman has covered today's outstanding [lessons] with them face to
+  /// face. The lessons stay due, and the attendance record names them.
+  Future<void> _confirmBriefed(String workerId, List<String> lessons) async {
+    final name = _nameFor(workerId) ?? 'this worker';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Briefed in person?'),
+        content: Text(
+          'Confirm you have briefed $name in person on:\n\n'
+          '${lessons.map((title) => '• $title').join('\n')}\n\n'
+          'They can attend today. The lesson stays on their list until '
+          'they complete it, and this record shows you briefed them.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Mark present'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await widget.onRecordAttendance(
+      workerId,
+      MeetingAttendanceStatus.present,
+      briefedInPerson: true,
     );
   }
 
@@ -1917,14 +2659,11 @@ class StreamZip<T> extends Stream<List<T>> {
     for (var i = 0; i < _streams.length; i++) {
       final index = i;
       subscriptions.add(
-        _streams[i].listen(
-          (value) {
-            latest[index] = value;
-            hasValue[index] = true;
-            emitIfReady();
-          },
-          onError: controller.addError,
-        ),
+        _streams[i].listen((value) {
+          latest[index] = value;
+          hasValue[index] = true;
+          emitIfReady();
+        }, onError: controller.addError),
       );
     }
 
@@ -1952,16 +2691,46 @@ class _WorkerAttendanceRow extends StatelessWidget {
     required this.canEdit,
     required this.isSaving,
     required this.onRecord,
+    required this.onBriefedInPerson,
+    this.name,
+    this.outstandingLearning,
+    this.briefedInPerson = false,
   });
 
   final String workerId;
+
+  /// The worker's display name, or null if it could not be resolved — falls
+  /// back to showing [workerId] itself. See [_AttendanceSection.members].
+  final String? name;
   final MeetingAttendanceStatus? status;
   final bool canEdit;
   final bool isSaving;
+
+  /// Titles of this worker's outstanding required safety learning for this
+  /// meeting — null while still loading or if the lookup failed (shown as
+  /// nothing, never as "clear"); an empty list means "checked, nothing
+  /// outstanding." Informational only — see
+  /// `MeetingAttendanceService.getMeetingAttendeeLearningStatus`'s doc
+  /// comment; this never blocks marking attendance.
+  final List<String>? outstandingLearning;
   final void Function(MeetingAttendanceStatus status) onRecord;
+
+  /// The worker was marked present after an in-person briefing.
+  final bool briefedInPerson;
+
+  /// Marks the worker present as "Briefed in person" — offered only while
+  /// they have lessons outstanding for today.
+  final VoidCallback onBriefedInPerson;
 
   @override
   Widget build(BuildContext context) {
+    final outstanding = outstandingLearning;
+    final canBrief =
+        canEdit &&
+        !isSaving &&
+        outstanding != null &&
+        outstanding.isNotEmpty &&
+        status != MeetingAttendanceStatus.present;
     return Card(
       margin: const EdgeInsets.only(bottom: AppSpacing.sm),
       child: Padding(
@@ -1969,7 +2738,29 @@ class _WorkerAttendanceRow extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(workerId, style: AppTextStyles.bodyMedium),
+            Text(name ?? workerId, style: AppTextStyles.bodyMedium),
+            if (outstanding != null && outstanding.isNotEmpty) ...[
+              const SizedBox(height: AppSpacing.xs),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(
+                    Icons.school_outlined,
+                    size: 16,
+                    color: AppColors.warning,
+                  ),
+                  const SizedBox(width: AppSpacing.xs),
+                  Expanded(
+                    child: Text(
+                      'Outstanding: ${outstanding.join(', ')}',
+                      style: AppTextStyles.label.copyWith(
+                        color: AppColors.warning,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
             const SizedBox(height: AppSpacing.sm),
             Row(
               children: [
@@ -1998,6 +2789,29 @@ class _WorkerAttendanceRow extends StatelessWidget {
                 ),
               ],
             ),
+            if (canBrief) ...[
+              const SizedBox(height: AppSpacing.sm),
+              OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.readable(
+                    AppColors.learning,
+                    Theme.of(context).brightness,
+                  ),
+                  side: const BorderSide(color: AppColors.learning),
+                ),
+                onPressed: onBriefedInPerson,
+                icon: const Icon(Icons.record_voice_over_outlined),
+                label: const Text('Briefed in person'),
+              ),
+            ],
+            if (briefedInPerson &&
+                status == MeetingAttendanceStatus.present) ...[
+              const SizedBox(height: AppSpacing.sm),
+              const StatusBadge(
+                label: 'Briefed in person',
+                color: AppColors.learning,
+              ),
+            ],
           ],
         ),
       ),
@@ -2060,6 +2874,7 @@ class _AttendanceButton extends StatelessWidget {
 /// enforce.
 class _ConcernsSection extends StatefulWidget {
   const _ConcernsSection({
+    required this.members,
     required this.concernRepository,
     required this.correctiveActionRepository,
     required this.activityAssignmentRepository,
@@ -2079,10 +2894,16 @@ class _ConcernsSection extends StatefulWidget {
   final ActivityAssignmentRepository activityAssignmentRepository;
   final DailySafetyMeeting meeting;
   final String currentUid;
+
+  /// The organization's people, to show assignees by name.
+  final List<OrganizationUser> members;
   final bool canEdit;
   final bool canAdd;
   final bool isSaving;
-  final Future<void> Function(String description, MeetingConcernCategory category)
+  final Future<void> Function(
+    String description,
+    MeetingConcernCategory category,
+  )
   onAdd;
   final Future<void> Function(
     MeetingConcern concern,
@@ -2098,6 +2919,8 @@ class _ConcernsSection extends StatefulWidget {
     required String assignedTo,
     required DateTime dueDate,
     required bool evidenceRequired,
+    List<CorrectiveActionEvidenceKind> evidenceKinds,
+    String? evidenceInstructions,
   })
   onCreateCorrectiveAction;
 
@@ -2138,10 +2961,16 @@ class _ConcernsSectionState extends State<_ConcernsSection> {
   Future<void> _openCreateCorrectiveActionDialog(MeetingConcern concern) async {
     final workerIds = await _rosterFor(widget.meeting.activityIds);
     if (!mounted) return;
-    final result = await showDialog<_CorrectiveActionFormResult>(
-      context: context,
-      builder: (_) => _CorrectiveActionFormDialog(candidateAssignees: workerIds),
-    );
+    final result = await Navigator.of(context, rootNavigator: true)
+        .push<_CorrectiveActionFormResult>(
+          MaterialPageRoute(
+            fullscreenDialog: true,
+            builder: (_) => _CorrectiveActionFormDialog(
+              candidateAssignees: workerIds,
+              people: widget.members,
+            ),
+          ),
+        );
     if (result == null) return;
     await widget.onCreateCorrectiveAction(
       concernId: concern.id,
@@ -2150,6 +2979,8 @@ class _ConcernsSectionState extends State<_ConcernsSection> {
       assignedTo: result.assignedTo,
       dueDate: result.dueDate,
       evidenceRequired: result.evidenceRequired,
+      evidenceKinds: result.evidenceKinds,
+      evidenceInstructions: result.evidenceInstructions,
     );
   }
 
@@ -2162,7 +2993,8 @@ class _ConcernsSectionState extends State<_ConcernsSection> {
     if (activityIds.isEmpty) return const [];
     final lists = await Future.wait(
       activityIds.map(
-        (id) => widget.activityAssignmentRepository.watchAssignedWorkers(id).first,
+        (id) =>
+            widget.activityAssignmentRepository.watchAssignedWorkers(id).first,
       ),
     );
     final workerIds = <String>{
@@ -2174,8 +3006,9 @@ class _ConcernsSectionState extends State<_ConcernsSection> {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<List<MeetingConcern>>(
-      stream: widget.concernRepository.watchAll(),
+    return LiveStreamBuilder<List<MeetingConcern>>(
+      streamKey: widget.concernRepository,
+      stream: () => widget.concernRepository.watchAll(),
       builder: (context, snapshot) {
         final concerns = snapshot.data ?? const <MeetingConcern>[];
 
@@ -2293,11 +3126,12 @@ class _ConcernCard extends StatelessWidget {
             const SizedBox(height: AppSpacing.xs),
             Text(concern.description, style: AppTextStyles.bodyMedium),
             const SizedBox(height: AppSpacing.sm),
-            StreamBuilder<List<CorrectiveAction>>(
-              stream: correctiveActionRepository.watchForConcern(concern.id),
+            LiveStreamBuilder<List<CorrectiveAction>>(
+              streamKey: (correctiveActionRepository, concern.id),
+              stream: () =>
+                  correctiveActionRepository.watchForConcern(concern.id),
               builder: (context, snapshot) {
-                final actions =
-                    snapshot.data ?? const <CorrectiveAction>[];
+                final actions = snapshot.data ?? const <CorrectiveAction>[];
                 if (actions.isEmpty) return const SizedBox.shrink();
                 return Padding(
                   padding: const EdgeInsets.only(bottom: AppSpacing.sm),
@@ -2500,6 +3334,8 @@ class _CorrectiveActionFormResult {
     required this.assignedTo,
     required this.dueDate,
     required this.evidenceRequired,
+    this.evidenceKinds = const [],
+    this.evidenceInstructions,
   });
 
   final String title;
@@ -2507,6 +3343,10 @@ class _CorrectiveActionFormResult {
   final String assignedTo;
   final DateTime dueDate;
   final bool evidenceRequired;
+
+  /// What evidence completing it needs — see [EvidenceRequirementPicker].
+  final List<CorrectiveActionEvidenceKind> evidenceKinds;
+  final String? evidenceInstructions;
 }
 
 /// A dialog for creating a corrective action from a concern: title,
@@ -2516,9 +3356,15 @@ class _CorrectiveActionFormResult {
 /// explicitly out of scope for this stage (see [CorrectiveAction]'s doc
 /// comment).
 class _CorrectiveActionFormDialog extends StatefulWidget {
-  const _CorrectiveActionFormDialog({required this.candidateAssignees});
+  const _CorrectiveActionFormDialog({
+    required this.candidateAssignees,
+    this.people = const [],
+  });
 
   final List<String> candidateAssignees;
+
+  /// Who [candidateAssignees] are, to choose by name, not account id.
+  final List<OrganizationUser> people;
 
   @override
   State<_CorrectiveActionFormDialog> createState() =>
@@ -2529,9 +3375,15 @@ class _CorrectiveActionFormDialogState
     extends State<_CorrectiveActionFormDialog> {
   final _titleController = TextEditingController();
   final _descriptionController = TextEditingController();
+  final _evidenceInstructionsController = TextEditingController();
   String? _assignedTo;
   DateTime? _dueDate;
-  bool _evidenceRequired = false;
+  Set<CorrectiveActionEvidenceKind> _evidenceKinds = {};
+
+  String? get _evidenceInstructions {
+    final text = _evidenceInstructionsController.text.trim();
+    return _evidenceKinds.isEmpty || text.isEmpty ? null : text;
+  }
 
   @override
   void initState() {
@@ -2543,6 +3395,7 @@ class _CorrectiveActionFormDialogState
   void dispose() {
     _titleController.dispose();
     _descriptionController.dispose();
+    _evidenceInstructionsController.dispose();
     super.dispose();
   }
 
@@ -2574,7 +3427,9 @@ class _CorrectiveActionFormDialogState
         description: description,
         assignedTo: assignedTo,
         dueDate: dueDate,
-        evidenceRequired: _evidenceRequired,
+        evidenceRequired: _evidenceKinds.isNotEmpty,
+        evidenceKinds: _evidenceKinds.toList(),
+        evidenceInstructions: _evidenceInstructions,
       ),
     );
   }
@@ -2583,89 +3438,143 @@ class _CorrectiveActionFormDialogState
   Widget build(BuildContext context) {
     final canSubmit = widget.candidateAssignees.isNotEmpty;
 
-    return AlertDialog(
-      title: const Text('Create Corrective Action'),
-      content: SizedBox(
-        width: double.maxFinite,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (!canSubmit)
-                const Padding(
-                  padding: EdgeInsets.only(bottom: AppSpacing.sm),
-                  child: Text(
-                    'No eligible workers to assign. A worker must already '
-                    'be assigned to one of this meeting\'s activities.',
-                    style: AppTextStyles.bodyMedium,
-                  ),
-                ),
-              TextField(
-                controller: _titleController,
-                decoration: const InputDecoration(labelText: 'Title'),
-                autofocus: true,
-              ),
-              const SizedBox(height: AppSpacing.sm),
-              TextField(
-                controller: _descriptionController,
-                decoration: const InputDecoration(labelText: 'Description'),
-                minLines: 1,
-                maxLines: 3,
-              ),
-              const SizedBox(height: AppSpacing.sm),
-              if (canSubmit)
-                DropdownButtonFormField<String>(
-                  initialValue: _assignedTo,
-                  decoration: const InputDecoration(
-                    labelText: 'Assigned person',
-                  ),
-                  items: [
-                    for (final workerId in widget.candidateAssignees)
-                      DropdownMenuItem(
-                        value: workerId,
-                        child: Text(workerId),
+    final actions = <Widget>[
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('Cancel'),
+      ),
+      TextButton(
+        onPressed: canSubmit ? _submit : null,
+        child: const Text('Create'),
+      ),
+    ];
+    return Scaffold(
+      appBar: AppBar(),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          child: SizedBox(
+            width: double.maxFinite,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  FeatureHeader(
+                    eyebrow: 'From a meeting concern',
+                    title: _titleController.text.trim().isEmpty
+                        ? 'New Corrective Action'
+                        : _titleController.text.trim(),
+                    icon: Icons.build_circle,
+                    color: AppColors.correctiveActions,
+                    chips: [
+                      FeatureChip(
+                        icon: Icons.event,
+                        label: _dueDate == null
+                            ? 'No due date yet'
+                            : 'Due ${_formatDate(_dueDate!)}',
                       ),
-                  ],
-                  onChanged: (value) => setState(() => _assignedTo = value),
-                ),
-              const SizedBox(height: AppSpacing.sm),
-              ConstrainedBox(
-                constraints: const BoxConstraints(
-                  minHeight: AppSpacing.minTouchTarget,
-                ),
-                child: OutlinedButton.icon(
-                  onPressed: _pickDueDate,
-                  icon: const Icon(Icons.event_outlined),
-                  label: Text(
-                    _dueDate == null
-                        ? 'Set due date'
-                        : 'Due ${_formatDate(_dueDate!)}',
+                    ],
                   ),
-                ),
+                  const SizedBox(height: AppSpacing.md),
+                  if (!canSubmit)
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: AppSpacing.sm),
+                      child: Text(
+                        'No eligible workers to assign. A worker must already '
+                        'be assigned to one of this meeting\'s activities.',
+                        style: AppTextStyles.bodyMedium,
+                      ),
+                    ),
+                  FormSection(
+                    title: 'What needs doing',
+                    icon: Icons.edit_note,
+                    color: AppColors.correctiveActions,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        TextField(
+                          controller: _titleController,
+                          decoration: const InputDecoration(labelText: 'Title'),
+                          autofocus: true,
+                          onChanged: (_) => setState(() {}),
+                        ),
+                        const SizedBox(height: AppSpacing.sm),
+                        TextField(
+                          controller: _descriptionController,
+                          decoration: const InputDecoration(
+                            labelText: 'Description',
+                          ),
+                          minLines: 1,
+                          maxLines: 3,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: AppSpacing.md),
+                  const SizedBox(height: AppSpacing.sm),
+                  FormSection(
+                    title: 'Who and when',
+                    icon: Icons.event,
+                    color: AppColors.meetings,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (canSubmit)
+                          PersonPicker(
+                            uids: widget.candidateAssignees,
+                            people: widget.people,
+                            selected: _assignedTo,
+                            color: AppColors.correctiveActions,
+                            onChanged: (uid) =>
+                                setState(() => _assignedTo = uid),
+                          ),
+                        const SizedBox(height: AppSpacing.sm),
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(
+                            minHeight: AppSpacing.minTouchTarget,
+                          ),
+                          child: OutlinedButton.icon(
+                            onPressed: _pickDueDate,
+                            icon: const Icon(Icons.event_outlined),
+                            label: Text(
+                              _dueDate == null
+                                  ? 'Set due date'
+                                  : 'Due ${_formatDate(_dueDate!)}',
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: AppSpacing.sm),
+                        EvidenceRequirementPicker(
+                          kinds: _evidenceKinds,
+                          onKindsChanged: (kinds) =>
+                              setState(() => _evidenceKinds = kinds),
+                          instructionsController:
+                              _evidenceInstructionsController,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: AppSpacing.md),
+                ],
               ),
-              CheckboxListTile(
-                value: _evidenceRequired,
-                onChanged: (value) =>
-                    setState(() => _evidenceRequired = value ?? false),
-                title: const Text('Evidence required to complete'),
-                controlAffinity: ListTileControlAffinity.leading,
-                contentPadding: EdgeInsets.zero,
-              ),
+            ),
+          ),
+        ),
+      ),
+      bottomNavigationBar: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          child: Row(
+            children: [
+              for (final (index, action) in actions.indexed) ...[
+                if (index > 0) const SizedBox(width: AppSpacing.sm),
+                Expanded(child: action),
+              ],
             ],
           ),
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        TextButton(
-          onPressed: canSubmit ? _submit : null,
-          child: const Text('Create'),
-        ),
-      ],
     );
   }
 }

@@ -11,8 +11,7 @@ void main() {
       expect(AppRole.siteManager.canReviewPendingAccounts, isTrue);
     });
 
-    test('grants review authority to Foreman, scoped to their own site(s)',
-        () {
+    test('grants review authority to Foreman, scoped to their own site(s)', () {
       // §16 grants Foreman approval authority over Workers on their own
       // assigned site(s) — unlike the old model's excluded siteSupervisor.
       expect(AppRole.foreman.canReviewPendingAccounts, isTrue);
@@ -75,7 +74,8 @@ void main() {
         expect(
           role.isPlatformLevel,
           role == AppRole.admin,
-          reason: '$role isPlatformLevel should be '
+          reason:
+              '$role isPlatformLevel should be '
               '${role == AppRole.admin}',
         );
       }
@@ -83,8 +83,7 @@ void main() {
   });
 
   group('AppRole capability getters for the new 4-role model', () {
-    test('canCreateOrganization is granted to admin and siteManager only',
-        () {
+    test('canCreateOrganization is granted to admin and siteManager only', () {
       expect(AppRole.admin.canCreateOrganization, isTrue);
       expect(AppRole.siteManager.canCreateOrganization, isTrue);
       expect(AppRole.foreman.canCreateOrganization, isFalse);
@@ -93,19 +92,13 @@ void main() {
 
     test('canManageSafetyLearningLibrary is admin-only', () {
       for (final role in AppRole.values) {
-        expect(
-          role.canManageSafetyLearningLibrary,
-          role == AppRole.admin,
-        );
+        expect(role.canManageSafetyLearningLibrary, role == AppRole.admin);
       }
     });
 
     test('canManageSafetyMeetingPointLibrary is admin-only', () {
       for (final role in AppRole.values) {
-        expect(
-          role.canManageSafetyMeetingPointLibrary,
-          role == AppRole.admin,
-        );
+        expect(role.canManageSafetyMeetingPointLibrary, role == AppRole.admin);
       }
     });
 
@@ -116,8 +109,7 @@ void main() {
       expect(AppRole.worker.canApproveForemen, isFalse);
     });
 
-    test('canApproveWorkers is granted to admin, siteManager and foreman',
-        () {
+    test('canApproveWorkers is granted to admin, siteManager and foreman', () {
       expect(AppRole.admin.canApproveWorkers, isTrue);
       expect(AppRole.siteManager.canApproveWorkers, isTrue);
       expect(AppRole.foreman.canApproveWorkers, isTrue);

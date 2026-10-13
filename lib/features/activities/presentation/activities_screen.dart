@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import '../../../core/widgets/live_stream_builder.dart';
+import '../../../core/widgets/choice_list.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../../../core/errors/app_exception.dart';
@@ -16,6 +18,11 @@ import '../../../routing/app_routes.dart';
 import '../data/activity_admin_service.dart';
 import '../data/activity_repository.dart';
 import '../domain/activity.dart';
+import '../../../core/widgets/color_choice_chips.dart';
+import '../../../core/widgets/feature_header.dart';
+import '../../../core/widgets/accent_card.dart';
+import '../../../core/widgets/status_badge.dart';
+import '../../pre_start_checks/presentation/pre_start_visuals.dart';
 
 /// Lists the activities belonging to one site and lets an authorized admin
 /// create or edit one.
@@ -51,7 +58,8 @@ class ActivitiesScreen extends StatefulWidget {
 }
 
 class _ActivitiesScreenState extends State<ActivitiesScreen> {
-  late final ActivityRepository _repository = widget.repository ??
+  late final ActivityRepository _repository =
+      widget.repository ??
       ActivityRepository(
         firestoreService: FirestoreService(),
         organizationId: widget.organization.id,
@@ -63,36 +71,46 @@ class _ActivitiesScreenState extends State<ActivitiesScreen> {
   bool _isSaving = false;
 
   Future<void> _openCreateDialog() async {
-    final result = await showDialog<_ActivityFormResult>(
-      context: context,
-      builder: (_) => const _ActivityFormDialog(),
-    );
+    final result = await Navigator.of(context, rootNavigator: true)
+        .push<_ActivityFormResult>(
+          MaterialPageRoute(
+            fullscreenDialog: true,
+            builder: (_) => const _ActivityFormDialog(),
+          ),
+        );
     if (result == null || !mounted) return;
-    await _save(() => _adminService.createActivity(
-      organizationId: widget.organization.id,
-      projectId: widget.project.id,
-      siteId: widget.site.id,
-      name: result.name,
-      code: result.code,
-      description: result.description,
-      status: result.status,
-    ));
+    await _save(
+      () => _adminService.createActivity(
+        organizationId: widget.organization.id,
+        projectId: widget.project.id,
+        siteId: widget.site.id,
+        name: result.name,
+        code: result.code,
+        description: result.description,
+        status: result.status,
+      ),
+    );
   }
 
   Future<void> _openEditDialog(Activity activity) async {
-    final result = await showDialog<_ActivityFormResult>(
-      context: context,
-      builder: (_) => _ActivityFormDialog(existing: activity),
-    );
+    final result = await Navigator.of(context, rootNavigator: true)
+        .push<_ActivityFormResult>(
+          MaterialPageRoute(
+            fullscreenDialog: true,
+            builder: (_) => _ActivityFormDialog(existing: activity),
+          ),
+        );
     if (result == null || !mounted) return;
-    await _save(() => _adminService.updateActivity(
-      widget.organization.id,
-      activity.id,
-      name: result.name,
-      code: result.code,
-      description: result.description,
-      status: result.status,
-    ));
+    await _save(
+      () => _adminService.updateActivity(
+        widget.organization.id,
+        activity.id,
+        name: result.name,
+        code: result.code,
+        description: result.description,
+        status: result.status,
+      ),
+    );
   }
 
   Future<void> _save(Future<void> Function() action) async {
@@ -128,8 +146,11 @@ class _ActivitiesScreenState extends State<ActivitiesScreen> {
     final profile = sessionController.profile;
     // Checked against membershipFor(widget.organization.id) SPECIFICALLY,
     // not activeMembership — see ProjectsScreen's matching comment for why.
-    final canManage = profile?.isPlatformAdministrator == true ||
-        sessionController.membershipFor(widget.organization.id)?.role
+    final canManage =
+        profile?.isPlatformAdministrator == true ||
+        sessionController
+                .membershipFor(widget.organization.id)
+                ?.role
                 .canManageOrgContent ==
             true;
 
@@ -146,8 +167,9 @@ class _ActivitiesScreenState extends State<ActivitiesScreen> {
       );
     }
 
-    return StreamBuilder<List<Activity>>(
-      stream: _repository.watchBySite(widget.site.id),
+    return LiveStreamBuilder<List<Activity>>(
+      streamKey: (_repository, widget.site.id),
+      stream: () => _repository.watchBySite(widget.site.id),
       builder: (context, snapshot) {
         final activities = snapshot.data ?? const [];
         final isLoading = snapshot.connectionState == ConnectionState.waiting;
@@ -159,28 +181,27 @@ class _ActivitiesScreenState extends State<ActivitiesScreen> {
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(AppSpacing.md),
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Activities', style: AppTextStyles.headlineMedium),
-                      Text(
-                        '${widget.organization.name} · ${widget.project.name}'
-                        ' · ${widget.site.name}',
-                        style: AppTextStyles.bodyMedium,
-                      ),
-                    ],
+            FeatureHeader(
+              title: 'Activities',
+              subtitle:
+                  '${widget.organization.name} · ${widget.project.name} · ${widget.site.name}',
+              icon: Icons.engineering,
+              color: AppColors.projects,
+              footer: Tooltip(
+                message: 'Add activity',
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.white,
+                    foregroundColor: AppColors.projects,
+                    minimumSize: const Size(0, AppSpacing.minTouchTarget),
                   ),
-                ),
-                IconButton(
-                  tooltip: 'Add activity',
                   onPressed: _isSaving ? null : _openCreateDialog,
-                  icon: const Icon(Icons.add_circle_outline),
+                  icon: const Icon(Icons.add),
+                  label: const Text('New Activity'),
                 ),
-              ],
+              ),
             ),
+
             if ((_errorMessage ?? streamError) != null) ...[
               const SizedBox(height: AppSpacing.md),
               AuthErrorBanner(message: _errorMessage ?? streamError!),
@@ -230,6 +251,10 @@ class _ActivityCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Card(
       margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: (AppColors.projects).withValues(alpha: 0.5)),
+      ),
       child: Padding(
         padding: const EdgeInsets.all(AppSpacing.md),
         child: Column(
@@ -237,6 +262,11 @@ class _ActivityCard extends StatelessWidget {
           children: [
             Row(
               children: [
+                AccentIconBadge(
+                  color: AppColors.projects,
+                  emoji: hazardEmojiFor(activity.name),
+                ),
+                const SizedBox(width: AppSpacing.sm),
                 Expanded(
                   child: Text(activity.name, style: AppTextStyles.titleLarge),
                 ),
@@ -311,12 +341,15 @@ class _ActivityFormDialog extends StatefulWidget {
 
 class _ActivityFormDialogState extends State<_ActivityFormDialog> {
   final _formKey = GlobalKey<FormState>();
-  late final _nameController =
-      TextEditingController(text: widget.existing?.name);
-  late final _codeController =
-      TextEditingController(text: widget.existing?.code);
-  late final _descriptionController =
-      TextEditingController(text: widget.existing?.description);
+  late final _nameController = TextEditingController(
+    text: widget.existing?.name,
+  );
+  late final _codeController = TextEditingController(
+    text: widget.existing?.code,
+  );
+  late final _descriptionController = TextEditingController(
+    text: widget.existing?.description,
+  );
   late OrganizationRecordStatus _status =
       widget.existing?.status ?? OrganizationRecordStatus.active;
 
@@ -331,71 +364,138 @@ class _ActivityFormDialogState extends State<_ActivityFormDialog> {
   @override
   Widget build(BuildContext context) {
     final isEditing = widget.existing != null;
-    return AlertDialog(
-      title: Text(isEditing ? 'Edit Activity' : 'Add Activity'),
-      content: Form(
-        key: _formKey,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            TextFormField(
-              controller: _nameController,
-              decoration: const InputDecoration(labelText: 'Name'),
-              validator: (value) => (value == null || value.trim().isEmpty)
-                  ? 'A name is required.'
-                  : null,
+    final actions = <Widget>[
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('Cancel'),
+      ),
+      ElevatedButton(
+        onPressed: () {
+          if (!(_formKey.currentState?.validate() ?? false)) return;
+          final description = _descriptionController.text.trim();
+          Navigator.of(context).pop(
+            _ActivityFormResult(
+              name: _nameController.text.trim(),
+              code: _codeController.text.trim(),
+              description: description.isEmpty ? null : description,
+              status: _status,
             ),
-            const SizedBox(height: AppSpacing.sm),
-            TextFormField(
-              controller: _codeController,
-              decoration: const InputDecoration(labelText: 'Code'),
-              validator: (value) => (value == null || value.trim().isEmpty)
-                  ? 'A code is required.'
-                  : null,
+          );
+        },
+        child: Text(isEditing ? 'Save' : 'Create'),
+      ),
+    ];
+    return Scaffold(
+      appBar: AppBar(),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          child: SingleChildScrollView(
+            child: Form(
+              key: _formKey,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  FeatureHeader(
+                    eyebrow: isEditing ? 'Edit' : 'New',
+                    title: _nameController.text.trim().isEmpty
+                        ? 'Activity'
+                        : _nameController.text.trim(),
+                    icon: Icons.engineering,
+                    color: AppColors.projects,
+                    chips: [
+                      FeatureChip(
+                        icon: Icons.qr_code,
+                        label: _codeController.text.trim().isEmpty
+                            ? 'No code yet'
+                            : _codeController.text.trim(),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: AppSpacing.md),
+                  FormSection(
+                    title: 'About this activity',
+                    icon: Icons.edit_note,
+                    color: AppColors.projects,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        TextFormField(
+                          controller: _nameController,
+                          onChanged: (_) => setState(() {}),
+                          decoration: const InputDecoration(labelText: 'Name'),
+                          autofillHints: const [],
+                          validator: (value) =>
+                              (value == null || value.trim().isEmpty)
+                              ? 'A name is required.'
+                              : null,
+                        ),
+                        const SizedBox(height: AppSpacing.sm),
+                        TextFormField(
+                          controller: _codeController,
+                          decoration: const InputDecoration(labelText: 'Code'),
+                          autofillHints: const [],
+                          validator: (value) =>
+                              (value == null || value.trim().isEmpty)
+                              ? 'A code is required.'
+                              : null,
+                        ),
+                        const SizedBox(height: AppSpacing.sm),
+                        TextFormField(
+                          controller: _descriptionController,
+                          decoration: const InputDecoration(
+                            labelText: 'Description',
+                          ),
+                          maxLines: 2,
+                          autofillHints: const [],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: AppSpacing.md),
+                  const SizedBox(height: AppSpacing.sm),
+                  ChoiceList<OrganizationRecordStatus>(
+                    label: 'Status',
+                    selected: _status,
+                    onChanged: (value) {
+                      if (value != null) setState(() => _status = value);
+                    },
+                    items: const [
+                      ChoiceItem(
+                        value: OrganizationRecordStatus.active,
+                        title: 'Active',
+                        color: AppColors.success,
+                        icon: Icons.check_circle,
+                      ),
+                      ChoiceItem(
+                        value: OrganizationRecordStatus.inactive,
+                        title: 'Inactive',
+                        color: AppColors.textSecondary,
+                        icon: Icons.pause_circle,
+                      ),
+                    ],
+                    allowDeselect: false,
+                  ),
+                ],
+              ),
             ),
-            const SizedBox(height: AppSpacing.sm),
-            TextFormField(
-              controller: _descriptionController,
-              decoration: const InputDecoration(labelText: 'Description'),
-              maxLines: 2,
-            ),
-            const SizedBox(height: AppSpacing.sm),
-            DropdownButtonFormField<OrganizationRecordStatus>(
-              initialValue: _status,
-              decoration: const InputDecoration(labelText: 'Status'),
-              items: [
-                for (final status in OrganizationRecordStatus.values)
-                  DropdownMenuItem(value: status, child: Text(status.label)),
-              ],
-              onChanged: (value) {
-                if (value != null) setState(() => _status = value);
-              },
-            ),
-          ],
+          ),
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
+      bottomNavigationBar: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          child: Row(
+            children: [
+              for (final (index, action) in actions.indexed) ...[
+                if (index > 0) const SizedBox(width: AppSpacing.sm),
+                Expanded(child: action),
+              ],
+            ],
+          ),
         ),
-        ElevatedButton(
-          onPressed: () {
-            if (!(_formKey.currentState?.validate() ?? false)) return;
-            final description = _descriptionController.text.trim();
-            Navigator.of(context).pop(
-              _ActivityFormResult(
-                name: _nameController.text.trim(),
-                code: _codeController.text.trim(),
-                description: description.isEmpty ? null : description,
-                status: _status,
-              ),
-            );
-          },
-          child: Text(isEditing ? 'Save' : 'Create'),
-        ),
-      ],
+      ),
     );
   }
 }
@@ -411,20 +511,7 @@ class _StatusChip extends StatelessWidget {
       OrganizationRecordStatus.active => AppColors.success,
       OrganizationRecordStatus.inactive => AppColors.textSecondary,
     };
-    return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: AppSpacing.sm,
-        vertical: AppSpacing.xs,
-      ),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(AppSpacing.sm),
-      ),
-      child: Text(
-        status.label,
-        style: AppTextStyles.label.copyWith(color: color),
-      ),
-    );
+    return StatusBadge(label: status.label, color: color);
   }
 }
 
@@ -441,7 +528,7 @@ class _DetailRow extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 16, color: AppColors.textSecondary),
+          Icon(icon, size: 16, color: AppColors.primaryBright),
           const SizedBox(width: AppSpacing.sm),
           Expanded(child: Text(value, style: AppTextStyles.bodyMedium)),
         ],

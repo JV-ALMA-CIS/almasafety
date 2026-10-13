@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import '../../../core/widgets/live_stream_builder.dart';
+import '../../../core/widgets/choice_list.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../../../core/errors/app_exception.dart';
@@ -17,6 +19,9 @@ import '../domain/organization.dart';
 import '../domain/organization_record_status.dart';
 import '../domain/project.dart';
 import '../domain/site.dart';
+import '../../../core/widgets/accent_card.dart';
+import '../../../core/widgets/feature_header.dart';
+import '../../../core/widgets/color_choice_chips.dart';
 
 /// Lists the sites belonging to one project. A System Administrator (any
 /// organization) or an [AppRole.siteManager] of THIS organization may
@@ -69,10 +74,13 @@ class _SitesScreenState extends State<SitesScreen> {
   bool _isSaving = false;
 
   Future<void> _openCreateDialog() async {
-    final result = await showDialog<_SiteFormResult>(
-      context: context,
-      builder: (_) => const _SiteFormDialog(),
-    );
+    final result = await Navigator.of(context, rootNavigator: true)
+        .push<_SiteFormResult>(
+          MaterialPageRoute(
+            fullscreenDialog: true,
+            builder: (_) => const _SiteFormDialog(),
+          ),
+        );
     if (result == null || !mounted) return;
     await _save(
       () => _adminService.createSite(
@@ -88,10 +96,13 @@ class _SitesScreenState extends State<SitesScreen> {
   }
 
   Future<void> _openEditDialog(Site site) async {
-    final result = await showDialog<_SiteFormResult>(
-      context: context,
-      builder: (_) => _SiteFormDialog(existing: site),
-    );
+    final result = await Navigator.of(context, rootNavigator: true)
+        .push<_SiteFormResult>(
+          MaterialPageRoute(
+            fullscreenDialog: true,
+            builder: (_) => _SiteFormDialog(existing: site),
+          ),
+        );
     if (result == null || !mounted) return;
     await _save(
       () => _adminService.updateSite(
@@ -149,8 +160,9 @@ class _SitesScreenState extends State<SitesScreen> {
       );
     }
 
-    return StreamBuilder<List<Site>>(
-      stream: _repository.watchByProject(widget.project.id),
+    return LiveStreamBuilder<List<Site>>(
+      streamKey: (_repository, widget.project.id),
+      stream: () => _repository.watchByProject(widget.project.id),
       builder: (context, snapshot) {
         final sites = snapshot.data ?? const [];
         final isLoading = snapshot.connectionState == ConnectionState.waiting;
@@ -162,29 +174,31 @@ class _SitesScreenState extends State<SitesScreen> {
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(AppSpacing.md),
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Sites', style: AppTextStyles.headlineMedium),
-                      Text(
-                        '${widget.organization.name} · ${widget.project.name}',
-                        style: AppTextStyles.bodyMedium,
-                      ),
-                    ],
-                  ),
+            FeatureHeader(
+              title: 'Sites',
+              subtitle: '${widget.organization.name} · ${widget.project.name}',
+              icon: Icons.location_city,
+              color: AppColors.analytics,
+              chips: [
+                FeatureChip(
+                  icon: Icons.check_circle,
+                  label:
+                      '${sites.where((s) => s.status == OrganizationRecordStatus.active).length} active',
                 ),
-                if (canManage)
-                  Flexible(
-                    child: ElevatedButton.icon(
+                FeatureChip(icon: Icons.place, label: '${sites.length} total'),
+              ],
+              footer: canManage
+                  ? ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.white,
+                        foregroundColor: AppColors.analytics,
+                        minimumSize: const Size(0, AppSpacing.minTouchTarget),
+                      ),
                       onPressed: _isSaving ? null : _openCreateDialog,
                       icon: const Icon(Icons.add),
                       label: const Text('Add Site'),
-                    ),
-                  ),
-              ],
+                    )
+                  : null,
             ),
             if ((_errorMessage ?? streamError) != null) ...[
               const SizedBox(height: AppSpacing.md),
@@ -264,77 +278,48 @@ class _SiteCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.all(AppSpacing.md),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(site.name, style: AppTextStyles.titleLarge),
-                ),
-                _StatusChip(status: site.status),
-              ],
-            ),
-            const SizedBox(height: AppSpacing.xs),
-            _DetailRow(icon: Icons.qr_code_outlined, value: site.code),
-            if (site.location != null)
-              _DetailRow(
-                icon: Icons.location_on_outlined,
-                value: site.location!,
-              ),
-            if (site.description != null)
-              _DetailRow(
-                icon: Icons.description_outlined,
-                value: site.description!,
-              ),
-            const SizedBox(height: AppSpacing.md),
-            Wrap(
-              spacing: AppSpacing.sm,
-              runSpacing: AppSpacing.sm,
-              children: [
-                if (onEdit != null)
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(
-                      minHeight: AppSpacing.minTouchTarget,
-                      minWidth: 140,
-                    ),
-                    child: OutlinedButton.icon(
-                      onPressed: onEdit,
-                      icon: const Icon(Icons.edit_outlined),
-                      label: const Text('Edit'),
-                    ),
-                  ),
-                ConstrainedBox(
-                  constraints: const BoxConstraints(
-                    minHeight: AppSpacing.minTouchTarget,
-                    minWidth: 140,
-                  ),
-                  child: OutlinedButton.icon(
-                    onPressed: onViewActivities,
-                    icon: const Icon(Icons.engineering_outlined),
-                    label: const Text('Activities'),
-                  ),
-                ),
-                ConstrainedBox(
-                  constraints: const BoxConstraints(
-                    minHeight: AppSpacing.minTouchTarget,
-                    minWidth: 140,
-                  ),
-                  child: ElevatedButton.icon(
-                    onPressed: onViewWorkers,
-                    icon: const Icon(Icons.groups_outlined),
-                    label: const Text('Workers'),
-                  ),
-                ),
-              ],
-            ),
-          ],
+    final active = site.status == OrganizationRecordStatus.active;
+    return AccentCard(
+      color: active ? AppColors.analytics : AppColors.textSecondary,
+      icon: Icons.location_city,
+      title: site.name,
+      dimmed: !active,
+      badges: [
+        AccentBadge(
+          label: site.status.label,
+          color: active ? AppColors.success : AppColors.textSecondary,
         ),
-      ),
+      ],
+      details: [
+        AccentDetail(icon: Icons.qr_code, text: site.code),
+        if (site.location != null)
+          AccentDetail(icon: Icons.place, text: site.location!),
+        if (site.description != null)
+          AccentDetail(icon: Icons.description, text: site.description!),
+      ],
+      actions: [
+        if (onEdit != null)
+          AccentButton(
+            label: 'Edit',
+            icon: Icons.edit,
+            color: AppColors.analytics,
+            outlined: true,
+            onPressed: onEdit,
+          ),
+        AccentButton(
+          label: 'Activities',
+          icon: Icons.engineering,
+          color: AppColors.projects,
+          outlined: true,
+          onPressed: onViewActivities,
+        ),
+        AccentButton(
+          label: 'Workers',
+          icon: Icons.groups,
+          color: AppColors.people,
+          onPressed: onViewWorkers,
+        ),
+      ],
     );
   }
 }
@@ -393,127 +378,147 @@ class _SiteFormDialogState extends State<_SiteFormDialog> {
   @override
   Widget build(BuildContext context) {
     final isEditing = widget.existing != null;
-    return AlertDialog(
-      title: Text(isEditing ? 'Edit Site' : 'Add Site'),
-      content: Form(
-        key: _formKey,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            TextFormField(
-              controller: _nameController,
-              decoration: const InputDecoration(labelText: 'Name'),
-              validator: (value) => (value == null || value.trim().isEmpty)
-                  ? 'A name is required.'
-                  : null,
-            ),
-            const SizedBox(height: AppSpacing.sm),
-            TextFormField(
-              controller: _codeController,
-              decoration: const InputDecoration(labelText: 'Code'),
-              validator: (value) => (value == null || value.trim().isEmpty)
-                  ? 'A code is required.'
-                  : null,
-            ),
-            const SizedBox(height: AppSpacing.sm),
-            TextFormField(
-              controller: _locationController,
-              decoration: const InputDecoration(labelText: 'Location'),
-            ),
-            const SizedBox(height: AppSpacing.sm),
-            TextFormField(
-              controller: _descriptionController,
-              decoration: const InputDecoration(labelText: 'Description'),
-              maxLines: 2,
-            ),
-            const SizedBox(height: AppSpacing.sm),
-            DropdownButtonFormField<OrganizationRecordStatus>(
-              initialValue: _status,
-              decoration: const InputDecoration(labelText: 'Status'),
-              items: [
-                for (final status in OrganizationRecordStatus.values)
-                  DropdownMenuItem(value: status, child: Text(status.label)),
-              ],
-              onChanged: (value) {
-                if (value != null) setState(() => _status = value);
-              },
-            ),
-          ],
-        ),
+    final actions = <Widget>[
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('Cancel'),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        ElevatedButton(
-          onPressed: () {
-            if (!(_formKey.currentState?.validate() ?? false)) return;
-            final location = _locationController.text.trim();
-            final description = _descriptionController.text.trim();
-            Navigator.of(context).pop(
-              _SiteFormResult(
-                name: _nameController.text.trim(),
-                code: _codeController.text.trim(),
-                location: location.isEmpty ? null : location,
-                description: description.isEmpty ? null : description,
-                status: _status,
+      ElevatedButton(
+        onPressed: () {
+          if (!(_formKey.currentState?.validate() ?? false)) return;
+          final location = _locationController.text.trim();
+          final description = _descriptionController.text.trim();
+          Navigator.of(context).pop(
+            _SiteFormResult(
+              name: _nameController.text.trim(),
+              code: _codeController.text.trim(),
+              location: location.isEmpty ? null : location,
+              description: description.isEmpty ? null : description,
+              status: _status,
+            ),
+          );
+        },
+        child: Text(isEditing ? 'Save' : 'Create'),
+      ),
+    ];
+    return Scaffold(
+      appBar: AppBar(),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          child: SingleChildScrollView(
+            child: Form(
+              key: _formKey,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  FeatureHeader(
+                    eyebrow: isEditing ? 'Edit' : 'New',
+                    title: _nameController.text.trim().isEmpty
+                        ? 'Site'
+                        : _nameController.text.trim(),
+                    icon: Icons.location_city,
+                    color: AppColors.analytics,
+                    chips: [
+                      FeatureChip(
+                        icon: Icons.place,
+                        label: _locationController.text.trim().isEmpty
+                            ? 'No location yet'
+                            : _locationController.text.trim(),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: AppSpacing.md),
+                  FormSection(
+                    title: 'About this site',
+                    icon: Icons.edit_note,
+                    color: AppColors.analytics,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        TextFormField(
+                          controller: _nameController,
+                          onChanged: (_) => setState(() {}),
+                          decoration: const InputDecoration(labelText: 'Name'),
+                          autofillHints: const [],
+                          validator: (value) =>
+                              (value == null || value.trim().isEmpty)
+                              ? 'A name is required.'
+                              : null,
+                        ),
+                        const SizedBox(height: AppSpacing.sm),
+                        TextFormField(
+                          controller: _codeController,
+                          decoration: const InputDecoration(labelText: 'Code'),
+                          autofillHints: const [],
+                          validator: (value) =>
+                              (value == null || value.trim().isEmpty)
+                              ? 'A code is required.'
+                              : null,
+                        ),
+                        const SizedBox(height: AppSpacing.sm),
+                        TextFormField(
+                          controller: _locationController,
+                          decoration: const InputDecoration(
+                            labelText: 'Location',
+                          ),
+                          autofillHints: const [],
+                        ),
+                        const SizedBox(height: AppSpacing.sm),
+                        TextFormField(
+                          controller: _descriptionController,
+                          decoration: const InputDecoration(
+                            labelText: 'Description',
+                          ),
+                          maxLines: 2,
+                          autofillHints: const [],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: AppSpacing.md),
+                  const SizedBox(height: AppSpacing.sm),
+                  ChoiceList<OrganizationRecordStatus>(
+                    label: 'Status',
+                    selected: _status,
+                    onChanged: (value) {
+                      if (value != null) setState(() => _status = value);
+                    },
+                    items: const [
+                      ChoiceItem(
+                        value: OrganizationRecordStatus.active,
+                        title: 'Active',
+                        color: AppColors.success,
+                        icon: Icons.check_circle,
+                      ),
+                      ChoiceItem(
+                        value: OrganizationRecordStatus.inactive,
+                        title: 'Inactive',
+                        color: AppColors.textSecondary,
+                        icon: Icons.pause_circle,
+                      ),
+                    ],
+                    allowDeselect: false,
+                  ),
+                ],
               ),
-            );
-          },
-          child: Text(isEditing ? 'Save' : 'Create'),
+            ),
+          ),
         ),
-      ],
-    );
-  }
-}
-
-class _StatusChip extends StatelessWidget {
-  const _StatusChip({required this.status});
-
-  final OrganizationRecordStatus status;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = switch (status) {
-      OrganizationRecordStatus.active => AppColors.success,
-      OrganizationRecordStatus.inactive => AppColors.textSecondary,
-    };
-    return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: AppSpacing.sm,
-        vertical: AppSpacing.xs,
       ),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(AppSpacing.sm),
-      ),
-      child: Text(
-        status.label,
-        style: AppTextStyles.label.copyWith(color: color),
-      ),
-    );
-  }
-}
-
-class _DetailRow extends StatelessWidget {
-  const _DetailRow({required this.icon, required this.value});
-
-  final IconData icon;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(top: AppSpacing.xs),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, size: 16, color: AppColors.textSecondary),
-          const SizedBox(width: AppSpacing.sm),
-          Expanded(child: Text(value, style: AppTextStyles.bodyMedium)),
-        ],
+      bottomNavigationBar: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          child: Row(
+            children: [
+              for (final (index, action) in actions.indexed) ...[
+                if (index > 0) const SizedBox(width: AppSpacing.sm),
+                Expanded(child: action),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }

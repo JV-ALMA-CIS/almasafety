@@ -10,6 +10,10 @@ import '../domain/account_status.dart';
 import '../domain/membership.dart';
 import '../domain/organization_user.dart';
 import 'auth_error_banner.dart';
+import '../../../core/widgets/feature_header.dart';
+import '../../../core/widgets/status_badge.dart';
+import '../../../core/widgets/dashboard_header.dart';
+import '../../../core/widgets/person_avatar.dart';
 
 /// Lists already-reviewed users at one or more [AccountStatus] values and
 /// lets an authorized reviewer suspend an active one or reinstate a
@@ -265,18 +269,25 @@ class _OrganizationUsersScreenState extends State<OrganizationUsersScreen> {
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.all(AppSpacing.md),
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(widget.title, style: AppTextStyles.headlineMedium),
-            ),
-            IconButton(
-              tooltip: 'Refresh',
-              onPressed: _isLoading ? null : _load,
-              icon: const Icon(Icons.refresh),
+        FeatureHeader(
+          title: widget.title,
+          icon: Icons.groups,
+          color: AppColors.people,
+          chips: [
+            FeatureChip(
+              icon: Icons.person,
+              label:
+                  '${_users.length} ${_users.length == 1 ? 'user' : 'users'}',
             ),
           ],
+          trailing: IconButton(
+            tooltip: 'Refresh',
+            color: Colors.white,
+            onPressed: _isLoading ? null : _load,
+            icon: const Icon(Icons.refresh),
+          ),
         ),
+
         if (_errorMessage != null) ...[
           const SizedBox(height: AppSpacing.md),
           AuthErrorBanner(message: _errorMessage!),
@@ -357,6 +368,16 @@ class _OrganizationUserCard extends StatelessWidget {
 
     return Card(
       margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(
+          color:
+              (user.role != null
+                      ? DashboardHeader.roleColor(user.role!)
+                      : AppColors.people)
+                  .withValues(alpha: 0.5),
+        ),
+      ),
       child: Padding(
         padding: const EdgeInsets.all(AppSpacing.md),
         child: Column(
@@ -364,6 +385,8 @@ class _OrganizationUserCard extends StatelessWidget {
           children: [
             Row(
               children: [
+                PersonAvatar(name: user.name),
+                const SizedBox(width: AppSpacing.sm),
                 Expanded(
                   child: Text(
                     user.name.isEmpty ? 'Unnamed account' : user.name,
@@ -503,20 +526,7 @@ class _StatusChip extends StatelessWidget {
       AccountStatus.rejected => AppColors.danger,
       AccountStatus.pending => AppColors.info,
     };
-    return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: AppSpacing.sm,
-        vertical: AppSpacing.xs,
-      ),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(AppSpacing.sm),
-      ),
-      child: Text(
-        status.label,
-        style: AppTextStyles.label.copyWith(color: color),
-      ),
-    );
+    return StatusBadge(label: status.label, color: color);
   }
 }
 
@@ -540,17 +550,7 @@ class _MembershipStatusChip extends StatelessWidget {
       MembershipStatus.active => 'Assignment: Active',
       MembershipStatus.suspended => 'Assignment: Suspended',
     };
-    return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: AppSpacing.sm,
-        vertical: AppSpacing.xs,
-      ),
-      decoration: BoxDecoration(
-        border: Border.all(color: color.withValues(alpha: 0.6)),
-        borderRadius: BorderRadius.circular(AppSpacing.sm),
-      ),
-      child: Text(label, style: AppTextStyles.label.copyWith(color: color)),
-    );
+    return StatusBadge(label: label, color: color);
   }
 }
 
@@ -567,7 +567,7 @@ class _DetailRow extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 16, color: AppColors.textSecondary),
+          Icon(icon, size: 16, color: AppColors.primaryBright),
           const SizedBox(width: AppSpacing.sm),
           Expanded(child: Text(value, style: AppTextStyles.bodyMedium)),
         ],

@@ -64,29 +64,31 @@ void main() {
   }
 
   Widget wrap({required AppRole? role, String? organizationId}) {
+    // Built even when `organizationId` starts null (an Admin with no
+    // membership): OrganizationScopeSelector now auto-selects a sole
+    // seeded organization rather than leaving the picker showing forever,
+    // so the screen may resolve an organization id itself once the fake
+    // Firestore stream settles — these repositories must be fake-backed
+    // for that case too, not only when the caller already knows the id.
+    const fallbackOrganizationId = 'alpha';
+    final resolvedOrganizationId = organizationId ?? fallbackOrganizationId;
     return ChangeNotifierProvider<SessionController>(
       create: (_) => _FakeSession(role: role, organizationId: organizationId),
       child: MaterialApp(
         home: Scaffold(
           body: ReportsScreen(
-            repository: organizationId != null
-                ? ReportsRepository(
-                    firestoreService: FirestoreService(firestore: firestore),
-                    organizationId: organizationId,
-                  )
-                : null,
-            projectRepository: organizationId != null
-                ? ProjectRepository(
-                    firestoreService: FirestoreService(firestore: firestore),
-                    organizationId: organizationId,
-                  )
-                : null,
-            siteRepository: organizationId != null
-                ? SiteRepository(
-                    firestoreService: FirestoreService(firestore: firestore),
-                    organizationId: organizationId,
-                  )
-                : null,
+            repository: ReportsRepository(
+              firestoreService: FirestoreService(firestore: firestore),
+              organizationId: resolvedOrganizationId,
+            ),
+            projectRepository: ProjectRepository(
+              firestoreService: FirestoreService(firestore: firestore),
+              organizationId: resolvedOrganizationId,
+            ),
+            siteRepository: SiteRepository(
+              firestoreService: FirestoreService(firestore: firestore),
+              organizationId: resolvedOrganizationId,
+            ),
             organizationRepository: OrganizationRepository(
               firestoreService: FirestoreService(firestore: firestore),
             ),
@@ -97,10 +99,38 @@ void main() {
   }
 
   group('ReportsScreen (Admin)', () {
+    testWidgets(
+      'an Admin with one organization is taken straight to the report '
+      'chooser — nothing to pick',
+      (tester) async {
+        await seedOrg('alpha');
+
+        await tester.pumpWidget(
+          wrap(role: AppRole.admin, organizationId: null),
+        );
+        await tester.pumpAndSettle();
+
+        expect(
+          find.text('Reports are available to Admins and Site Managers.'),
+          findsNothing,
+        );
+        // The sole organization is auto-selected — see
+        // OrganizationScopeSelector's own doc comment — so the picker never
+        // appears and the Admin lands directly on the report chooser.
+        expect(find.text('Organization'), findsNothing);
+        expect(find.text('Reports'), findsOneWidget);
+        expect(
+          find.text('Generate Report', skipOffstage: false),
+          findsOneWidget,
+        );
+      },
+    );
+
     testWidgets('shows an organization picker instead of being blocked', (
       tester,
     ) async {
       await seedOrg('alpha');
+      await seedOrg('beta');
 
       await tester.pumpWidget(wrap(role: AppRole.admin, organizationId: null));
       await tester.pumpAndSettle();
@@ -122,7 +152,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Reports'), findsOneWidget);
-      expect(find.text('Generate Report'), findsOneWidget);
+      expect(find.text('Generate Report', skipOffstage: false), findsOneWidget);
     });
 
     testWidgets('a foreman with an organization also sees the report '
@@ -137,7 +167,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Reports'), findsOneWidget);
-      expect(find.text('Generate Report'), findsOneWidget);
+      expect(find.text('Generate Report', skipOffstage: false), findsOneWidget);
     });
   });
 

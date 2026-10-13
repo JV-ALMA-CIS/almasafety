@@ -49,18 +49,16 @@ class SafetyMeetingPointAdminService {
     List<String> applicableRisks = const [],
     OrganizationRecordStatus status = OrganizationRecordStatus.active,
   }) async {
-    final result = await _call<Map<Object?, Object?>>(
-      'createSafetyMeetingPoint',
-      {
-        'organizationId': organizationId,
-        'title': title,
-        'category': category,
-        'description': ?description,
-        'applicableActivities': applicableActivities,
-        'applicableRisks': applicableRisks,
-        'status': status.id,
-      },
-    );
+    final result =
+        await _call<Map<Object?, Object?>>('createSafetyMeetingPoint', {
+          'organizationId': organizationId,
+          'title': title,
+          'category': category,
+          'description': ?description,
+          'applicableActivities': applicableActivities,
+          'applicableRisks': applicableRisks,
+          'status': status.id,
+        });
     return result['id'] as String? ?? '';
   }
 
@@ -88,22 +86,18 @@ class SafetyMeetingPointAdminService {
   });
 
   /// Activates a safety meeting point.
-  Future<void> activateSafetyMeetingPoint(
-    String organizationId,
-    String id,
-  ) => _call<Object?>('activateSafetyMeetingPoint', {
-    'organizationId': organizationId,
-    'id': id,
-  });
+  Future<void> activateSafetyMeetingPoint(String organizationId, String id) =>
+      _call<Object?>('activateSafetyMeetingPoint', {
+        'organizationId': organizationId,
+        'id': id,
+      });
 
   /// Deactivates a safety meeting point.
-  Future<void> deactivateSafetyMeetingPoint(
-    String organizationId,
-    String id,
-  ) => _call<Object?>('deactivateSafetyMeetingPoint', {
-    'organizationId': organizationId,
-    'id': id,
-  });
+  Future<void> deactivateSafetyMeetingPoint(String organizationId, String id) =>
+      _call<Object?>('deactivateSafetyMeetingPoint', {
+        'organizationId': organizationId,
+        'id': id,
+      });
 
   Future<T> _call<T>(String name, [Map<String, Object?>? data]) async {
     try {

@@ -1,5 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../../core/widgets/choice_list.dart';
+import '../../../core/widgets/dashboard_header.dart';
+import '../../../core/widgets/status_badge.dart';
+import '../../../core/widgets/person_avatar.dart';
+import '../../../core/widgets/feature_header.dart';
 import '../../../core/errors/app_exception.dart';
 import '../../../core/services/firestore_service.dart';
 import '../../../core/services/session_controller.dart';
@@ -10,6 +15,7 @@ import '../../organizations/data/organization_repository.dart';
 import '../../organizations/data/site_repository.dart';
 import '../../organizations/domain/organization.dart';
 import '../../organizations/domain/site.dart';
+import '../../organizations/presentation/site_select_list.dart';
 import '../data/account_approval_service.dart';
 import '../domain/app_role.dart';
 import '../domain/membership.dart';
@@ -269,26 +275,25 @@ class _PendingApprovalsScreenState extends State<PendingApprovalsScreen> {
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.all(AppSpacing.md),
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                'Pending Approvals',
-                style: AppTextStyles.headlineMedium,
-              ),
-            ),
-            IconButton(
-              tooltip: 'Refresh',
-              onPressed: _isLoading ? null : _load,
-              icon: const Icon(Icons.refresh),
+        FeatureHeader(
+          title: 'Pending Approvals',
+          subtitle:
+              'Approving a request assigns the role and worker type you '
+              'choose, and activates the account.',
+          icon: Icons.how_to_reg,
+          color: AppColors.people,
+          chips: [
+            FeatureChip(
+              icon: Icons.hourglass_top,
+              label: '${_accounts.length} waiting for review',
             ),
           ],
-        ),
-        const SizedBox(height: AppSpacing.xs),
-        const Text(
-          'Approving a request assigns the role and worker type you '
-          'choose, and activates the account.',
-          style: AppTextStyles.bodyMedium,
+          trailing: IconButton(
+            tooltip: 'Refresh',
+            color: Colors.white,
+            onPressed: _isLoading ? null : _load,
+            icon: const Icon(Icons.refresh),
+          ),
         ),
         if (_errorMessage != null) ...[
           const SizedBox(height: AppSpacing.md),
@@ -337,16 +342,29 @@ class _PendingAccountCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Card(
       margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: AppColors.people.withValues(alpha: 0.5)),
+      ),
       child: Padding(
         padding: const EdgeInsets.all(AppSpacing.md),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text(
-              account.name.isEmpty ? 'Unnamed account' : account.name,
-              style: AppTextStyles.titleLarge,
+            Row(
+              children: [
+                PersonAvatar(name: account.name),
+                const SizedBox(width: AppSpacing.sm),
+                Expanded(
+                  child: Text(
+                    account.name.isEmpty ? 'Unnamed account' : account.name,
+                    style: AppTextStyles.titleLarge,
+                  ),
+                ),
+                const StatusBadge(label: 'Pending', color: AppColors.warning),
+              ],
             ),
-            const SizedBox(height: AppSpacing.xs),
+            const SizedBox(height: AppSpacing.sm),
             _DetailRow(icon: Icons.mail_outline, value: account.email),
             if (account.phone != null)
               _DetailRow(icon: Icons.phone_outlined, value: account.phone!),
@@ -365,6 +383,10 @@ class _PendingAccountCard extends StatelessWidget {
                     minWidth: 140,
                   ),
                   child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.go,
+                      foregroundColor: Colors.white,
+                    ),
                     onPressed: isBusy ? null : onApprove,
                     icon: isBusy
                         ? const SizedBox(
@@ -385,6 +407,7 @@ class _PendingAccountCard extends StatelessWidget {
                     onPressed: isBusy ? null : onReject,
                     style: OutlinedButton.styleFrom(
                       foregroundColor: AppColors.danger,
+                      side: const BorderSide(color: AppColors.danger),
                     ),
                     icon: const Icon(Icons.close),
                     label: const Text('Reject'),
@@ -605,8 +628,8 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
   /// in the organization to place a Worker at, only the site(s) their own
   /// membership already carries. Unused (returns null) for every other
   /// reviewer shape, which sees every site in the selected organization.
-  List<String>? get _reviewerOwnSiteIds => widget.reviewerRole ==
-          AppRole.foreman
+  List<String>? get _reviewerOwnSiteIds =>
+      widget.reviewerRole == AppRole.foreman
       ? widget.reviewerMemberships
             .firstWhere(
               (m) => m.organizationId == _effectiveOrganizationId,
@@ -707,21 +730,23 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
       _sitesError = null;
     });
     try {
-      final sites = await widget
-          .siteRepositoryFor(organizationId)
-          .watchAll()
-          .first;
-      if (!mounted) return;
       // A Foreman reviewer only ever places a Worker at their OWN site(s)
-      // — see [_reviewerOwnSiteIds]'s doc comment. Every other reviewer
-      // shape (Admin, Site Manager) sees every site in the organization,
-      // matching the existing Foreman-placement picker.
+      // — see [_reviewerOwnSiteIds]'s doc comment. Their firestore.rules
+      // grant is scoped the same way (a Foreman may only read a site whose
+      // id is in their own membership's siteIds), so an unconstrained
+      // watchAll() is refused outright for them — not merely over-broad —
+      // and must query by id instead (SiteRepository.watchByIds). Every
+      // other reviewer shape (Admin, Site Manager) has a broader grant and
+      // still sees every site in the organization via watchAll().
       final ownSiteIds = _reviewerOwnSiteIds;
-      setState(
-        () => _sites = ownSiteIds == null
-            ? sites
-            : sites.where((s) => ownSiteIds.contains(s.id)).toList(),
-      );
+      final sites = ownSiteIds == null
+          ? await widget.siteRepositoryFor(organizationId).watchAll().first
+          : await widget
+                .siteRepositoryFor(organizationId)
+                .watchByIds(ownSiteIds)
+                .first;
+      if (!mounted) return;
+      setState(() => _sites = sites);
     } catch (_) {
       if (!mounted) return;
       setState(() => _sitesError = 'Could not load sites. Please try again.');
@@ -793,24 +818,19 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
               else if (_organizationsError != null)
                 AuthErrorBanner(message: _organizationsError!)
               else if (_isAdminReviewer)
-                DropdownButtonFormField<Organization?>(
-                  initialValue: _selectedOrganization,
-                  decoration: const InputDecoration(
-                    labelText: 'Organization (optional)',
-                  ),
+                ChoiceList<Organization>(
+                  // Optional: left unselected, they create their own.
+                  label: 'Organization (optional)',
                   items: [
-                    const DropdownMenuItem(
-                      value: null,
-                      child: Text('None yet — they will create their own'),
-                    ),
                     for (final organization in _organizations)
-                      DropdownMenuItem(
+                      ChoiceItem(
                         value: organization,
-                        child: Text(
-                          '${organization.name} (${organization.code})',
-                        ),
+                        title: organization.name,
+                        badge: organization.code,
+                        subtitle: organization.code,
                       ),
                   ],
+                  selected: _selectedOrganization,
                   onChanged: (value) {
                     setState(() => _selectedOrganization = value);
                     _onOrganizationChanged();
@@ -827,20 +847,20 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
               // underlying membership model still supports it — see
               // SessionController.membershipFor's doc comment).
               else if (widget.reviewerMemberships.length > 1)
-                DropdownButtonFormField<String>(
-                  initialValue: _selectedMembershipOrganizationId,
-                  decoration: const InputDecoration(labelText: 'Organization'),
+                ChoiceList<String>(
+                  label: 'Organization',
                   items: [
                     for (final membership in widget.reviewerMemberships)
-                      DropdownMenuItem(
+                      ChoiceItem(
                         value: membership.organizationId,
-                        child: Text(
-                          _membershipOrganizations[membership.organizationId]
-                                  ?.name ??
-                              membership.organizationId,
-                        ),
+                        title:
+                            _membershipOrganizations[membership.organizationId]
+                                ?.name ??
+                            membership.organizationId,
+                        icon: Icons.business,
                       ),
                   ],
+                  selected: _selectedMembershipOrganizationId,
                   onChanged: (value) {
                     setState(() => _selectedMembershipOrganizationId = value);
                     _onOrganizationChanged();
@@ -849,13 +869,20 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
                       value == null ? 'Choose an organization.' : null,
                 ),
               const SizedBox(height: AppSpacing.sm),
-              DropdownButtonFormField<AppRole>(
-                initialValue: _role,
-                decoration: const InputDecoration(labelText: 'Role'),
+              ChoiceList<AppRole>(
+                label: 'Role',
                 items: [
                   for (final role in _grantableRoles)
-                    DropdownMenuItem(value: role, child: Text(role.label)),
+                    ChoiceItem(
+                      value: role,
+                      title: role.label,
+                      icon: _roleIcon(role),
+                      color: DashboardHeader.roleColor(role),
+                    ),
                 ],
+                selected: _role,
+                // A role is always required; tapping another switches it.
+                allowDeselect: false,
                 onChanged: (value) {
                   if (value != null) _onRoleChanged(value);
                 },
@@ -867,6 +894,7 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
                   error: _sitesError,
                   sites: _sites,
                   selectedSiteIds: _selectedSiteIds,
+                  isForemanReviewer: widget.reviewerRole == AppRole.foreman,
                   onToggle: (siteId, selected) => setState(() {
                     if (selected) {
                       _selectedSiteIds.add(siteId);
@@ -877,14 +905,22 @@ class _RoleAssignmentDialogState extends State<_RoleAssignmentDialog> {
                 ),
               ],
               const SizedBox(height: AppSpacing.sm),
-              DropdownButtonFormField<WorkerType?>(
-                initialValue: _workerType,
-                decoration: const InputDecoration(labelText: 'Worker type'),
+              ChoiceList<WorkerType>(
+                label: 'Worker type (optional)',
                 items: [
-                  const DropdownMenuItem(value: null, child: Text('Not set')),
                   for (final type in WorkerType.values)
-                    DropdownMenuItem(value: type, child: Text(type.label)),
+                    ChoiceItem(
+                      value: type,
+                      title: type.label,
+                      icon: switch (type) {
+                        WorkerType.jvaEmployee => Icons.badge,
+                        WorkerType.contractor => Icons.handshake,
+                        WorkerType.subcontractor => Icons.group_work,
+                        WorkerType.other => Icons.person_outline,
+                      },
+                    ),
                 ],
+                selected: _workerType,
                 onChanged: (value) => setState(() => _workerType = value),
               ),
             ],
@@ -934,6 +970,7 @@ class _SitePicker extends StatelessWidget {
     required this.sites,
     required this.selectedSiteIds,
     required this.onToggle,
+    this.isForemanReviewer = false,
   });
 
   final bool isLoading;
@@ -941,6 +978,14 @@ class _SitePicker extends StatelessWidget {
   final List<Site> sites;
   final Set<String> selectedSiteIds;
   final void Function(String siteId, bool selected) onToggle;
+
+  /// True when this picker is scoped to a Foreman reviewer's OWN site(s)
+  /// (see [_RoleAssignmentDialogState._reviewerOwnSiteIds]) rather than
+  /// every site in the organization. An empty list here almost always means
+  /// the Foreman themself has not been assigned a site yet — not that the
+  /// organization has no sites — so the empty-state message below is
+  /// worded accordingly instead of the misleading "No sites exist yet."
+  final bool isForemanReviewer;
 
   @override
   Widget build(BuildContext context) {
@@ -960,31 +1005,39 @@ class _SitePicker extends StatelessWidget {
       return AuthErrorBanner(message: error!);
     }
     if (sites.isEmpty) {
-      return const Padding(
-        padding: EdgeInsets.symmetric(vertical: AppSpacing.xs),
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
         child: Text(
-          'No sites exist yet. You can assign one later from Operations.',
+          isForemanReviewer
+              ? "You have not been assigned to a site yet, so there is "
+                    "nothing to place this worker at. Ask your Site "
+                    "Manager to assign you a site first, then approve "
+                    "this account."
+              : 'No sites exist yet. You can assign one later from '
+                    'Operations.',
           style: AppTextStyles.bodyMedium,
         ),
       );
     }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Padding(
-          padding: EdgeInsets.only(bottom: AppSpacing.xs),
-          child: Text('Site(s) — optional', style: AppTextStyles.label),
-        ),
-        for (final site in sites)
-          CheckboxListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            controlAffinity: ListTileControlAffinity.leading,
-            title: Text(site.name),
-            value: selectedSiteIds.contains(site.id),
-            onChanged: (checked) => onToggle(site.id, checked ?? false),
-          ),
-      ],
+    return MultiChoiceList<String>(
+      label: 'Site(s) — optional',
+      items: [for (final site in sites) siteChoice(site)],
+      selected: selectedSiteIds.toSet(),
+      searchHint: 'Search sites by name, code or location',
+      onChanged: (next) {
+        for (final site in sites) {
+          final wasOn = selectedSiteIds.contains(site.id);
+          final isOn = next.contains(site.id);
+          if (wasOn != isOn) onToggle(site.id, isOn);
+        }
+      },
     );
   }
 }
+
+IconData _roleIcon(AppRole role) => switch (role) {
+  AppRole.admin => Icons.admin_panel_settings,
+  AppRole.siteManager => Icons.apartment,
+  AppRole.foreman => Icons.engineering,
+  AppRole.worker => Icons.construction,
+};

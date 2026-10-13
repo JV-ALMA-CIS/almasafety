@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:jva_safety/core/services/session_controller.dart';
+import 'package:jva_safety/core/services/theme_controller.dart';
 import 'package:jva_safety/features/authentication/domain/account_status.dart';
 import 'package:jva_safety/features/authentication/domain/app_role.dart';
 import 'package:jva_safety/features/authentication/domain/membership.dart';
@@ -35,9 +37,15 @@ class _FakeSession extends SessionController {
 
   final UserProfile _profile;
   final Membership? _membership;
+  bool signOutCalled = false;
 
   @override
   UserProfile? get profile => _profile;
+
+  @override
+  Future<void> signOut() async {
+    signOutCalled = true;
+  }
 
   // Deliberately empty: AppShell's app-bar action mounts a real,
   // uninjectable _NotificationBellAction whenever activeOrganizationId is
@@ -60,6 +68,7 @@ void main() {
     required AppRole? role,
     bool transientSiteManagerMarker = false,
     Size viewport = const Size(1600, 900),
+    void Function(_FakeSession session)? onSessionCreated,
   }) {
     final router = GoRouter(
       initialLocation: AppRoutes.dashboard,
@@ -92,11 +101,26 @@ void main() {
       ],
     );
 
-    return ChangeNotifierProvider<SessionController>(
-      create: (_) => _FakeSession(
-        role: role,
-        transientSiteManagerMarker: transientSiteManagerMarker,
-      ),
+    SharedPreferences.setMockInitialValues({});
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider<SessionController>(
+          create: (_) {
+            final session = _FakeSession(
+              role: role,
+              transientSiteManagerMarker: transientSiteManagerMarker,
+            );
+            onSessionCreated?.call(session);
+            return session;
+          },
+        ),
+        // AppShell's app-bar appearance action requires this provider —
+        // ThemeController is deliberately independent of SessionController
+        // (see its own doc comment), so it needs its own entry here.
+        ChangeNotifierProvider<ThemeController>(
+          create: (_) => ThemeController(),
+        ),
+      ],
       child: MaterialApp.router(routerConfig: router),
     );
   }
@@ -126,9 +150,30 @@ void main() {
       expect(find.text('Corrective Actions'), findsOneWidget);
       expect(find.text('Safety Alerts'), findsOneWidget);
       expect(find.text('MEETINGS & LEARNING'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('Daily Safety Meetings'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       expect(find.text('Daily Safety Meetings'), findsOneWidget);
-      expect(find.text('Safety Learning'), findsOneWidget);
+      // "Safety Learning" here is a Foreman/Worker's own required-learning
+      // list — an Admin has no personal learning records and reviews
+      // org-wide via "Learning Compliance" under Insights instead. See
+      // AppShell._sectionsFor's doc comment.
+      expect(find.text('Safety Learning'), findsNothing);
+      await tester.scrollUntilVisible(
+        find.text('Safety Videos'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       expect(find.text('Safety Videos'), findsOneWidget);
+      // The sidebar header now also shows the user's name and role, so
+      // this entry may sit below the fold — scroll it into view first.
+      await tester.scrollUntilVisible(
+        find.text('Analytics'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       expect(find.text('INSIGHTS'), findsOneWidget);
       expect(find.text('Analytics'), findsOneWidget);
 
@@ -167,7 +212,20 @@ void main() {
 
       expect(find.text('OPERATIONS'), findsOneWidget);
       expect(find.text('Projects'), findsOneWidget);
+      await tester.dragUntilVisible(
+        find.text('INSIGHTS'),
+        find.byType(ListView),
+        const Offset(0, -300),
+      );
       expect(find.text('INSIGHTS'), findsOneWidget);
+
+      await tester.dragUntilVisible(
+        find.text('Safety Meeting Points'),
+        find.byType(ListView),
+        const Offset(0, -300),
+      );
+      expect(find.text('Safety Learning Library'), findsNothing);
+      expect(find.text('Safety Meeting Points'), findsOneWidget);
 
       await tester.dragUntilVisible(
         find.text('ADMINISTRATION'),
@@ -175,8 +233,6 @@ void main() {
         const Offset(0, -300),
       );
       expect(find.text('ADMINISTRATION'), findsOneWidget);
-      expect(find.text('Safety Learning Library'), findsNothing);
-      expect(find.text('Safety Meeting Points'), findsOneWidget);
     });
 
     testWidgets('a brand-new Site Manager with no membership yet still sees '
@@ -219,6 +275,13 @@ void main() {
 
         expect(find.text('SAFETY'), findsOneWidget);
         expect(find.text('MEETINGS & LEARNING'), findsOneWidget);
+        // The sidebar header now also shows the user's name and role, so
+        // this entry may sit below the fold — scroll it into view first.
+        await tester.scrollUntilVisible(
+          find.text('ADMINISTRATION'),
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
         expect(find.text('ADMINISTRATION'), findsOneWidget);
         expect(find.text('OPERATIONS'), findsNothing);
         expect(find.text('INSIGHTS'), findsNothing);
@@ -240,7 +303,24 @@ void main() {
       await tester.pumpAndSettle();
       await openDrawer(tester);
 
+      // The sidebar header now also shows the user's name and role, so
+      // this entry may sit below the fold — scroll it into view first.
+      await tester.scrollUntilVisible(
+        find.text('Pending Approvals'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       expect(find.text('Pending Approvals'), findsOneWidget);
+      // The drawer's nav list now has more entries than the 360x800 mobile
+      // viewport can show at once (this role also sees "Crew Compliance"),
+      // so "My Workers" — further down the list — needs a scroll to be in
+      // view before Flutter's test framework will find it, same as any
+      // other item near the bottom of a real scrollable list.
+      await tester.scrollUntilVisible(
+        find.text('My Workers'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       expect(find.text('My Workers'), findsOneWidget);
       expect(find.text('Administration'), findsNothing);
     });
@@ -342,6 +422,73 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('JVA Safety'), findsWidgets);
+    });
+  });
+
+  group('AppShell sign-out', () {
+    testWidgets(
+      'a Sign Out action is always available in the app bar, and tapping '
+      "it calls the session's signOut — the only way out of a signed-in "
+      'session anywhere in the normal shell',
+      (tester) async {
+        tester.view.physicalSize = const Size(1600, 900);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+        late _FakeSession session;
+
+        await tester.pumpWidget(
+          wrap(role: AppRole.worker, onSessionCreated: (s) => session = s),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.byTooltip('Sign Out'), findsOneWidget);
+        expect(session.signOutCalled, isFalse);
+
+        await tester.tap(find.byTooltip('Sign Out'));
+        await tester.pumpAndSettle();
+
+        expect(session.signOutCalled, isTrue);
+      },
+    );
+  });
+
+  group('AppShell appearance action', () {
+    testWidgets('an Appearance action is always available, offers System/Light/'
+        'Dark, and selecting one updates the ThemeController the app '
+        "reads its themeMode from — this is the in-app override that "
+        "exists precisely because a device's own OS/browser dark-mode "
+        'setting is not always reachable per-app (see ThemeController)', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(1600, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      await tester.pumpWidget(wrap(role: AppRole.worker));
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Appearance'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Appearance'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('System'), findsOneWidget);
+      expect(find.text('Light'), findsOneWidget);
+      expect(find.text('Dark'), findsOneWidget);
+
+      // PopupMenuButton's own entrance/exit transition can leave a
+      // transient overlay above the item's hit-test point on the exact
+      // frame this tap lands — a known, harmless quirk of this widget in
+      // tests (the tap still reaches the correct item; see the assertion
+      // below), not a real ambiguity about what's on screen.
+      await tester.tap(find.text('Dark'), warnIfMissed: false);
+      await tester.pumpAndSettle();
+
+      final controller = Provider.of<ThemeController>(
+        tester.element(find.byTooltip('Appearance')),
+        listen: false,
+      );
+      expect(controller.mode, ThemeMode.dark);
     });
   });
 }

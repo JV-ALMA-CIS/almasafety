@@ -220,6 +220,17 @@ class ReportsRepository {
     final sites = await siteRepository.watchAll().first;
     final siteNamesById = {for (final s in sites) s.id: s.name};
 
+    // Names for actions created before names were stored on the action.
+    final peopleNames = <String, String>{};
+    try {
+      for (final user in await _accountApprovalService.listUsers(
+        organizationId: _organizationId,
+      )) {
+        if (user.name.trim().isNotEmpty) peopleNames[user.uid] = user.name;
+      }
+    } on Object {
+      // The report still renders, with "Unknown person" where needed.
+    }
     final rows = actions
         .where((action) {
           if (siteId != null && action.siteId != siteId) return false;
@@ -229,9 +240,13 @@ class ReportsRepository {
           (action) => CorrectiveActionReportRow(
             actionId: action.id,
             siteId: action.siteId,
-            siteName: siteNamesById[action.siteId] ?? action.siteId,
+            siteName: siteNamesById[action.siteId] ?? 'Unknown site',
             title: action.title,
             assignedTo: action.assignedTo,
+            assignedToName:
+                action.assignedToName ??
+                peopleNames[action.assignedTo] ??
+                'Unknown person',
             dueDate: action.dueDate,
             status: action.status,
           ),
@@ -243,13 +258,16 @@ class ReportsRepository {
   }
 
   /// Builds the Safety Learning report: one row per active worker in this
-  /// organization, summarizing their progress against the organization's
+  /// organization, summarizing their progress against THEIR OWN
   /// currently-required learning set. Reuses
-  /// [SafetyRequirementRepository.watchResolvedRequiredLearning] unmodified
-  /// — the exact same required-set resolution `getMyRequiredLearning`
-  /// materializes records against server-side — so this report can never
-  /// claim a different "required" set than the one that actually governs a
-  /// worker's obligations.
+  /// [SafetyRequirementRepository.watchResolvedRequiredLearning] unmodified,
+  /// once per worker — the exact same required-set resolution
+  /// `getMyRequiredLearning` materializes records against server-side — so
+  /// this report can never claim a different "required" set than the one
+  /// that actually governs a worker's obligations. Now that a requirement
+  /// can be site/activity-scoped (not just organization-wide), two workers
+  /// can have different required counts, so this is resolved per worker
+  /// rather than once for the whole organization.
   Future<List<SafetyLearningReportRow>> buildSafetyLearningReport() async {
     final requirementRepository = SafetyRequirementRepository(
       firestoreService: _firestoreService,
@@ -260,33 +278,40 @@ class ReportsRepository {
       organizationId: _organizationId,
     );
 
-    final requiredLearning =
-        await requirementRepository.watchResolvedRequiredLearning().first;
-    final requiredCount = requiredLearning.length;
-
     final workers = await _accountApprovalService.listUsers(
       status: AccountStatus.active,
+      organizationId: _organizationId,
     );
     final records = await workerLearningRepository.watchForOrganization().first;
 
-    final rows = workers.map((worker) {
-      final ownRecords = records.where((r) => r.workerUid == worker.uid);
-      final completedCount = ownRecords
-          .where((r) => r.status == WorkerLearningStatus.completed)
-          .length;
-      final inProgressCount = ownRecords
-          .where((r) => r.status == WorkerLearningStatus.inProgress)
-          .length;
+    final rows = await Future.wait(
+      workers.map((worker) async {
+        final requiredLearning = await requirementRepository
+            .watchResolvedRequiredLearning(worker.uid)
+            .first;
+        final ownRecords = records.where((r) => r.workerUid == worker.uid);
+        final completedCount = ownRecords
+            .where((r) => r.status == WorkerLearningStatus.completed)
+            .length;
+        final inProgressCount = ownRecords
+            .where((r) => r.status == WorkerLearningStatus.inProgress)
+            .length;
 
-      return SafetyLearningReportRow(
-        workerUid: worker.uid,
-        requiredCount: requiredCount,
-        completedCount: completedCount,
-        inProgressCount: inProgressCount,
-      );
-    }).toList();
+        return SafetyLearningReportRow(
+          workerUid: worker.uid,
+          workerName: worker.name.trim().isEmpty ? null : worker.name.trim(),
+          requiredCount: requiredLearning.length,
+          completedCount: completedCount,
+          inProgressCount: inProgressCount,
+        );
+      }),
+    );
 
-    rows.sort((a, b) => a.workerUid.compareTo(b.workerUid));
+    rows.sort(
+      (a, b) => (a.workerName ?? '').toLowerCase().compareTo(
+        (b.workerName ?? '').toLowerCase(),
+      ),
+    );
     return rows;
   }
 }

@@ -8,6 +8,7 @@ import '../../daily_safety_meetings/domain/meeting_attendance_status.dart';
 import '../../daily_safety_meetings/domain/meeting_concern_category.dart';
 import '../../daily_safety_meetings/domain/meeting_concern_status.dart';
 import '../../reports/data/reports_repository.dart';
+import '../../reports/domain/safety_learning_report_row.dart';
 import '../../safety_alerts/domain/safety_alert_category.dart';
 import '../../safety_alerts/domain/safety_alert_severity.dart';
 import '../../safety_alerts/domain/safety_alert_status.dart';
@@ -69,11 +70,27 @@ class AnalyticsRepository {
   /// [SafetyLearningReportRow]'s doc comment), so it ignores every filter
   /// here, matching [ReportsRepository.buildSafetyLearningReport]'s own
   /// signature.
+  ///
+  /// [includeSafetyLearning] (default `true`, matching every existing
+  /// caller's behavior — [AnalyticsScreen] always wants it) gates
+  /// [ReportsRepository.buildSafetyLearningReport] specifically: that method
+  /// runs one `collectionGroup('assignments')` query PER ACTIVE WORKER in
+  /// the organization, concurrently, via `Future.wait`. [AnalyticsScreen]
+  /// only ever calls [build] from an explicit "Refresh" tap, so that fan-out
+  /// happens once per deliberate user action. A dashboard that calls [build]
+  /// automatically on every visit must NOT trigger that same fan-out
+  /// automatically — passing `false` here skips it and returns a
+  /// zero-valued [SafetyLearningMetrics] instead; callers that still want a
+  /// Learning Compliance number on such a screen should source it from
+  /// [SafetyComplianceRepository] instead (already used safely by
+  /// [ForemanDashboardScreen], since it queries per SITE, not per worker
+  /// across the whole organization).
   Future<AnalyticsDashboard> build({
     String? projectId,
     String? siteId,
     DateTime? from,
     DateTime? to,
+    bool includeSafetyLearning = true,
   }) async {
     final meetingRows = await _reportsRepository.buildDailySafetyMeetingReport(
       projectId: projectId,
@@ -91,7 +108,9 @@ class AnalyticsRepository {
       from: from,
       to: to,
     );
-    final learningRows = await _reportsRepository.buildSafetyLearningReport();
+    final learningRows = includeSafetyLearning
+        ? await _reportsRepository.buildSafetyLearningReport()
+        : const <SafetyLearningReportRow>[];
 
     final attendanceByMeeting = await Future.wait(
       meetingRows.map((row) async {

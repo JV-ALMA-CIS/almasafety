@@ -41,6 +41,21 @@ class OrganizationRepository {
   /// the organization ids their own memberships name.
   Stream<List<Organization>> watchAll() => _repository.watchCollection();
 
+  /// Fetches every organization once, from the server.
+  ///
+  /// Unlike [watchAll], this never emits a possibly-stale, possibly-empty
+  /// LOCAL CACHE result before the real server response arrives — `.get()`
+  /// resolves exactly once, with the server's answer. [watchAll]'s
+  /// `.snapshots()` listener can fire from cache first on a cold client (no
+  /// prior local cache for this collection), which a caller that concludes
+  /// "no organization exists yet" from an empty list would misread as a
+  /// real, settled empty state and show a "not set up" message for the
+  /// split second before the server's actual (non-empty) answer arrives —
+  /// exactly what happened to [AdminDashboardScreen]'s own org resolution.
+  /// Callers that only need to resolve "which organization(s) exist" ONCE
+  /// (not live-updating) should prefer this over [watchAll].
+  Future<List<Organization>> getAll() => _repository.getCollection();
+
   /// Streams the organizations named by [organizationIds] — one per-document
   /// watch per id, merged into a single list stream that re-emits whenever
   /// any of them changes.
@@ -73,22 +88,17 @@ class OrganizationRepository {
     void emit() {
       if (controller.isClosed) return;
       if (reported.any((done) => !done)) return;
-      controller.add(
-        latest.whereType<Organization>().toList(growable: false),
-      );
+      controller.add(latest.whereType<Organization>().toList(growable: false));
     }
 
     for (var i = 0; i < ids.length; i++) {
       final index = i;
       subscriptions.add(
-        watchById(ids[index]).listen(
-          (organization) {
-            latest[index] = organization;
-            reported[index] = true;
-            emit();
-          },
-          onError: controller.addError,
-        ),
+        watchById(ids[index]).listen((organization) {
+          latest[index] = organization;
+          reported[index] = true;
+          emit();
+        }, onError: controller.addError),
       );
     }
 

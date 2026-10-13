@@ -82,8 +82,10 @@ class WorkerLearningRecord {
     }
     final learningId = data['learningId'] as String?;
     if (learningId == null || learningId.isEmpty) {
-      throw const DataException('That learning record has no learning '
-          'item.');
+      throw const DataException(
+        'That learning record has no learning '
+        'item.',
+      );
     }
     final rawKnowledgeCheckResult = data['knowledgeCheckResult'];
     return WorkerLearningRecord(

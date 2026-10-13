@@ -49,8 +49,7 @@ class FakeAuthService implements AuthService {
   }
 
   @override
-  User? get currentUser =>
-      signedInUid == null ? null : _FakeUser(signedInUid!);
+  User? get currentUser => signedInUid == null ? null : _FakeUser(signedInUid!);
 
   @override
   Future<UserCredential> signInWithEmailAndPassword({
@@ -201,27 +200,29 @@ void main() {
   });
 
   group('registration', () {
-    test('creates a pending profile and lands the session on pending',
-        () async {
-      auth.signedInUid = 'new-uid';
+    test(
+      'creates a pending profile and lands the session on pending',
+      () async {
+        auth.signedInUid = 'new-uid';
 
-      final future = session.register(
-        name: 'New User',
-        email: 'new@example.com',
-        phone: '+254700000000',
-        password: 'password123',
-      );
-      // Firebase would emit the new user; the fake does so explicitly.
-      await future;
-      auth.emitSignedIn('new-uid');
-      await waitForStatus(session, AuthStatus.pending);
+        final future = session.register(
+          name: 'New User',
+          email: 'new@example.com',
+          phone: '+254700000000',
+          password: 'password123',
+        );
+        // Firebase would emit the new user; the fake does so explicitly.
+        await future;
+        auth.emitSignedIn('new-uid');
+        await waitForStatus(session, AuthStatus.pending);
 
-      final doc = await firestore.doc('users/new-uid').get();
-      expect(doc.exists, isTrue);
-      expect(doc.data()!['accountStatus'], 'pending');
-      expect(doc.data()!.containsKey('workerType'), isFalse);
-      expect(session.isAuthenticated, isFalse);
-    });
+        final doc = await firestore.doc('users/new-uid').get();
+        expect(doc.exists, isTrue);
+        expect(doc.data()!['accountStatus'], 'pending');
+        expect(doc.data()!.containsKey('workerType'), isFalse);
+        expect(session.isAuthenticated, isFalse);
+      },
+    );
 
     test('never writes an organizationId or approval fields', () async {
       auth.signedInUid = 'new-uid';
@@ -241,24 +242,26 @@ void main() {
       expect(data.containsKey('active'), isFalse);
     });
 
-    test('a registered user is not authenticated for operational access',
-        () async {
-      auth.signedInUid = 'new-uid';
+    test(
+      'a registered user is not authenticated for operational access',
+      () async {
+        auth.signedInUid = 'new-uid';
 
-      await session.register(
-        name: 'New User',
-        email: 'new@example.com',
-        phone: '+254700000000',
-        password: 'password123',
-      );
-      auth.emitSignedIn('new-uid');
-      await waitForStatus(session, AuthStatus.pending);
+        await session.register(
+          name: 'New User',
+          email: 'new@example.com',
+          phone: '+254700000000',
+          password: 'password123',
+        );
+        auth.emitSignedIn('new-uid');
+        await waitForStatus(session, AuthStatus.pending);
 
-      expect(session.isAuthenticated, isFalse);
-      expect(session.isDenied, isTrue);
-      expect(session.activeOrganizationId, isNull);
-      expect(session.accountStatus, AccountStatus.pending);
-    });
+        expect(session.isAuthenticated, isFalse);
+        expect(session.isDenied, isTrue);
+        expect(session.activeOrganizationId, isNull);
+        expect(session.accountStatus, AccountStatus.pending);
+      },
+    );
 
     test('surfaces an auth failure as an error state and rethrows', () async {
       auth.createUserError = const AuthException('That email is in use.');
@@ -281,28 +284,30 @@ void main() {
   });
 
   group('session reacts to account status changes', () {
-    test('approval moves a pending user into the app without re-login',
-        () async {
-      await seedProfile('uid-1', AccountStatus.pending);
-      auth.emitSignedIn('uid-1');
-      await waitForStatus(session, AuthStatus.pending);
+    test(
+      'approval moves a pending user into the app without re-login',
+      () async {
+        await seedProfile('uid-1', AccountStatus.pending);
+        auth.emitSignedIn('uid-1');
+        await waitForStatus(session, AuthStatus.pending);
 
-      // An approver activates the account and creates its first membership.
-      await firestore.doc('users/uid-1').update({
-        'accountStatus': 'active',
-        'approvedBy': 'approver-uid',
-      });
-      await firestore.doc('users/uid-1/memberships/org-alpha').set({
-        'organizationId': 'org-alpha',
-        'role': 'siteManager',
-        'status': 'active',
-      });
-      await waitForStatus(session, AuthStatus.authenticated);
-      await _waitForActiveOrganization(session, 'org-alpha');
+        // An approver activates the account and creates its first membership.
+        await firestore.doc('users/uid-1').update({
+          'accountStatus': 'active',
+          'approvedBy': 'approver-uid',
+        });
+        await firestore.doc('users/uid-1/memberships/org-alpha').set({
+          'organizationId': 'org-alpha',
+          'role': 'siteManager',
+          'status': 'active',
+        });
+        await waitForStatus(session, AuthStatus.authenticated);
+        await _waitForActiveOrganization(session, 'org-alpha');
 
-      expect(session.isAuthenticated, isTrue);
-      expect(session.activeOrganizationId, 'org-alpha');
-    });
+        expect(session.isAuthenticated, isTrue);
+        expect(session.activeOrganizationId, 'org-alpha');
+      },
+    );
 
     test('suspension revokes access on the next snapshot', () async {
       await seedProfile('uid-1', AccountStatus.active);
@@ -327,14 +332,16 @@ void main() {
       expect(session.isAuthenticated, isFalse);
     });
 
-    test('a signed-in user with no profile document is profileMissing',
-        () async {
-      auth.emitSignedIn('ghost-uid');
-      await waitForStatus(session, AuthStatus.profileMissing);
+    test(
+      'a signed-in user with no profile document is profileMissing',
+      () async {
+        auth.emitSignedIn('ghost-uid');
+        await waitForStatus(session, AuthStatus.profileMissing);
 
-      expect(session.isAuthenticated, isFalse);
-      expect(session.profile, isNull);
-    });
+        expect(session.isAuthenticated, isFalse);
+        expect(session.profile, isNull);
+      },
+    );
 
     test('a malformed profile denies access instead of degrading', () async {
       await firestore.doc('users/uid-bad').set({
@@ -377,21 +384,23 @@ void main() {
       expect(session.profile?.isPlatformAdministrator, isTrue);
     });
 
-    test('a bootstrap admin reaches operational access with no organization',
-        () async {
-      await firestore.doc('users/admin-uid').set({
-        'uid': 'admin-uid',
-        'name': 'Bootstrap Admin',
-        'email': 'admin@example.com',
-        'accountStatus': 'active',
-        'platformRole': 'admin',
-      });
-      auth.emitSignedIn('admin-uid');
-      await waitForStatus(session, AuthStatus.authenticated);
+    test(
+      'a bootstrap admin reaches operational access with no organization',
+      () async {
+        await firestore.doc('users/admin-uid').set({
+          'uid': 'admin-uid',
+          'name': 'Bootstrap Admin',
+          'email': 'admin@example.com',
+          'accountStatus': 'active',
+          'platformRole': 'admin',
+        });
+        auth.emitSignedIn('admin-uid');
+        await waitForStatus(session, AuthStatus.authenticated);
 
-      expect(session.isDenied, isFalse);
-      expect(session.isResolving, isFalse);
-    });
+        expect(session.isDenied, isFalse);
+        expect(session.isResolving, isFalse);
+      },
+    );
   });
 
   group('logout', () {
@@ -422,17 +431,19 @@ void main() {
   });
 
   group('auth state persistence', () {
-    test('a restored Firebase session loads the profile without a sign-in',
-        () async {
-      // Firebase restores the session at cold start by emitting on
-      // authStateChanges without any signIn() call.
-      await seedProfile('uid-1', AccountStatus.active);
-      auth.emitSignedIn('uid-1');
-      await waitForStatus(session, AuthStatus.authenticated);
+    test(
+      'a restored Firebase session loads the profile without a sign-in',
+      () async {
+        // Firebase restores the session at cold start by emitting on
+        // authStateChanges without any signIn() call.
+        await seedProfile('uid-1', AccountStatus.active);
+        auth.emitSignedIn('uid-1');
+        await waitForStatus(session, AuthStatus.authenticated);
 
-      expect(auth.signInCalled, isFalse);
-      expect(session.isAuthenticated, isTrue);
-    });
+        expect(auth.signInCalled, isFalse);
+        expect(session.isAuthenticated, isTrue);
+      },
+    );
   });
 
   group('activeOrganizationId persistence', () {
@@ -495,37 +506,39 @@ void main() {
       },
     );
 
-    test('a selection for one uid does not leak into another uid\'s session',
-        () async {
-      SharedPreferences.setMockInitialValues({});
-      await seedTwoMemberships('uid-a');
-      await seedTwoMemberships('uid-b');
+    test(
+      'a selection for one uid does not leak into another uid\'s session',
+      () async {
+        SharedPreferences.setMockInitialValues({});
+        await seedTwoMemberships('uid-a');
+        await seedTwoMemberships('uid-b');
 
-      auth.emitSignedIn('uid-a');
-      await waitForStatus(session, AuthStatus.authenticated);
-      await _waitForActiveOrganization(session, 'org-alpha');
-      session.setActiveOrganization('org-beta');
-      await _waitForActiveOrganization(session, 'org-beta');
+        auth.emitSignedIn('uid-a');
+        await waitForStatus(session, AuthStatus.authenticated);
+        await _waitForActiveOrganization(session, 'org-alpha');
+        session.setActiveOrganization('org-beta');
+        await _waitForActiveOrganization(session, 'org-beta');
 
-      session.dispose();
-      await auth.dispose();
+        session.dispose();
+        await auth.dispose();
 
-      final auth2 = FakeAuthService();
-      final session2 = SessionController(
-        authService: auth2,
-        userProfileRepository: repository,
-        membershipRepository: membershipRepository,
-      );
-      addTearDown(session2.dispose);
-      addTearDown(auth2.dispose);
+        final auth2 = FakeAuthService();
+        final session2 = SessionController(
+          authService: auth2,
+          userProfileRepository: repository,
+          membershipRepository: membershipRepository,
+        );
+        addTearDown(session2.dispose);
+        addTearDown(auth2.dispose);
 
-      auth2.emitSignedIn('uid-b');
-      await waitForStatus(session2, AuthStatus.authenticated);
-      // uid-b never called setActiveOrganization, so it falls back to the
-      // default (first by organization id), not uid-a's persisted choice.
-      await _waitForActiveOrganization(session2, 'org-alpha');
+        auth2.emitSignedIn('uid-b');
+        await waitForStatus(session2, AuthStatus.authenticated);
+        // uid-b never called setActiveOrganization, so it falls back to the
+        // default (first by organization id), not uid-a's persisted choice.
+        await _waitForActiveOrganization(session2, 'org-alpha');
 
-      expect(session2.activeOrganizationId, 'org-alpha');
-    });
+        expect(session2.activeOrganizationId, 'org-alpha');
+      },
+    );
   });
 }

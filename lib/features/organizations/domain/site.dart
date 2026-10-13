@@ -45,9 +45,7 @@ class Site {
 
   /// Parses a site document. Throws [DataException] on a missing or
   /// malformed document — see [Organization.fromFirestore] for why.
-  factory Site.fromFirestore(
-    DocumentSnapshot<Map<String, dynamic>> doc,
-  ) {
+  factory Site.fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     final data = doc.data();
     if (data == null) {
       throw const DataException('That site could not be loaded.');

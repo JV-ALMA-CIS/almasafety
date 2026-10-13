@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../core/widgets/live_stream_builder.dart';
 import 'package:provider/provider.dart';
 import '../../../core/services/firestore_service.dart';
 import '../../../core/services/session_controller.dart';
@@ -70,12 +71,62 @@ class DailySafetyMeetingsRouterScreen extends StatelessWidget {
     // construction) — see UserProfile's doc comment on the multi-org model.
     final role =
         profile?.platformRole ?? sessionController.activeMembership?.role;
-    final organizationId = sessionController.activeOrganizationId;
+    final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
 
     if (role == null || !role.canReviewDailySafetyMeetings) {
       return const DailySafetyMeetingScreen();
     }
 
+    final resolvedFirestoreService = firestoreService ?? FirestoreService();
+    final repository =
+        organizationRepository ??
+        OrganizationRepository(firestoreService: resolvedFirestoreService);
+
+    // An Admin has no organization of their own ([SessionController
+    // .activeOrganizationId] is always null for them, org-less by
+    // construction — see UserProfile's doc comment) — JV Safety is
+    // single-company, so the sole organization is resolved silently here
+    // the same way [AdminDashboardScreen] does, instead of relying on
+    // activeOrganizationId (which only a Site Manager's own membership
+    // provides). Uses [OrganizationRepository.getAll] (a one-time fetch),
+    // not [OrganizationRepository.watchAll] (a live stream) — the stream's
+    // `.snapshots()` listener can emit an empty LOCAL CACHE result before
+    // the server's real (non-empty) answer arrives on a cold client, which
+    // this screen would have misread as "JV ALMA CIS has not been set up
+    // yet" for a brief, confusing flash before the real content loaded.
+    if (isPlatformAdministrator) {
+      return FutureBuilder<List<Organization>>(
+        future: repository.getAll(),
+        builder: (context, snapshot) {
+          final organizations = snapshot.data;
+          if (organizations == null) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (organizations.length != 1) {
+            return const Center(
+              child: Padding(
+                padding: EdgeInsets.all(AppSpacing.lg),
+                child: Text(
+                  'JV ALMA CIS has not been set up yet.',
+                  style: AppTextStyles.bodyMedium,
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            );
+          }
+          return AdminDailySafetyMeetingsScreen(
+            organization: organizations.single,
+            firestoreService: firestoreService,
+            meetingRepository: meetingRepository,
+            projectRepository: projectRepository,
+            siteRepository: siteRepository,
+            approvalService: approvalService,
+          );
+        },
+      );
+    }
+
+    final organizationId = sessionController.activeOrganizationId;
     if (organizationId == null) {
       return const Center(
         child: Padding(
@@ -90,13 +141,9 @@ class DailySafetyMeetingsRouterScreen extends StatelessWidget {
       );
     }
 
-    final resolvedFirestoreService = firestoreService ?? FirestoreService();
-    final repository =
-        organizationRepository ??
-        OrganizationRepository(firestoreService: resolvedFirestoreService);
-
-    return StreamBuilder<Organization?>(
-      stream: repository.watchById(organizationId),
+    return LiveStreamBuilder<Organization?>(
+      streamKey: (organizationId, organizationId),
+      stream: () => repository.watchById(organizationId),
       builder: (context, snapshot) {
         final organization = snapshot.data;
         final isLoading = snapshot.connectionState == ConnectionState.waiting;

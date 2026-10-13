@@ -3,6 +3,7 @@ import 'package:firebase_core/firebase_core.dart';
 import '../../../core/errors/app_exception.dart';
 import '../../organizations/data/organization_admin_service.dart';
 import '../../organizations/domain/organization_record_status.dart';
+import '../domain/activity.dart';
 
 /// Client for the activity management callables in
 /// `functions/src/activity_callable.ts`.
@@ -85,6 +86,32 @@ class ActivityAdminService {
     'description': ?description,
     if (status != null) 'status': status.id,
   });
+
+  /// Every activity at [siteId] within [organizationId] — the
+  /// [ActivityRepository.watchBySite] equivalent for a Foreman/Worker
+  /// caller, whose `firestore.rules` grant does not cover LIST queries on
+  /// `activities` at all (see that rule's own comment on why: "rules are
+  /// not filters" means a resource-data-dependent branch would poison the
+  /// query for every caller). This callable re-derives and enforces the
+  /// caller's own site scope server-side instead. An Admin/Site Manager
+  /// may still prefer [ActivityRepository.watchBySite] directly (a live
+  /// stream, unlike this one-shot fetch) — this exists specifically for
+  /// the role that stream is unusable for.
+  Future<List<Activity>> getSiteActivities({
+    required String organizationId,
+    required String siteId,
+  }) async {
+    final result = await _call<Map<Object?, Object?>>('getSiteActivities', {
+      'organizationId': organizationId,
+      'siteId': siteId,
+    });
+    final activities = result['activities'];
+    if (activities is! List) return const [];
+    return activities
+        .whereType<Map>()
+        .map((a) => Activity.fromMap(a['id'] as String, a.cast()))
+        .toList(growable: false);
+  }
 
   Future<T> _call<T>(String name, [Map<String, Object?>? data]) async {
     try {

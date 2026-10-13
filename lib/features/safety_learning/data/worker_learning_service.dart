@@ -2,7 +2,12 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_core/firebase_core.dart';
 import '../../../core/errors/app_exception.dart';
 import '../../organizations/data/organization_admin_service.dart';
-import '../domain/knowledge_check_result.dart';
+import '../domain/complete_learning_result.dart';
+import '../domain/knowledge_check_question.dart';
+import '../domain/submitted_answer.dart';
+import '../domain/todays_safety_readiness.dart';
+import '../domain/worker_learning_record.dart';
+import '../domain/worker_learning_status.dart';
 
 /// Client for the worker-progress callables in
 /// `functions/src/worker_learning_callable.ts`.
@@ -26,8 +31,7 @@ import '../domain/knowledge_check_result.dart';
 /// [ActivityAssignmentService], so it can be constructed before
 /// `Firebase.initializeApp()` has run — e.g. in widget tests.
 class WorkerLearningService {
-  WorkerLearningService({FirebaseFunctions? functions})
-    : _injected = functions;
+  WorkerLearningService({FirebaseFunctions? functions}) : _injected = functions;
 
   final FirebaseFunctions? _injected;
 
@@ -53,11 +57,10 @@ class WorkerLearningService {
   /// caller should re-read via [WorkerLearningRepository.watchMine] after
   /// calling this, which is why this class returns `void`: the merged view
   /// lives in Firestore afterward, not in the callable's response.
-  Future<void> getMyRequiredLearning({
-    required String organizationId,
-  }) => _call<Object?>('getMyRequiredLearning', {
-    'organizationId': organizationId,
-  });
+  Future<void> getMyRequiredLearning({required String organizationId}) =>
+      _call<Object?>('getMyRequiredLearning', {
+        'organizationId': organizationId,
+      });
 
   /// Starts the caller's own learning record for [learningId] within
   /// [organizationId] — `assigned` -> `inProgress`. The server re-derives
@@ -72,20 +75,122 @@ class WorkerLearningService {
   });
 
   /// Completes the caller's own learning record for [learningId] within
-  /// [organizationId] — `assigned`/`inProgress` -> `completed`.
-  /// [knowledgeCheckResult] is required when the learning item's type is
-  /// `knowledgeCheck`; the server validates its shape, not its correctness
-  /// (see [KnowledgeCheckResult]'s doc comment).
-  Future<void> completeLearning({
+  /// [organizationId] — `assigned`/`inProgress` -> `completed`, PROVIDED any
+  /// configured gates (video minimum-watch-time, knowledge check) pass —
+  /// see `completeLearning`'s doc comment
+  /// (`functions/src/worker_learning_callable.ts`).
+  ///
+  /// [selectedAnswers] is the worker's knowledge-check submission — only
+  /// meaningful, and only required, when [learningId] actually has
+  /// configured questions; omit it for any other item. There is deliberately
+  /// no `passed`/`score` parameter here at all: the server computes and
+  /// returns the authoritative result in [CompleteLearningResult], and a
+  /// failed check is a normal return value, not a thrown exception — see
+  /// that class's own doc comment.
+  Future<CompleteLearningResult> completeLearning({
     required String organizationId,
     required String learningId,
-    KnowledgeCheckResult? knowledgeCheckResult,
-  }) => _call<Object?>('completeLearning', {
-    'organizationId': organizationId,
-    'learningId': learningId,
-    if (knowledgeCheckResult != null)
-      'knowledgeCheckResult': knowledgeCheckResult.toMap(),
-  });
+    List<SubmittedAnswer>? selectedAnswers,
+  }) async {
+    final result = await _call<Map<Object?, Object?>>('completeLearning', {
+      'organizationId': organizationId,
+      'learningId': learningId,
+      if (selectedAnswers != null)
+        'selectedAnswers': selectedAnswers.map((a) => a.toMap()).toList(),
+    });
+    return CompleteLearningResult.fromMap(result);
+  }
+
+  /// The worker-safe view of [learningId]'s knowledge-check questions —
+  /// never includes the correct answer; see [KnowledgeCheckQuestion]'s doc
+  /// comment. Returns an empty list when none are configured, which is not
+  /// an error: an item with zero questions simply has no knowledge-check
+  /// gate.
+  Future<List<KnowledgeCheckQuestion>> getKnowledgeCheckQuestions({
+    required String organizationId,
+    required String learningId,
+  }) async {
+    final result = await _call<Map<Object?, Object?>>(
+      'getKnowledgeCheckQuestions',
+      {'organizationId': organizationId, 'learningId': learningId},
+    );
+    final questions = result['questions'];
+    if (questions is! List) return const [];
+    return questions
+        .whereType<Map>()
+        .map((q) => KnowledgeCheckQuestion.fromMap(q.cast()))
+        .toList(growable: false);
+  }
+
+  /// A reviewer's (Admin/Site Manager/Foreman) view of the learning-progress
+  /// records for [workerUids] within [organizationId] —
+  /// [SafetyComplianceRepository.buildSiteCompliance]'s completion-status
+  /// source.
+  ///
+  /// **Why this goes through a callable, not a direct Firestore read.**
+  /// `firestore.rules` deliberately does not grant a Foreman read access to
+  /// `worker_learning_records` (a Site Manager/Admin have that access
+  /// directly, since [WorkerLearningRepository.watchForOrganization] is
+  /// still correct for them) — that collection's own rule comment says a
+  /// Foreman's visibility into their crew's training "is provided elsewhere
+  /// via the callables, not this rule." A Foreman calling this returns only
+  /// the subset of [workerUids] who actually share one of the Foreman's own
+  /// assigned sites, re-checked fresh server-side — never trusted from
+  /// [workerUids] itself; see `getCrewLearningRecords`'s own doc comment
+  /// (`functions/src/worker_learning_callable.ts`).
+  Future<List<WorkerLearningRecord>> getCrewLearningRecords({
+    required String organizationId,
+    required List<String> workerUids,
+  }) async {
+    if (workerUids.isEmpty) return const [];
+    final result = await _call<Map<Object?, Object?>>(
+      'getCrewLearningRecords',
+      {'organizationId': organizationId, 'workerUids': workerUids},
+    );
+    final records = result['records'];
+    if (records is! List) return const [];
+    // Parsed inline, not via WorkerLearningRecord.fromMap: this callable's
+    // JSON response carries completedAt as an ISO 8601 string (there is no
+    // Firestore Timestamp type over the wire), unlike fromMap's Firestore
+    // document shape, and this class only ever needs status/completedAt —
+    // buildSiteCompliance never reads assignedAt/startedAt/
+    // knowledgeCheckResult from these rows.
+    return records
+        .whereType<Map>()
+        .map((raw) {
+          final map = raw.cast<String, dynamic>();
+          final status = WorkerLearningStatus.tryFromId(
+            map['status'] as String?,
+          );
+          final completedAtRaw = map['completedAt'] as String?;
+          return WorkerLearningRecord(
+            id: map['id'] as String? ?? '',
+            workerUid: map['workerUid'] as String? ?? '',
+            organizationId: map['organizationId'] as String? ?? organizationId,
+            learningId: map['learningId'] as String? ?? '',
+            status: status ?? WorkerLearningStatus.assigned,
+            completedAt: completedAtRaw == null
+                ? null
+                : DateTime.tryParse(completedAtRaw),
+          );
+        })
+        .toList(growable: false);
+  }
+
+  /// The caller's own focused learning view for today — see
+  /// `getMyTodaysSafetyReadiness`'s doc comment
+  /// (`functions/src/worker_learning_callable.ts`). Read-only, and like
+  /// every method here it takes no worker uid: the server derives it from
+  /// the caller's own auth.
+  Future<TodaysSafetyReadiness> getMyTodaysSafetyReadiness({
+    required String organizationId,
+  }) async {
+    final result = await _call<Map<Object?, Object?>>(
+      'getMyTodaysSafetyReadiness',
+      {'organizationId': organizationId},
+    );
+    return TodaysSafetyReadiness.fromMap(result);
+  }
 
   Future<T> _call<T>(String name, [Map<String, Object?>? data]) async {
     try {

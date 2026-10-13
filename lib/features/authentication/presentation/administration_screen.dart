@@ -6,6 +6,8 @@ import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../routing/app_routes.dart';
 import '../domain/app_role.dart';
+import '../../../core/widgets/feature_header.dart';
+import '../../../core/theme/app_colors.dart';
 
 /// The administrative dashboard: the entry point for account-review tasks
 /// (pending approvals, active/suspended users).
@@ -79,29 +81,38 @@ class AdministrationScreen extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(AppSpacing.md),
       children: [
-        Text('Administration', style: AppTextStyles.headlineMedium),
-        const SizedBox(height: AppSpacing.xs),
-        const Text(
-          'Review, approve and manage user accounts.',
-          style: AppTextStyles.bodyMedium,
+        const FeatureHeader(
+          title: 'Administration',
+          subtitle: 'Review, approve and manage user accounts.',
+          icon: Icons.admin_panel_settings,
+          color: AppColors.administration,
         ),
         const SizedBox(height: AppSpacing.lg),
+        const FeatureSectionTitle(
+          title: 'User accounts',
+          icon: Icons.manage_accounts,
+          color: AppColors.administration,
+        ),
+        const SizedBox(height: AppSpacing.sm),
         _AdministrationEntry(
-          icon: Icons.how_to_reg_outlined,
+          color: AppColors.warning,
+          icon: Icons.how_to_reg,
           title: 'Pending Approvals',
           subtitle: 'Review registrations and assign role and worker type.',
           onTap: () => context.go(AppRoutes.pendingApprovals),
         ),
         const SizedBox(height: AppSpacing.sm),
         _AdministrationEntry(
-          icon: Icons.groups_outlined,
+          color: AppColors.people,
+          icon: Icons.groups,
           title: 'Active Users',
           subtitle: 'View active accounts and suspend one if needed.',
           onTap: () => context.go(AppRoutes.activeUsers),
         ),
         const SizedBox(height: AppSpacing.sm),
         _AdministrationEntry(
-          icon: Icons.person_off_outlined,
+          color: AppColors.danger,
+          icon: Icons.person_off,
           title: 'Suspended / Rejected Users',
           subtitle:
               'View suspended and rejected accounts, and reinstate a '
@@ -115,12 +126,14 @@ class AdministrationScreen extends StatelessWidget {
 
 class _AdministrationEntry extends StatelessWidget {
   const _AdministrationEntry({
+    required this.color,
     required this.icon,
     required this.title,
     required this.subtitle,
     required this.onTap,
   });
 
+  final Color color;
   final IconData icon;
   final String title;
   final String subtitle;
@@ -130,14 +143,30 @@ class _AdministrationEntry extends StatelessWidget {
   Widget build(BuildContext context) {
     return Card(
       margin: EdgeInsets.zero,
+      color: Color.alphaBlend(
+        color.withValues(alpha: 0.08),
+        Theme.of(context).colorScheme.surface,
+      ),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: color.withValues(alpha: 0.5)),
+      ),
       child: ListTile(
-        leading: Icon(icon),
-        title: Text(title),
+        leading: Container(
+          width: 44,
+          height: 44,
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Icon(icon, color: AppColors.onColor(color)),
+        ),
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
         subtitle: Text(subtitle),
-        trailing: const Icon(Icons.chevron_right),
+        trailing: Icon(Icons.chevron_right, color: color),
         contentPadding: const EdgeInsets.symmetric(
           horizontal: AppSpacing.md,
-          vertical: AppSpacing.xs,
+          vertical: AppSpacing.sm,
         ),
         onTap: onTap,
       ),

@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/errors/app_exception.dart';
+import 'corrective_action_evidence.dart';
 import 'corrective_action_status.dart';
 
 /// A corrective action raised from a Daily Safety Meeting OR a Hazard report,
@@ -15,8 +16,8 @@ import 'corrective_action_status.dart';
 /// **Concern → Corrective Action → Assigned Person → Due Date →
 /// Completion**, OR **Hazard → Corrective Action → Assigned Person → Due
 /// Date → Completion.** Every corrective action traces back to exactly one
-/// origin — [meetingId] (and, usually, the specific [concernId]) OR
-/// [hazardId], never both — see `FIRESTORE_DATA_MODEL.md` §7 and
+/// origin — [meetingId] (and, usually, the specific [concernId]), [hazardId]
+/// OR [incidentId], never more than one — see `FIRESTORE_DATA_MODEL.md` §7 and
 /// `functions/src/corrective_action_callable.ts`'s "exactly one of meetingId
 /// or hazardId" validation.
 ///
@@ -50,10 +51,52 @@ class CorrectiveAction {
     this.meetingId,
     this.concernId,
     this.hazardId,
+    this.incidentId,
     this.createdAt,
     this.updatedAt,
     this.completedAt,
+    this.assignedToName,
+    this.assignedByName,
+    this.completedByName,
+    this.evidenceKinds = const [],
+    this.evidenceInstructions,
+    this.completionNote,
+    this.evidencePhotos = const [],
+    this.submittedAt,
+    this.reviewFeedback,
   });
+
+  /// Names stored when the action was created/completed, so every screen
+  /// shows a person, never a uid. Null on actions created before names were
+  /// stored — screens then look the name up, or say "a supervisor".
+  final String? assignedToName;
+  final String? assignedByName;
+  final String? completedByName;
+
+  /// What evidence completing this needs — see [requiredEvidence].
+  final List<CorrectiveActionEvidenceKind> evidenceKinds;
+
+  /// Optional detail from the creator, e.g. "Photo of the new guard rail".
+  final String? evidenceInstructions;
+
+  /// The assignee's own account of what was done, sent with their evidence.
+  final String? completionNote;
+  final List<EvidencePhoto> evidencePhotos;
+  final DateTime? submittedAt;
+
+  /// Why a reviewer sent the work back, shown to the assignee until they
+  /// resubmit.
+  final String? reviewFeedback;
+
+  /// The evidence the assignee must attach — [evidenceKinds], or a photo
+  /// for an action created before kinds existed with only
+  /// [evidenceRequired] set (what that flag always meant on screen).
+  List<CorrectiveActionEvidenceKind> get requiredEvidence {
+    if (evidenceKinds.isNotEmpty) return evidenceKinds;
+    return evidenceRequired
+        ? const [CorrectiveActionEvidenceKind.photo]
+        : const [];
+  }
 
   final String id;
   final String organizationId;
@@ -73,6 +116,10 @@ class CorrectiveAction {
   /// The hazard this action was raised from, when hazard-originated. Null
   /// for a meeting-originated action — see this class's doc comment.
   final String? hazardId;
+
+  /// The incident this action was raised from during its investigation, when
+  /// incident-originated. An incident may have several actions.
+  final String? incidentId;
 
   final String title;
   final String description;
@@ -110,9 +157,7 @@ class CorrectiveAction {
   }
 
   factory CorrectiveAction.fromMap(String id, Map<String, dynamic> data) {
-    final status = CorrectiveActionStatus.tryFromId(
-      data['status'] as String?,
-    );
+    final status = CorrectiveActionStatus.tryFromId(data['status'] as String?);
     if (status == null) {
       throw const DataException(
         'That corrective action has an unrecognised status.',
@@ -120,9 +165,7 @@ class CorrectiveAction {
     }
     final organizationId = data['organizationId'] as String?;
     if (organizationId == null || organizationId.isEmpty) {
-      throw const DataException(
-        'That corrective action has no organization.',
-      );
+      throw const DataException('That corrective action has no organization.');
     }
     final projectId = data['projectId'] as String?;
     if (projectId == null || projectId.isEmpty) {
@@ -133,15 +176,19 @@ class CorrectiveAction {
       throw const DataException('That corrective action has no site.');
     }
     final rawMeetingId = data['meetingId'] as String?;
-    final meetingId =
-        (rawMeetingId != null && rawMeetingId.isNotEmpty) ? rawMeetingId : null;
+    final meetingId = (rawMeetingId != null && rawMeetingId.isNotEmpty)
+        ? rawMeetingId
+        : null;
     final rawHazardId = data['hazardId'] as String?;
-    final hazardId =
-        (rawHazardId != null && rawHazardId.isNotEmpty) ? rawHazardId : null;
-    if ((meetingId == null) == (hazardId == null)) {
-      throw const DataException(
-        'That corrective action has no valid origin.',
-      );
+    final hazardId = (rawHazardId != null && rawHazardId.isNotEmpty)
+        ? rawHazardId
+        : null;
+    final rawIncidentId = data['incidentId'] as String?;
+    final incidentId = (rawIncidentId != null && rawIncidentId.isNotEmpty)
+        ? rawIncidentId
+        : null;
+    if ([meetingId, hazardId, incidentId].nonNulls.length != 1) {
+      throw const DataException('That corrective action has no valid origin.');
     }
     final title = data['title'] as String?;
     if (title == null || title.isEmpty) {
@@ -149,9 +196,7 @@ class CorrectiveAction {
     }
     final description = data['description'] as String?;
     if (description == null || description.isEmpty) {
-      throw const DataException(
-        'That corrective action has no description.',
-      );
+      throw const DataException('That corrective action has no description.');
     }
     final assignedTo = data['assignedTo'] as String?;
     if (assignedTo == null || assignedTo.isEmpty) {
@@ -174,9 +219,11 @@ class CorrectiveAction {
       projectId: projectId,
       siteId: siteId,
       meetingId: meetingId,
-      concernId:
-          (rawConcernId != null && rawConcernId.isNotEmpty) ? rawConcernId : null,
+      concernId: (rawConcernId != null && rawConcernId.isNotEmpty)
+          ? rawConcernId
+          : null,
       hazardId: hazardId,
+      incidentId: incidentId,
       title: title,
       description: description,
       assignedTo: assignedTo,
@@ -187,6 +234,24 @@ class CorrectiveAction {
       createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
       updatedAt: (data['updatedAt'] as Timestamp?)?.toDate(),
       completedAt: (data['completedAt'] as Timestamp?)?.toDate(),
+      assignedToName: _nonEmpty(data['assignedToName']),
+      assignedByName: _nonEmpty(data['assignedByName']),
+      completedByName: _nonEmpty(data['completedByName']),
+      evidenceKinds: [
+        for (final raw in (data['evidenceKinds'] as List?) ?? const [])
+          ?CorrectiveActionEvidenceKind.tryFromId(raw as String?),
+      ],
+      evidenceInstructions: _nonEmpty(data['evidenceInstructions']),
+      completionNote: _nonEmpty(data['completionNote']),
+      evidencePhotos: [
+        for (final raw in (data['evidencePhotos'] as List?) ?? const [])
+          ?EvidencePhoto.tryFromMap(raw),
+      ],
+      submittedAt: (data['submittedAt'] as Timestamp?)?.toDate(),
+      reviewFeedback: _nonEmpty(data['reviewFeedback']),
     );
   }
 }
+
+String? _nonEmpty(Object? value) =>
+    value is String && value.trim().isNotEmpty ? value.trim() : null;

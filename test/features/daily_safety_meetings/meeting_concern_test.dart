@@ -178,9 +178,12 @@ void main() {
   });
 
   test('the five expected categories exist', () {
-    expect(
-      MeetingConcernCategory.values.map((c) => c.id).toSet(),
-      {'safety', 'equipment', 'environment', 'worker', 'other'},
-    );
+    expect(MeetingConcernCategory.values.map((c) => c.id).toSet(), {
+      'safety',
+      'equipment',
+      'environment',
+      'worker',
+      'other',
+    });
   });
 }

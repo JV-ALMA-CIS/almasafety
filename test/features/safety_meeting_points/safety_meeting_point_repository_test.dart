@@ -18,9 +18,7 @@ void main() {
     List<String> applicableActivities = const [],
     List<String> applicableRisks = const [],
   }) async {
-    await firestore
-        .doc('organizations/$orgId/safety_meeting_points/$id')
-        .set({
+    await firestore.doc('organizations/$orgId/safety_meeting_points/$id').set({
       'organizationId': orgId,
       'title': 'Meeting Point $id',
       'category': 'General',
@@ -47,8 +45,7 @@ void main() {
     expect(items.map((i) => i.id).toSet(), {'p1', 'p2'});
   });
 
-  test('watchActive excludes inactive items within the organization',
-      () async {
+  test('watchActive excludes inactive items within the organization', () async {
     await seedPoint('org-alpha', 'p1');
     await seedPoint('org-alpha', 'p2', status: 'inactive');
 
@@ -62,8 +59,7 @@ void main() {
     expect(items.map((i) => i.id).toSet(), {'p1'});
   });
 
-  test('watchActive excludes another organization even when active',
-      () async {
+  test('watchActive excludes another organization even when active', () async {
     await seedPoint('org-alpha', 'p1');
     await seedPoint('org-beta', 'p2');
 
@@ -79,8 +75,11 @@ void main() {
 
   test('watchActive filters by activityId, treating an empty list as '
       'universal', () async {
-    await seedPoint('org-alpha', 'specific',
-        applicableActivities: ['activity-1']);
+    await seedPoint(
+      'org-alpha',
+      'specific',
+      applicableActivities: ['activity-1'],
+    );
     await seedPoint('org-alpha', 'other', applicableActivities: ['activity-2']);
     await seedPoint('org-alpha', 'universal');
 
@@ -89,27 +88,28 @@ void main() {
       organizationId: 'org-alpha',
     );
 
-    final items =
-        await repository.watchActive(activityId: 'activity-1').first;
+    final items = await repository.watchActive(activityId: 'activity-1').first;
 
     expect(items.map((i) => i.id).toSet(), {'specific', 'universal'});
   });
 
-  test('watchActive filters by riskId, treating an empty list as universal',
-      () async {
-    await seedPoint('org-alpha', 'specific', applicableRisks: ['high']);
-    await seedPoint('org-alpha', 'other', applicableRisks: ['low']);
-    await seedPoint('org-alpha', 'universal');
+  test(
+    'watchActive filters by riskId, treating an empty list as universal',
+    () async {
+      await seedPoint('org-alpha', 'specific', applicableRisks: ['high']);
+      await seedPoint('org-alpha', 'other', applicableRisks: ['low']);
+      await seedPoint('org-alpha', 'universal');
 
-    final repository = SafetyMeetingPointRepository(
-      firestoreService: FirestoreService(firestore: firestore),
-      organizationId: 'org-alpha',
-    );
+      final repository = SafetyMeetingPointRepository(
+        firestoreService: FirestoreService(firestore: firestore),
+        organizationId: 'org-alpha',
+      );
 
-    final items = await repository.watchActive(riskId: 'high').first;
+      final items = await repository.watchActive(riskId: 'high').first;
 
-    expect(items.map((i) => i.id).toSet(), {'specific', 'universal'});
-  });
+      expect(items.map((i) => i.id).toSet(), {'specific', 'universal'});
+    },
+  );
 
   test('getById returns null for a missing document', () async {
     final repository = SafetyMeetingPointRepository(
@@ -120,8 +120,7 @@ void main() {
     expect(await repository.getById('missing'), isNull);
   });
 
-  test('organizationId exposes the scope this repository was built with',
-      () {
+  test('organizationId exposes the scope this repository was built with', () {
     final repository = SafetyMeetingPointRepository(
       firestoreService: FirestoreService(firestore: firestore),
       organizationId: 'org-alpha',

@@ -4,6 +4,7 @@ import '../../../core/errors/app_exception.dart';
 import '../../organizations/data/organization_admin_service.dart';
 import '../../organizations/domain/organization_record_status.dart';
 import '../domain/safety_requirement_risk.dart';
+import '../domain/safety_requirement.dart';
 
 /// Client for the safety requirement content-management callables in
 /// `functions/src/safety_learning_callable.ts`.
@@ -44,6 +45,13 @@ class SafetyRequirementAdminService {
 
   /// Creates a safety requirement within [organizationId]. Returns the new
   /// document id.
+  ///
+  /// [gatesAttendance] defaults to `true` — see
+  /// [SafetyRequirement.gatesAttendance]'s doc comment: a new requirement
+  /// blocks Daily Safety Meeting attendance until completed unless the
+  /// admin explicitly opts it out. [requiredBeforeWork] defaults to
+  /// `false` — see [SafetyRequirement.requiredBeforeWork]; the two are
+  /// independent and neither is derived from the other.
   Future<String> createSafetyRequirement({
     required String organizationId,
     required String name,
@@ -52,25 +60,42 @@ class SafetyRequirementAdminService {
     String? description,
     List<String> requiredLearningIds = const [],
     OrganizationRecordStatus status = OrganizationRecordStatus.active,
+    bool gatesAttendance = true,
+    bool requiredBeforeWork = false,
+    Map<String, RequirementLearningSetting>? learningSettings,
+    String? projectId,
+    String? siteId,
+    String? activityId,
   }) async {
-    final result = await _call<Map<Object?, Object?>>(
-      'createSafetyRequirement',
-      {
-        'organizationId': organizationId,
-        'name': name,
-        'category': category,
-        'risk': risk.id,
-        'description': ?description,
-        'requiredLearningIds': requiredLearningIds,
-        'status': status.id,
-      },
-    );
+    final result =
+        await _call<Map<Object?, Object?>>('createSafetyRequirement', {
+          'organizationId': organizationId,
+          'name': name,
+          'category': category,
+          'risk': risk.id,
+          'description': ?description,
+          'requiredLearningIds': requiredLearningIds,
+          'status': status.id,
+          'gatesAttendance': gatesAttendance,
+          'requiredBeforeWork': requiredBeforeWork,
+          if (learningSettings != null)
+            'learningSettings': _settingsPayload(learningSettings),
+          'projectId': ?projectId,
+          'siteId': ?siteId,
+          'activityId': ?activityId,
+        });
     return result['id'] as String? ?? '';
   }
 
   /// Updates a safety requirement's editable fields, including
-  /// `requiredLearningIds`. `organizationId` cannot be changed — a
-  /// requirement may not be moved between organizations.
+  /// `requiredLearningIds`, [gatesAttendance] and the
+  /// `projectId`/`siteId`/`activityId` scope. `organizationId` cannot be
+  /// changed — a requirement may not be moved between organizations. Pass
+  /// an empty string for `projectId`/`siteId`/`activityId` to revert a
+  /// requirement to organization-wide — see `updateSafetyRequirement`'s
+  /// server-side doc comment. [gatesAttendance] has no such "leave
+  /// unchanged" sentinel value needed: pass it only when it should change.
+  /// [requiredBeforeWork] follows the same rule.
   Future<void> updateSafetyRequirement(
     String organizationId,
     String id, {
@@ -80,6 +105,12 @@ class SafetyRequirementAdminService {
     String? description,
     List<String>? requiredLearningIds,
     OrganizationRecordStatus? status,
+    bool? gatesAttendance,
+    bool? requiredBeforeWork,
+    Map<String, RequirementLearningSetting>? learningSettings,
+    String? projectId,
+    String? siteId,
+    String? activityId,
   }) => _call<Object?>('updateSafetyRequirement', {
     'organizationId': organizationId,
     'id': id,
@@ -89,7 +120,27 @@ class SafetyRequirementAdminService {
     'description': ?description,
     'requiredLearningIds': ?requiredLearningIds,
     if (status != null) 'status': status.id,
+    'gatesAttendance': ?gatesAttendance,
+    'requiredBeforeWork': ?requiredBeforeWork,
+    if (learningSettings != null)
+      'learningSettings': _settingsPayload(learningSettings),
+    'projectId': ?projectId,
+    'siteId': ?siteId,
+    'activityId': ?activityId,
   });
+
+  /// [settings] in the callable's shape. The form always sets both flags,
+  /// so the `false` fallbacks only guard a hand-built partial entry —
+  /// matching the approved "newly selected lesson: both off" default.
+  static Map<String, Map<String, bool>> _settingsPayload(
+    Map<String, RequirementLearningSetting> settings,
+  ) => {
+    for (final entry in settings.entries)
+      entry.key: entry.value.toMap(
+        gatesAttendanceFallback: false,
+        requiredBeforeWorkFallback: false,
+      ),
+  };
 
   Future<T> _call<T>(String name, [Map<String, Object?>? data]) async {
     try {

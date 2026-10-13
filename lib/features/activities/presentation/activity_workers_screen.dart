@@ -1,9 +1,15 @@
 import 'package:flutter/material.dart';
+import '../../../core/widgets/live_stream_builder.dart';
 import '../../../core/errors/app_exception.dart';
 import '../../../core/services/firestore_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../../core/widgets/dashboard_header.dart';
+import '../../../core/widgets/empty_state.dart';
+import '../../../core/widgets/feature_header.dart';
+import '../../../core/widgets/person_avatar.dart';
+import '../../../core/widgets/status_badge.dart';
 import '../../authentication/data/account_approval_service.dart';
 import '../../authentication/domain/account_status.dart';
 import '../../authentication/domain/organization_user.dart';
@@ -71,10 +77,10 @@ class ActivityWorkersScreen extends StatefulWidget {
 class _ActivityWorkersScreenState extends State<ActivityWorkersScreen> {
   late final ActivityAssignmentRepository _repository =
       widget.assignmentRepository ??
-          ActivityAssignmentRepository(
-            firestoreService: FirestoreService(),
-            organizationId: widget.organization.id,
-          );
+      ActivityAssignmentRepository(
+        firestoreService: FirestoreService(),
+        organizationId: widget.organization.id,
+      );
   late final ActivityAssignmentService _assignmentService =
       widget.assignmentService ?? ActivityAssignmentService();
   late final AccountApprovalService _approvalService =
@@ -170,7 +176,7 @@ class _ActivityWorkersScreenState extends State<ActivityWorkersScreen> {
   }
 
   void _openWorkerDetail(OrganizationUser worker) {
-    Navigator.of(context).push(
+    Navigator.of(context, rootNavigator: true).push(
       MaterialPageRoute<void>(
         builder: (_) => WorkerDetailScreen(
           worker: worker,
@@ -182,11 +188,13 @@ class _ActivityWorkersScreenState extends State<ActivityWorkersScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<List<ActivityAssignment>>(
-      stream: _repository.watchAssignedWorkers(widget.activity.id),
+    return LiveStreamBuilder<List<ActivityAssignment>>(
+      streamKey: (_repository, widget.activity.id),
+      stream: () => _repository.watchAssignedWorkers(widget.activity.id),
       builder: (context, snapshot) {
         final assignments = snapshot.data ?? const [];
-        final isLoading = snapshot.connectionState == ConnectionState.waiting ||
+        final isLoading =
+            snapshot.connectionState == ConnectionState.waiting ||
             _isLoadingMembers;
         final streamError = snapshot.hasError
             ? 'Could not load assigned workers. Please try again.'
@@ -196,33 +204,48 @@ class _ActivityWorkersScreenState extends State<ActivityWorkersScreen> {
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(AppSpacing.md),
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Workers · ${widget.activity.name}',
-                        style: AppTextStyles.headlineMedium,
-                      ),
-                      Text(
-                        '${widget.organization.name} · ${widget.site.name}',
-                        style: AppTextStyles.bodyMedium,
-                      ),
-                    ],
-                  ),
+            FeatureHeader(
+              eyebrow: 'Activity',
+              title: widget.activity.name,
+              icon: Icons.engineering,
+              color: AppColors.projects,
+              chips: [
+                FeatureChip(
+                  icon: Icons.business,
+                  label: widget.organization.name,
                 ),
-                IconButton(
-                  tooltip: 'Assign worker',
+                FeatureChip(icon: Icons.place, label: widget.site.name),
+                FeatureChip(
+                  icon: Icons.groups,
+                  label:
+                      '${assignments.length} '
+                      '${assignments.length == 1 ? 'worker' : 'workers'} '
+                      'assigned',
+                ),
+              ],
+              footer: Tooltip(
+                message: 'Assign worker',
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.white,
+                    foregroundColor: AppColors.projects,
+                  ),
                   onPressed: _isBusy || isLoading
                       ? null
                       : () => _openAssignPicker(
-                            assignments.map((a) => a.uid).toList(),
-                          ),
-                  icon: const Icon(Icons.person_add_alt_1_outlined),
+                          assignments.map((a) => a.uid).toList(),
+                        ),
+                  icon: const Icon(Icons.person_add_alt_1),
+                  label: const Text('Assign Worker'),
                 ),
-              ],
+              ),
+            ),
+            const SizedBox(height: AppSpacing.lg),
+            FeatureSectionTitle(
+              title: 'Assigned Workers',
+              icon: Icons.groups,
+              color: AppColors.people,
+              count: assignments.length,
             ),
             if ((_errorMessage ?? streamError) != null) ...[
               const SizedBox(height: AppSpacing.md),
@@ -237,10 +260,10 @@ class _ActivityWorkersScreenState extends State<ActivityWorkersScreen> {
             if (!isLoading && assignments.isEmpty && streamError == null)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: AppSpacing.xl),
-                child: Text(
-                  'No workers assigned yet.',
-                  style: AppTextStyles.bodyMedium,
-                  textAlign: TextAlign.center,
+                child: EmptyState(
+                  icon: Icons.group_add_outlined,
+                  title: 'No workers assigned yet.',
+                  message: 'Use "Assign Worker" above to add your crew.',
                 ),
               ),
             for (final assignment in assignments) ...[
@@ -254,7 +277,7 @@ class _ActivityWorkersScreenState extends State<ActivityWorkersScreen> {
                   if (member != null) _openWorkerDetail(member);
                 },
               ),
-              const SizedBox(height: AppSpacing.md),
+              const SizedBox(height: AppSpacing.sm),
             ],
           ],
         );
@@ -284,24 +307,81 @@ class _AssignmentCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final resolved = worker;
+    final name = resolved?.name ?? 'Worker';
+    final role = resolved?.role;
+    final active = resolved?.accountStatus == AccountStatus.active;
     return Card(
       margin: EdgeInsets.zero,
-      child: ListTile(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: AppColors.people.withValues(alpha: 0.35)),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
         onTap: resolved != null ? onOpenDetail : null,
-        title: Text(resolved?.name ?? 'Worker'),
-        subtitle: Text(
-          resolved != null
-              ? [
-                  if (resolved.role != null) resolved.role!.label,
-                  if (resolved.workerType != null) resolved.workerType!.label,
-                  resolved.accountStatus.label,
-                ].join(' · ')
-              : 'Details unavailable',
-        ),
-        trailing: IconButton(
-          tooltip: 'Remove',
-          onPressed: isBusy ? null : onRemove,
-          icon: const Icon(Icons.person_remove_outlined, color: AppColors.danger),
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          child: Row(
+            children: [
+              PersonAvatar(name: name, radius: 24),
+              const SizedBox(width: AppSpacing.md),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name,
+                      style: AppTextStyles.bodyLarge.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: AppSpacing.xs),
+                    if (resolved == null)
+                      const Text(
+                        'Details unavailable',
+                        style: AppTextStyles.bodyMedium,
+                      )
+                    else
+                      Wrap(
+                        spacing: AppSpacing.xs,
+                        runSpacing: AppSpacing.xs,
+                        children: [
+                          if (role != null)
+                            StatusBadge(
+                              label: role.label,
+                              color: DashboardHeader.roleColor(role),
+                            ),
+                          if (resolved.workerType != null)
+                            StatusBadge(
+                              label: resolved.workerType!.label,
+                              color: AppColors.meetings,
+                            ),
+                          if (resolved.trade != null)
+                            StatusBadge(
+                              label: resolved.trade!,
+                              color: AppColors.learning,
+                            ),
+                          StatusBadge(
+                            label: resolved.accountStatus.label,
+                            color: active
+                                ? AppColors.success
+                                : AppColors.textSecondary,
+                          ),
+                        ],
+                      ),
+                  ],
+                ),
+              ),
+              IconButton.filledTonal(
+                tooltip: 'Remove',
+                style: IconButton.styleFrom(
+                  backgroundColor: AppColors.danger.withValues(alpha: 0.12),
+                ),
+                onPressed: isBusy ? null : onRemove,
+                icon: const Icon(Icons.person_remove, color: AppColors.danger),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -326,8 +406,8 @@ class _WorkerPickerDialogState extends State<_WorkerPickerDialog> {
     final filtered = query.isEmpty
         ? widget.candidates
         : widget.candidates
-            .where((c) => c.name.toLowerCase().contains(query))
-            .toList(growable: false);
+              .where((c) => c.name.toLowerCase().contains(query))
+              .toList(growable: false);
 
     return AlertDialog(
       title: const Text('Assign Worker'),
@@ -374,6 +454,7 @@ class _WorkerPickerDialogState extends State<_WorkerPickerDialog> {
                         candidate.workerType!.label,
                     ];
                     return ListTile(
+                      leading: PersonAvatar(name: candidate.name),
                       title: Text(candidate.name),
                       subtitle: Text(
                         details.isEmpty ? candidate.email : details.join(' · '),

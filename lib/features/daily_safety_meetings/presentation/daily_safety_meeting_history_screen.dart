@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../core/widgets/live_stream_builder.dart';
 import 'package:provider/provider.dart';
 import '../../../core/services/firestore_service.dart';
 import '../../../core/services/session_controller.dart';
@@ -8,6 +9,9 @@ import '../../../core/theme/app_text_styles.dart';
 import '../data/daily_safety_meeting_repository.dart';
 import '../domain/daily_safety_meeting.dart';
 import 'daily_safety_meeting_screen.dart';
+import '../../pre_start_checks/presentation/pre_start_outcome_style.dart';
+import '../../../core/widgets/accent_card.dart';
+import '../../../core/widgets/feature_header.dart';
 
 /// Step 6: the signed-in foreman's own Daily Safety Meeting history — most
 /// recent first.
@@ -64,7 +68,7 @@ class _DailySafetyMeetingHistoryScreenState
     final foremanId = profile?.uid;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Meeting History')),
+      appBar: AppBar(),
       body: foremanId == null
           ? const Center(
               child: Padding(
@@ -76,11 +80,11 @@ class _DailySafetyMeetingHistoryScreenState
                 ),
               ),
             )
-          : StreamBuilder<List<DailySafetyMeeting>>(
-              stream: _repository.watchHistoryForForeman(foremanId),
+          : LiveStreamBuilder<List<DailySafetyMeeting>>(
+              streamKey: (_repository, foremanId),
+              stream: () => _repository.watchHistoryForForeman(foremanId),
               builder: (context, snapshot) {
-                final meetings =
-                    snapshot.data ?? const <DailySafetyMeeting>[];
+                final meetings = snapshot.data ?? const <DailySafetyMeeting>[];
                 final isLoading =
                     snapshot.connectionState == ConnectionState.waiting;
 
@@ -112,21 +116,47 @@ class _DailySafetyMeetingHistoryScreenState
                   );
                 }
 
+                final inProgress = meetings.where((m) => !m.isCompleted).length;
                 return ListView(
                   padding: const EdgeInsets.all(AppSpacing.md),
                   children: [
+                    FeatureHeader(
+                      title: 'Your meetings',
+                      subtitle: inProgress > 0
+                          ? 'Tap an unfinished meeting to complete it.'
+                          : 'Every meeting you have run.',
+                      icon: Icons.history,
+                      color: AppColors.meetings,
+                      chips: [
+                        FeatureChip(
+                          icon: Icons.task_alt,
+                          label: '${meetings.length - inProgress} completed',
+                        ),
+                        FeatureChip(
+                          icon: Icons.pending,
+                          label: '$inProgress in progress',
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: AppSpacing.md),
                     for (final meeting in meetings) ...[
                       _MeetingHistoryCard(
                         meeting: meeting,
                         onResume: meeting.isCompleted
                             ? null
-                            : () => Navigator.of(context).push(
-                                  MaterialPageRoute<void>(
-                                    builder: (_) => DailySafetyMeetingScreen(
-                                      resumeMeetingId: meeting.id,
+                            : () => Navigator.of(context, rootNavigator: true)
+                                  .push(
+                                    MaterialPageRoute<void>(
+                                      // Opened full-screen, so it brings its
+                                      // own top bar and back arrow.
+                                      builder: (_) => Scaffold(
+                                        appBar: AppBar(),
+                                        body: DailySafetyMeetingScreen(
+                                          resumeMeetingId: meeting.id,
+                                        ),
+                                      ),
                                     ),
                                   ),
-                                ),
                       ),
                       const SizedBox(height: AppSpacing.sm),
                     ],
@@ -150,79 +180,30 @@ class _MeetingHistoryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final card = Card(
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.all(AppSpacing.md),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(meeting.date, style: AppTextStyles.titleLarge),
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: AppSpacing.sm,
-                    vertical: AppSpacing.xs,
-                  ),
-                  decoration: BoxDecoration(
-                    color: (meeting.isCompleted
-                            ? AppColors.success
-                            : AppColors.textSecondary)
-                        .withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(AppSpacing.sm),
-                  ),
-                  child: Text(
-                    meeting.status.label,
-                    style: AppTextStyles.label.copyWith(
-                      color: meeting.isCompleted
-                          ? AppColors.success
-                          : AppColors.textSecondary,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: AppSpacing.xs),
-            Text(
+    final color = meeting.isCompleted ? AppColors.success : AppColors.warning;
+    return AccentCard(
+      color: color,
+      icon: meeting.isCompleted ? Icons.task_alt : Icons.pending_actions,
+      title: meeting.date,
+      onTap: onResume,
+      badges: [AccentBadge(label: meeting.status.label, color: color)],
+      trailing: meeting.crewOutcome == null
+          ? null
+          : CrewOutcomeBadge(outcome: meeting.crewOutcome!),
+      details: [
+        AccentDetail(
+          icon: Icons.checklist,
+          text:
               '${meeting.activityIds.length} activities, '
               '${meeting.meetingPointIds.length} meeting points, '
               '${meeting.concerns.length} concerns',
-              style: AppTextStyles.bodyMedium,
-            ),
-            if (onResume != null) ...[
-              const SizedBox(height: AppSpacing.sm),
-              Row(
-                children: [
-                  const Icon(
-                    Icons.info_outline,
-                    size: 16,
-                    color: AppColors.textSecondary,
-                  ),
-                  const SizedBox(width: AppSpacing.xs),
-                  Expanded(
-                    child: Text(
-                      'Not yet completed — tap to finish this meeting.',
-                      style: AppTextStyles.label.copyWith(
-                        color: AppColors.textSecondary,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ],
         ),
-      ),
-    );
-
-    if (onResume == null) return card;
-    return InkWell(
-      onTap: onResume,
-      borderRadius: BorderRadius.circular(AppSpacing.sm),
-      child: card,
+        if (onResume != null)
+          const AccentDetail(
+            icon: Icons.touch_app,
+            text: 'Not yet completed — tap to finish this meeting.',
+          ),
+      ],
     );
   }
 }

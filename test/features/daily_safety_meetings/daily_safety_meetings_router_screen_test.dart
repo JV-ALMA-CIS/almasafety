@@ -175,20 +175,14 @@ void main() {
     );
   });
 
-  testWidgets('a worker sees the foreman-workspace messaging, not the '
-      'review screen', (tester) async {
+  testWidgets('a worker with no assigned site sees a clear message, not the '
+      'foreman review screen', (tester) async {
     await tester.pumpWidget(
       wrap(role: AppRole.worker, organizationId: 'org-alpha'),
     );
     await tester.pumpAndSettle();
 
-    expect(
-      find.text(
-        'Daily Safety Meetings are available to a foreman assigned '
-        'to a site.',
-      ),
-      findsOneWidget,
-    );
+    expect(find.text('You are not yet assigned to a site.'), findsOneWidget);
   });
 
   testWidgets(
@@ -203,6 +197,25 @@ void main() {
       expect(
         find.textContaining('JV ALMA CIS has not been set up yet'),
         findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
+    'an Admin (org-less by construction) still reaches the review screen — '
+    'the sole organization is resolved silently, not from '
+    'activeOrganizationId',
+    (tester) async {
+      await seedOrganization('org-alpha', name: 'JV Alma CIS');
+
+      await tester.pumpWidget(wrap(role: AppRole.admin, organizationId: null));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Daily Safety Meetings'), findsOneWidget);
+      expect(find.text('JV Alma CIS'), findsOneWidget);
+      expect(
+        find.textContaining('JV ALMA CIS has not been set up yet'),
+        findsNothing,
       );
     },
   );

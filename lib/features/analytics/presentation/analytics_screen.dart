@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import '../../../core/widgets/live_stream_builder.dart';
+import '../../organizations/presentation/site_select_list.dart';
+import '../../../core/widgets/choice_list.dart';
 import 'package:provider/provider.dart';
 import '../../../core/errors/app_exception.dart';
 import '../../../core/services/firestore_service.dart';
@@ -7,6 +10,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../core/widgets/organization_scope_selector.dart';
+import '../../authentication/domain/app_role.dart';
 import '../../authentication/presentation/auth_error_banner.dart';
 import '../../organizations/data/organization_repository.dart';
 import '../../organizations/data/project_repository.dart';
@@ -20,6 +24,7 @@ import '../domain/concern_metrics.dart';
 import '../domain/corrective_action_metrics.dart';
 import '../domain/safety_alert_metrics.dart';
 import '../domain/safety_learning_metrics.dart';
+import '../../../core/widgets/feature_header.dart';
 
 /// The Analytics dashboard — read-only summary metrics across Safety
 /// Meetings, Attendance, Concerns, Corrective Actions, Safety Alerts and
@@ -151,13 +156,20 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     final sessionController = context.watch<SessionController>();
     final profile = sessionController.profile;
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
+    final membershipRole = sessionController.activeMembership?.role;
     final canManage =
         isPlatformAdministrator ||
-        (sessionController.activeMembership?.role.canReviewPendingAccounts ??
-            false);
+        (membershipRole?.canReviewPendingAccounts ?? false);
     final organizationId = isPlatformAdministrator
         ? _selectedOrganizationId
         : sessionController.activeOrganizationId;
+    // A Foreman's `firestore.rules` read grant on `sites` is scoped to their
+    // own `siteIds` only — an unconstrained `watchAll()` listing is refused
+    // outright for them (unlike Admin/Site Manager) — see
+    // SiteRepository.watchByIds's own doc comment.
+    final foremanSiteIds = membershipRole == AppRole.foreman
+        ? sessionController.activeMembership?.siteIds
+        : null;
 
     if (!canManage) {
       return const Center(
@@ -183,13 +195,19 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
       );
     }
 
-    return StreamBuilder<List<Project>>(
-      stream: _projectRepositoryFor(organizationId).watchAll(),
+    return LiveStreamBuilder<List<Project>>(
+      streamKey: _projectRepositoryFor(organizationId),
+      stream: () => _projectRepositoryFor(organizationId).watchAll(),
       builder: (context, projectSnapshot) {
         final projects = projectSnapshot.data ?? const <Project>[];
 
-        return StreamBuilder<List<Site>>(
-          stream: _siteRepositoryFor(organizationId).watchAll(),
+        final siteStream = foremanSiteIds != null
+            ? _siteRepositoryFor(organizationId).watchByIds(foremanSiteIds)
+            : _siteRepositoryFor(organizationId).watchAll();
+
+        return LiveStreamBuilder<List<Site>>(
+          streamKey: (organizationId, foremanSiteIds?.join(',')),
+          stream: () => siteStream,
           builder: (context, siteSnapshot) {
             final sites = siteSnapshot.data ?? const <Site>[];
             final visibleSites = _projectId == null
@@ -200,7 +218,14 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
               padding: const EdgeInsets.all(AppSpacing.md),
               physics: const AlwaysScrollableScrollPhysics(),
               children: [
-                Text('Analytics', style: AppTextStyles.headlineMedium),
+                const FeatureHeader(
+                  title: 'Analytics',
+                  subtitle:
+                      'Meetings, attendance, concerns, actions, alerts and '
+                      'learning at a glance.',
+                  icon: Icons.insights,
+                  color: AppColors.analytics,
+                ),
                 const SizedBox(height: AppSpacing.md),
                 if (isPlatformAdministrator)
                   OrganizationScopeSelector(
@@ -215,20 +240,13 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                 ],
                 Text('Project', style: AppTextStyles.label),
                 const SizedBox(height: AppSpacing.xs),
-                DropdownButtonFormField<String?>(
-                  initialValue: _projectId,
-                  decoration: const InputDecoration(hintText: 'All projects'),
+                ChoiceList<String>(
                   items: [
-                    const DropdownMenuItem(
-                      value: null,
-                      child: Text('All projects'),
-                    ),
-                    for (final project in projects)
-                      DropdownMenuItem(
-                        value: project.id,
-                        child: Text(project.name),
-                      ),
+                    for (final project in projects) projectChoice(project),
                   ],
+                  selected: _projectId,
+                  noneLabel: 'All projects',
+                  searchHint: 'Search projects',
                   onChanged: (value) => setState(() {
                     _projectId = value;
                     _siteId = null;
@@ -237,17 +255,11 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                 const SizedBox(height: AppSpacing.sm),
                 Text('Site', style: AppTextStyles.label),
                 const SizedBox(height: AppSpacing.xs),
-                DropdownButtonFormField<String?>(
-                  initialValue: _siteId,
-                  decoration: const InputDecoration(hintText: 'All sites'),
-                  items: [
-                    const DropdownMenuItem(
-                      value: null,
-                      child: Text('All sites'),
-                    ),
-                    for (final site in visibleSites)
-                      DropdownMenuItem(value: site.id, child: Text(site.name)),
-                  ],
+                ChoiceList<String>(
+                  items: [for (final site in visibleSites) siteChoice(site)],
+                  selected: _siteId,
+                  noneLabel: 'All sites',
+                  searchHint: 'Search sites by name, code or location',
                   onChanged: (value) => setState(() => _siteId = value),
                 ),
                 const SizedBox(height: AppSpacing.sm),
@@ -378,6 +390,7 @@ class _DashboardView extends StatelessWidget {
           _BarBreakdown(
             title: 'Meetings by site',
             values: dashboard.meetings.bySite,
+            color: AppColors.meetings,
           ),
         ],
         if (dashboard.meetings.byDate.isNotEmpty) ...[
@@ -385,6 +398,7 @@ class _DashboardView extends StatelessWidget {
           _BarBreakdown(
             title: 'Meetings by date',
             values: dashboard.meetings.byDate,
+            color: AppColors.meetings,
           ),
         ],
         const SizedBox(height: AppSpacing.lg),
@@ -412,11 +426,22 @@ class _SectionTitle extends StatelessWidget {
 
   final String title;
 
+  static const _styles = <String, (Color, IconData)>{
+    'Safety Meetings': (AppColors.meetings, Icons.groups),
+    'Attendance': (AppColors.people, Icons.how_to_reg),
+    'Concerns': (AppColors.hazards, Icons.report_problem),
+    'Corrective Actions': (AppColors.correctiveActions, Icons.build_circle),
+    'Safety Alerts': (AppColors.safetyAlerts, Icons.campaign),
+    'Safety Learning': (AppColors.learning, Icons.school),
+  };
+
   @override
   Widget build(BuildContext context) {
+    final (color, icon) =
+        _styles[title] ?? (AppColors.analytics, Icons.insights);
     return Padding(
       padding: const EdgeInsets.only(bottom: AppSpacing.sm),
-      child: Text(title, style: AppTextStyles.titleLarge),
+      child: FeatureSectionTitle(title: title, icon: icon, color: color),
     );
   }
 }
@@ -443,18 +468,59 @@ class _MetricCard extends StatelessWidget {
   final String value;
   final Color? color;
 
+  /// A color for the metric's meaning when none is given: done is green,
+  /// open/outstanding orange, overdue/absent red, rates purple.
+  static Color _colorFor(String label) {
+    final lower = label.toLowerCase();
+    if (lower.contains('overdue') || lower == 'absent' || lower == 'active') {
+      return AppColors.danger;
+    }
+    if (lower.contains('completed') ||
+        lower == 'present' ||
+        lower == 'resolved') {
+      return AppColors.success;
+    }
+    if (lower == 'open' || lower == 'outstanding') return AppColors.hazards;
+    if (lower.contains('progress')) return AppColors.analytics;
+    if (lower == 'acknowledged') return AppColors.warning;
+    if (lower.contains('%') || lower.contains('rate')) {
+      return AppColors.learning;
+    }
+    return AppColors.meetings;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final accent = color ?? _colorFor(label);
     return Card(
       margin: EdgeInsets.zero,
+      color: Color.alphaBlend(
+        accent.withValues(alpha: 0.09),
+        Theme.of(context).colorScheme.surface,
+      ),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: accent.withValues(alpha: 0.45)),
+      ),
       child: Padding(
         padding: const EdgeInsets.all(AppSpacing.md),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Container(
+              width: 28,
+              height: 4,
+              decoration: BoxDecoration(
+                color: accent,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: AppSpacing.sm),
             Text(
               value,
-              style: AppTextStyles.headlineMedium.copyWith(color: color),
+              style: AppTextStyles.headlineMedium.copyWith(
+                color: AppColors.readable(accent, Theme.of(context).brightness),
+              ),
             ),
             const SizedBox(height: AppSpacing.xs),
             Text(label, style: AppTextStyles.bodyMedium),
@@ -470,10 +536,15 @@ class _MetricCard extends StatelessWidget {
 /// library: this stage's scope is "simple summary information," not a
 /// general analytics/visualization surface.
 class _BarBreakdown extends StatelessWidget {
-  const _BarBreakdown({required this.title, required this.values});
+  const _BarBreakdown({
+    required this.title,
+    required this.values,
+    this.color = AppColors.analytics,
+  });
 
   final String title;
   final Map<String, int> values;
+  final Color color;
 
   @override
   Widget build(BuildContext context) {
@@ -485,12 +556,22 @@ class _BarBreakdown extends StatelessWidget {
 
     return Card(
       margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: color.withValues(alpha: 0.4)),
+      ),
       child: Padding(
         padding: const EdgeInsets.all(AppSpacing.md),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(title, style: AppTextStyles.label),
+            Row(
+              children: [
+                Icon(Icons.bar_chart, size: 18, color: color),
+                const SizedBox(width: AppSpacing.xs),
+                Text(title, style: AppTextStyles.label),
+              ],
+            ),
             const SizedBox(height: AppSpacing.sm),
             for (final entry in entries)
               Padding(
@@ -514,11 +595,17 @@ class _BarBreakdown extends StatelessWidget {
                           borderRadius: BorderRadius.circular(4),
                           child: LinearProgressIndicator(
                             value: maxValue == 0 ? 0 : entry.value / maxValue,
-                            minHeight: 8,
-                            backgroundColor: AppColors.background,
-                            valueColor: const AlwaysStoppedAnimation(
-                              AppColors.primary,
-                            ),
+                            minHeight: 10,
+                            // Previously hardcoded to AppColors.background
+                            // (light-mode near-white) regardless of theme —
+                            // in dark mode this rendered a bright track
+                            // against a near-black page. surfaceContainerHighest
+                            // is Material 3's own theme-aware "recessed
+                            // track" color, correct in both themes.
+                            backgroundColor: Theme.of(
+                              context,
+                            ).colorScheme.surfaceContainerHighest,
+                            valueColor: AlwaysStoppedAnimation(color),
                           ),
                         ),
                       ),
@@ -580,6 +667,7 @@ class _ConcernSection extends StatelessWidget {
         const SizedBox(height: AppSpacing.sm),
         _BarBreakdown(
           title: 'Concerns by category',
+          color: AppColors.hazards,
           values: {
             for (final entry in metrics.byCategory.entries)
               entry.key.label: entry.value,
@@ -640,6 +728,7 @@ class _SafetyAlertSection extends StatelessWidget {
         const SizedBox(height: AppSpacing.sm),
         _BarBreakdown(
           title: 'Alerts by severity',
+          color: AppColors.safetyAlerts,
           values: {
             for (final entry in metrics.bySeverity.entries)
               entry.key.label: entry.value,
@@ -648,6 +737,7 @@ class _SafetyAlertSection extends StatelessWidget {
         const SizedBox(height: AppSpacing.sm),
         _BarBreakdown(
           title: 'Alerts by category',
+          color: AppColors.safetyAlerts,
           values: {
             for (final entry in metrics.byCategory.entries)
               entry.key.label: entry.value,

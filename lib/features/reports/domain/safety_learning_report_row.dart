@@ -19,12 +19,16 @@
 class SafetyLearningReportRow {
   const SafetyLearningReportRow({
     required this.workerUid,
+    this.workerName,
     required this.requiredCount,
     required this.completedCount,
     required this.inProgressCount,
   });
 
   final String workerUid;
+
+  /// The worker's name as shown on the report; null when unknown.
+  final String? workerName;
   final int requiredCount;
   final int completedCount;
   final int inProgressCount;

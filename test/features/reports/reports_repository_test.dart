@@ -52,14 +52,13 @@ void main() {
     String id, {
     String projectId = 'project-1',
     String name = 'Site',
-  }) =>
-      firestore.doc('organizations/$orgId/sites/$id').set({
-        'organizationId': orgId,
-        'projectId': projectId,
-        'name': name,
-        'code': id,
-        'status': 'active',
-      });
+  }) => firestore.doc('organizations/$orgId/sites/$id').set({
+    'organizationId': orgId,
+    'projectId': projectId,
+    'name': name,
+    'code': id,
+    'status': 'active',
+  });
 
   Future<void> seedMeeting(
     String orgId,
@@ -71,33 +70,31 @@ void main() {
     List<String> activityIds = const ['a1'],
     List<String> meetingPointIds = const ['p1'],
     List<String> correctiveActionIds = const [],
-  }) =>
-      firestore.doc('organizations/$orgId/daily_safety_meetings/$id').set({
-        'organizationId': orgId,
-        'projectId': projectId,
-        'siteId': siteId,
-        'date': date,
-        'foremanId': foremanId,
-        'activityIds': activityIds,
-        'meetingPointIds': meetingPointIds,
-        'status': 'completed',
-        'concerns': <String>[],
-        'correctiveActionIds': correctiveActionIds,
-        'createdAt': Timestamp.now(),
-      });
+  }) => firestore.doc('organizations/$orgId/daily_safety_meetings/$id').set({
+    'organizationId': orgId,
+    'projectId': projectId,
+    'siteId': siteId,
+    'date': date,
+    'foremanId': foremanId,
+    'activityIds': activityIds,
+    'meetingPointIds': meetingPointIds,
+    'status': 'completed',
+    'concerns': <String>[],
+    'correctiveActionIds': correctiveActionIds,
+    'createdAt': Timestamp.now(),
+  });
 
   Future<void> seedAttendance(
     String orgId,
     String meetingId,
     String workerId, {
     required MeetingAttendanceStatus status,
-  }) =>
-      firestore
-          .doc(
-            'organizations/$orgId/daily_safety_meetings/$meetingId/attendance/'
-            '$workerId',
-          )
-          .set({
+  }) => firestore
+      .doc(
+        'organizations/$orgId/daily_safety_meetings/$meetingId/attendance/'
+        '$workerId',
+      )
+      .set({
         'meetingId': meetingId,
         'organizationId': orgId,
         'siteId': 'site-1',
@@ -114,15 +111,15 @@ void main() {
             '$id',
           )
           .set({
-        'meetingId': meetingId,
-        'organizationId': orgId,
-        'siteId': 'site-1',
-        'description': 'Concern $id',
-        'category': 'safety',
-        'reportedBy': 'foreman-1',
-        'status': 'open',
-        'createdAt': Timestamp.now(),
-      });
+            'meetingId': meetingId,
+            'organizationId': orgId,
+            'siteId': 'site-1',
+            'description': 'Concern $id',
+            'category': 'safety',
+            'reportedBy': 'foreman-1',
+            'status': 'open',
+            'createdAt': Timestamp.now(),
+          });
 
   Future<void> seedAlert(
     String orgId,
@@ -132,20 +129,19 @@ void main() {
     String status = 'active',
     DateTime? createdAt,
     DateTime? resolvedAt,
-  }) =>
-      firestore.doc('organizations/$orgId/safety_alerts/$id').set({
-        'organizationId': orgId,
-        'projectId': 'project-1',
-        'siteId': siteId,
-        'title': 'Alert $id',
-        'description': 'Description $id',
-        'severity': severity,
-        'category': 'safety',
-        'status': status,
-        'createdBy': 'manager-1',
-        'createdAt': Timestamp.fromDate(createdAt ?? DateTime(2026, 1, 10)),
-        'resolvedAt': resolvedAt == null ? null : Timestamp.fromDate(resolvedAt),
-      });
+  }) => firestore.doc('organizations/$orgId/safety_alerts/$id').set({
+    'organizationId': orgId,
+    'projectId': 'project-1',
+    'siteId': siteId,
+    'title': 'Alert $id',
+    'description': 'Description $id',
+    'severity': severity,
+    'category': 'safety',
+    'status': status,
+    'createdBy': 'manager-1',
+    'createdAt': Timestamp.fromDate(createdAt ?? DateTime(2026, 1, 10)),
+    'resolvedAt': resolvedAt == null ? null : Timestamp.fromDate(resolvedAt),
+  });
 
   Future<void> seedAction(
     String orgId,
@@ -153,32 +149,34 @@ void main() {
     String siteId = 'site-1',
     String status = 'open',
     DateTime? dueDate,
-  }) =>
-      firestore.doc('organizations/$orgId/corrective_actions/$id').set({
-        'organizationId': orgId,
-        'projectId': 'project-1',
-        'siteId': siteId,
-        'meetingId': 'm1',
-        'title': 'Action $id',
-        'description': 'Description $id',
-        'assignedTo': 'worker-1',
-        'assignedBy': 'foreman-1',
-        'dueDate': Timestamp.fromDate(dueDate ?? DateTime(2026, 1, 20)),
-        'status': status,
-        'evidenceRequired': false,
-        'createdAt': Timestamp.now(),
-        'updatedAt': Timestamp.now(),
-      });
+  }) => firestore.doc('organizations/$orgId/corrective_actions/$id').set({
+    'organizationId': orgId,
+    'projectId': 'project-1',
+    'siteId': siteId,
+    'meetingId': 'm1',
+    'title': 'Action $id',
+    'description': 'Description $id',
+    'assignedTo': 'worker-1',
+    'assignedBy': 'foreman-1',
+    'dueDate': Timestamp.fromDate(dueDate ?? DateTime(2026, 1, 20)),
+    'status': status,
+    'evidenceRequired': false,
+    'createdAt': Timestamp.now(),
+    'updatedAt': Timestamp.now(),
+  });
 
-  Future<void> seedRequirement(String orgId, String id, List<String> learningIds) =>
-      firestore.doc('organizations/$orgId/safety_requirements/$id').set({
-        'organizationId': orgId,
-        'name': 'Requirement $id',
-        'category': 'General',
-        'risk': 'medium',
-        'requiredLearningIds': learningIds,
-        'status': 'active',
-      });
+  Future<void> seedRequirement(
+    String orgId,
+    String id,
+    List<String> learningIds,
+  ) => firestore.doc('organizations/$orgId/safety_requirements/$id').set({
+    'organizationId': orgId,
+    'name': 'Requirement $id',
+    'category': 'General',
+    'risk': 'medium',
+    'requiredLearningIds': learningIds,
+    'status': 'active',
+  });
 
   Future<void> seedLearning(String orgId, String id) =>
       firestore.doc('organizations/$orgId/safety_learning/$id').set({
@@ -194,13 +192,12 @@ void main() {
     String workerUid,
     String learningId,
     String status,
-  ) =>
-      firestore
-          .doc(
-            'organizations/$orgId/worker_learning_records/'
-            '${workerUid}_$learningId',
-          )
-          .set({
+  ) => firestore
+      .doc(
+        'organizations/$orgId/worker_learning_records/'
+        '${workerUid}_$learningId',
+      )
+      .set({
         'workerUid': workerUid,
         'organizationId': orgId,
         'learningId': learningId,
@@ -257,8 +254,18 @@ void main() {
       await seedProject('org-alpha', 'project-2');
       await seedSite('org-alpha', 'site-1', projectId: 'project-1');
       await seedSite('org-alpha', 'site-2', projectId: 'project-2');
-      await seedMeeting('org-alpha', 'm1', projectId: 'project-1', siteId: 'site-1');
-      await seedMeeting('org-alpha', 'm2', projectId: 'project-2', siteId: 'site-2');
+      await seedMeeting(
+        'org-alpha',
+        'm1',
+        projectId: 'project-1',
+        siteId: 'site-1',
+      );
+      await seedMeeting(
+        'org-alpha',
+        'm2',
+        projectId: 'project-2',
+        siteId: 'site-2',
+      );
 
       final repository = repositoryFor('org-alpha');
 
@@ -280,10 +287,11 @@ void main() {
       await seedMeeting('org-alpha', 'jan15', date: '2026-01-15');
       await seedMeeting('org-alpha', 'jan20', date: '2026-01-20');
 
-      final rows = await repositoryFor('org-alpha').buildDailySafetyMeetingReport(
-        from: DateTime(2026, 1, 12),
-        to: DateTime(2026, 1, 18),
-      );
+      final rows = await repositoryFor('org-alpha')
+          .buildDailySafetyMeetingReport(
+            from: DateTime(2026, 1, 12),
+            to: DateTime(2026, 1, 18),
+          );
 
       expect(rows.map((r) => r.meetingId).toList(), ['jan15']);
     });
@@ -296,13 +304,17 @@ void main() {
       await seedSite('org-beta', 'site-1');
       await seedMeeting('org-beta', 'm2');
 
-      final rows = await repositoryFor('org-alpha').buildDailySafetyMeetingReport();
+      final rows = await repositoryFor(
+        'org-alpha',
+      ).buildDailySafetyMeetingReport();
 
       expect(rows.map((r) => r.meetingId).toList(), ['m1']);
     });
 
     test('returns an empty list when there are no meetings', () async {
-      final rows = await repositoryFor('org-alpha').buildDailySafetyMeetingReport();
+      final rows = await repositoryFor(
+        'org-alpha',
+      ).buildDailySafetyMeetingReport();
 
       expect(rows, isEmpty);
     });
@@ -311,7 +323,12 @@ void main() {
   group('Safety Alerts report', () {
     test('resolves site name and includes status/severity', () async {
       await seedSite('org-alpha', 'site-1', name: 'Tower A');
-      await seedAlert('org-alpha', 'a1', status: 'active', severity: 'critical');
+      await seedAlert(
+        'org-alpha',
+        'a1',
+        status: 'active',
+        severity: 'critical',
+      );
       await seedAlert(
         'org-alpha',
         'a2',
@@ -382,10 +399,9 @@ void main() {
       // created later that same day — the bug this suite pins down as
       // fixed.
       Future<List<String>> alertIdsInRange(DateTime from, DateTime to) async {
-        final rows = await repositoryFor('org-alpha').buildSafetyAlertsReport(
-          from: from,
-          to: to,
-        );
+        final rows = await repositoryFor(
+          'org-alpha',
+        ).buildSafetyAlertsReport(from: from, to: to);
         return rows.map((r) => r.alertId).toList();
       }
 
@@ -437,24 +453,26 @@ void main() {
         expect(ids, ['during']);
       });
 
-      test('a record later on the end date is included (the bug case)',
-          () async {
-        await seedSite('org-alpha', 'site-1');
-        await seedAlert(
-          'org-alpha',
-          'late-on-end',
-          createdAt: DateTime(2026, 1, 10, 23, 59, 59),
-        );
+      test(
+        'a record later on the end date is included (the bug case)',
+        () async {
+          await seedSite('org-alpha', 'site-1');
+          await seedAlert(
+            'org-alpha',
+            'late-on-end',
+            createdAt: DateTime(2026, 1, 10, 23, 59, 59),
+          );
 
-        // `to` mirrors exactly what showDateRangePicker returns: midnight
-        // at the START of the selected end day.
-        final ids = await alertIdsInRange(
-          DateTime(2026, 1, 5),
-          DateTime(2026, 1, 10),
-        );
+          // `to` mirrors exactly what showDateRangePicker returns: midnight
+          // at the START of the selected end day.
+          final ids = await alertIdsInRange(
+            DateTime(2026, 1, 5),
+            DateTime(2026, 1, 10),
+          );
 
-        expect(ids, ['late-on-end']);
-      });
+          expect(ids, ['late-on-end']);
+        },
+      );
 
       test('a record after the range is excluded', () async {
         await seedSite('org-alpha', 'site-1');
@@ -472,32 +490,34 @@ void main() {
         expect(ids, isEmpty);
       });
 
-      test('a same-day start/end range includes records any time that day',
-          () async {
-        await seedSite('org-alpha', 'site-1');
-        await seedAlert(
-          'org-alpha',
-          'morning',
-          createdAt: DateTime(2026, 1, 8, 6, 0),
-        );
-        await seedAlert(
-          'org-alpha',
-          'evening',
-          createdAt: DateTime(2026, 1, 8, 22, 0),
-        );
-        await seedAlert(
-          'org-alpha',
-          'next-day',
-          createdAt: DateTime(2026, 1, 9, 0, 0, 1),
-        );
+      test(
+        'a same-day start/end range includes records any time that day',
+        () async {
+          await seedSite('org-alpha', 'site-1');
+          await seedAlert(
+            'org-alpha',
+            'morning',
+            createdAt: DateTime(2026, 1, 8, 6, 0),
+          );
+          await seedAlert(
+            'org-alpha',
+            'evening',
+            createdAt: DateTime(2026, 1, 8, 22, 0),
+          );
+          await seedAlert(
+            'org-alpha',
+            'next-day',
+            createdAt: DateTime(2026, 1, 9, 0, 0, 1),
+          );
 
-        final ids = await alertIdsInRange(
-          DateTime(2026, 1, 8),
-          DateTime(2026, 1, 8),
-        );
+          final ids = await alertIdsInRange(
+            DateTime(2026, 1, 8),
+            DateTime(2026, 1, 8),
+          );
 
-        expect(ids.toSet(), {'morning', 'evening'});
-      });
+          expect(ids.toSet(), {'morning', 'evening'});
+        },
+      );
     });
   });
 
@@ -523,7 +543,9 @@ void main() {
         dueDate: DateTime(2026, 1, 1),
       );
 
-      final rows = await repositoryFor('org-alpha').buildCorrectiveActionsReport();
+      final rows = await repositoryFor(
+        'org-alpha',
+      ).buildCorrectiveActionsReport();
       final now = DateTime(2026, 3, 1);
       final overdueCount = rows.where((r) => r.isOverdueAsOf(now)).length;
 
@@ -580,13 +602,17 @@ void main() {
       await seedSite('org-beta', 'site-1');
       await seedAction('org-beta', 'ca1');
 
-      final rows = await repositoryFor('org-alpha').buildCorrectiveActionsReport();
+      final rows = await repositoryFor(
+        'org-alpha',
+      ).buildCorrectiveActionsReport();
 
       expect(rows, hasLength(1));
     });
 
     test('returns an empty list when there are no actions', () async {
-      final rows = await repositoryFor('org-alpha').buildCorrectiveActionsReport();
+      final rows = await repositoryFor(
+        'org-alpha',
+      ).buildCorrectiveActionsReport();
 
       expect(rows, isEmpty);
     });
@@ -650,22 +676,24 @@ void main() {
         expect(ids, ['during']);
       });
 
-      test('a record later on the end date is included (the bug case)',
-          () async {
-        await seedSite('org-alpha', 'site-1');
-        await seedAction(
-          'org-alpha',
-          'late-on-end',
-          dueDate: DateTime(2026, 1, 10, 23, 59, 59),
-        );
+      test(
+        'a record later on the end date is included (the bug case)',
+        () async {
+          await seedSite('org-alpha', 'site-1');
+          await seedAction(
+            'org-alpha',
+            'late-on-end',
+            dueDate: DateTime(2026, 1, 10, 23, 59, 59),
+          );
 
-        final ids = await actionIdsInRange(
-          DateTime(2026, 1, 5),
-          DateTime(2026, 1, 10),
-        );
+          final ids = await actionIdsInRange(
+            DateTime(2026, 1, 5),
+            DateTime(2026, 1, 10),
+          );
 
-        expect(ids, ['late-on-end']);
-      });
+          expect(ids, ['late-on-end']);
+        },
+      );
 
       test('a record after the range is excluded', () async {
         await seedSite('org-alpha', 'site-1');
@@ -683,32 +711,34 @@ void main() {
         expect(ids, isEmpty);
       });
 
-      test('a same-day start/end range includes records any time that day',
-          () async {
-        await seedSite('org-alpha', 'site-1');
-        await seedAction(
-          'org-alpha',
-          'morning',
-          dueDate: DateTime(2026, 1, 8, 6, 0),
-        );
-        await seedAction(
-          'org-alpha',
-          'evening',
-          dueDate: DateTime(2026, 1, 8, 22, 0),
-        );
-        await seedAction(
-          'org-alpha',
-          'next-day',
-          dueDate: DateTime(2026, 1, 9, 0, 0, 1),
-        );
+      test(
+        'a same-day start/end range includes records any time that day',
+        () async {
+          await seedSite('org-alpha', 'site-1');
+          await seedAction(
+            'org-alpha',
+            'morning',
+            dueDate: DateTime(2026, 1, 8, 6, 0),
+          );
+          await seedAction(
+            'org-alpha',
+            'evening',
+            dueDate: DateTime(2026, 1, 8, 22, 0),
+          );
+          await seedAction(
+            'org-alpha',
+            'next-day',
+            dueDate: DateTime(2026, 1, 9, 0, 0, 1),
+          );
 
-        final ids = await actionIdsInRange(
-          DateTime(2026, 1, 8),
-          DateTime(2026, 1, 8),
-        );
+          final ids = await actionIdsInRange(
+            DateTime(2026, 1, 8),
+            DateTime(2026, 1, 8),
+          );
 
-        expect(ids.toSet(), {'morning', 'evening'});
-      });
+          expect(ids.toSet(), {'morning', 'evening'});
+        },
+      );
     });
   });
 
@@ -748,16 +778,18 @@ void main() {
       expect(rows.single.outstandingCount, 1);
     });
 
-    test('one row per active worker, even with zero required learning',
-        () async {
-      final rows = await repositoryFor(
-        'org-alpha',
-        workers: [_worker('worker-1'), _worker('worker-2')],
-      ).buildSafetyLearningReport();
+    test(
+      'one row per active worker, even with zero required learning',
+      () async {
+        final rows = await repositoryFor(
+          'org-alpha',
+          workers: [_worker('worker-1'), _worker('worker-2')],
+        ).buildSafetyLearningReport();
 
-      expect(rows.map((r) => r.workerUid).toSet(), {'worker-1', 'worker-2'});
-      expect(rows.every((r) => r.requiredCount == 0), isTrue);
-    });
+        expect(rows.map((r) => r.workerUid).toSet(), {'worker-1', 'worker-2'});
+        expect(rows.every((r) => r.requiredCount == 0), isTrue);
+      },
+    );
 
     test('returns an empty list when there are no active workers', () async {
       final rows = await repositoryFor('org-alpha').buildSafetyLearningReport();
@@ -766,8 +798,7 @@ void main() {
     });
   });
 
-  test('organizationId exposes the scope this repository was built with',
-      () {
+  test('organizationId exposes the scope this repository was built with', () {
     final repository = repositoryFor('org-alpha');
 
     expect(repository.organizationId, 'org-alpha');

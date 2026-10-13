@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import '../../../core/widgets/live_stream_builder.dart';
+import '../../../core/widgets/choice_list.dart';
 import 'package:provider/provider.dart';
 import '../../../core/errors/app_exception.dart';
 import '../../../core/services/firestore_service.dart';
@@ -9,12 +11,19 @@ import '../../../core/theme/app_text_styles.dart';
 import '../../activities/data/activity_repository.dart';
 import '../../activities/domain/activity.dart';
 import '../../authentication/presentation/auth_error_banner.dart';
+import '../../organizations/data/organization_repository.dart';
 import '../../organizations/data/project_repository.dart';
+import '../../organizations/domain/organization.dart';
 import '../../organizations/domain/organization_record_status.dart';
 import '../../organizations/domain/project.dart';
 import '../data/safety_meeting_point_admin_service.dart';
 import '../data/safety_meeting_point_repository.dart';
 import '../domain/safety_meeting_point.dart';
+import '../../../core/widgets/accent_card.dart';
+import '../../../core/widgets/feature_header.dart';
+import '../../../core/widgets/status_badge.dart';
+import '../../pre_start_checks/presentation/pre_start_visuals.dart';
+import '../../../core/widgets/color_choice_chips.dart';
 
 /// The Safety Meeting Point library: lists an organization's meeting points
 /// and lets an authorized manager create, edit, activate or deactivate one.
@@ -42,6 +51,7 @@ class SafetyMeetingPointsScreen extends StatefulWidget {
     this.adminService,
     this.activityRepository,
     this.projectRepository,
+    this.organizationRepository,
   });
 
   /// The organization whose meeting points to show. When null, falls back to
@@ -52,6 +62,11 @@ class SafetyMeetingPointsScreen extends StatefulWidget {
   /// constructs the real dependencies scoped to the resolved organization.
   final SafetyMeetingPointRepository? repository;
   final SafetyMeetingPointAdminService? adminService;
+
+  /// Injected in tests. Backs the silent sole-organization resolution used
+  /// when an Admin reaches this screen with no [organizationId] supplied —
+  /// see [_SafetyMeetingPointsScreenState.build]'s own comment.
+  final OrganizationRepository? organizationRepository;
 
   /// Injected in tests. Backs the "Applicable activities" picker in the
   /// create/edit dialog and the card's id-to-name resolution — see
@@ -74,6 +89,11 @@ class SafetyMeetingPointsScreen extends StatefulWidget {
 class _SafetyMeetingPointsScreenState extends State<SafetyMeetingPointsScreen> {
   late final SafetyMeetingPointAdminService _adminService =
       widget.adminService ?? SafetyMeetingPointAdminService();
+  late final OrganizationRepository _organizationRepository =
+      widget.organizationRepository ??
+      OrganizationRepository(firestoreService: FirestoreService());
+  late final Future<List<Organization>> _organizationsFuture =
+      _organizationRepository.getAll();
 
   SafetyMeetingPointRepository? _repository;
   ActivityRepository? _activityRepository;
@@ -137,13 +157,16 @@ class _SafetyMeetingPointsScreenState extends State<SafetyMeetingPointsScreen> {
     List<Activity> activities,
     List<Project> projects,
   ) async {
-    final result = await showDialog<_SafetyMeetingPointFormResult>(
-      context: context,
-      builder: (_) => _SafetyMeetingPointFormDialog(
-        activities: activities,
-        projects: projects,
-      ),
-    );
+    final result = await Navigator.of(context, rootNavigator: true)
+        .push<_SafetyMeetingPointFormResult>(
+          MaterialPageRoute(
+            fullscreenDialog: true,
+            builder: (_) => _SafetyMeetingPointFormDialog(
+              activities: activities,
+              projects: projects,
+            ),
+          ),
+        );
     if (result == null || !mounted) return;
     await _save(
       () => _adminService.createSafetyMeetingPoint(
@@ -164,14 +187,17 @@ class _SafetyMeetingPointsScreenState extends State<SafetyMeetingPointsScreen> {
     List<Activity> activities,
     List<Project> projects,
   ) async {
-    final result = await showDialog<_SafetyMeetingPointFormResult>(
-      context: context,
-      builder: (_) => _SafetyMeetingPointFormDialog(
-        existing: point,
-        activities: activities,
-        projects: projects,
-      ),
-    );
+    final result = await Navigator.of(context, rootNavigator: true)
+        .push<_SafetyMeetingPointFormResult>(
+          MaterialPageRoute(
+            fullscreenDialog: true,
+            builder: (_) => _SafetyMeetingPointFormDialog(
+              existing: point,
+              activities: activities,
+              projects: projects,
+            ),
+          ),
+        );
     if (result == null || !mounted) return;
     await _save(
       () => _adminService.updateSafetyMeetingPoint(
@@ -228,13 +254,16 @@ class _SafetyMeetingPointsScreenState extends State<SafetyMeetingPointsScreen> {
     // be "active" in the switcher), so a Site Manager of several
     // organizations must not be refused just because the one they tapped
     // into isn't the currently-active one.
-    final canManage = isPlatformAdministrator ||
+    final canManage =
+        isPlatformAdministrator ||
         (organizationId != null &&
-            sessionController.membershipFor(organizationId)?.role
+            sessionController
+                    .membershipFor(organizationId)
+                    ?.role
                     .canManageOrgContent ==
                 true);
 
-    if (!canManage || organizationId == null) {
+    if (!canManage) {
       return const Center(
         child: Padding(
           padding: EdgeInsets.all(AppSpacing.lg),
@@ -247,18 +276,60 @@ class _SafetyMeetingPointsScreenState extends State<SafetyMeetingPointsScreen> {
       );
     }
 
-    return StreamBuilder<List<Activity>>(
-      stream: _activityRepositoryFor(organizationId).watchAll(),
+    // An Admin reached here directly from the sidebar (no organizationId
+    // and no membership, org-less by construction) — JV Safety is
+    // single-company, so the sole organization is resolved silently here
+    // the same way AdminDashboardScreen/DailySafetyMeetingsRouterScreen do,
+    // instead of showing "no permission" for a role that plainly has it.
+    // Uses OrganizationRepository.getAll (a one-time fetch), not watchAll
+    // (a live stream) — the stream's `.snapshots()` listener can emit an
+    // empty LOCAL CACHE result before the server's real (non-empty) answer
+    // arrives on a cold client, which this screen would have misread as
+    // "JV ALMA CIS has not been set up yet" for a brief, confusing flash.
+    if (organizationId == null) {
+      return FutureBuilder<List<Organization>>(
+        future: _organizationsFuture,
+        builder: (context, snapshot) {
+          final organizations = snapshot.data;
+          if (organizations == null) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (organizations.length != 1) {
+            return const Center(
+              child: Padding(
+                padding: EdgeInsets.all(AppSpacing.lg),
+                child: Text(
+                  'JV ALMA CIS has not been set up yet.',
+                  style: AppTextStyles.bodyMedium,
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            );
+          }
+          return _buildBody(organizations.single.id);
+        },
+      );
+    }
+
+    return _buildBody(organizationId);
+  }
+
+  Widget _buildBody(String organizationId) {
+    return LiveStreamBuilder<List<Activity>>(
+      streamKey: _activityRepositoryFor(organizationId),
+      stream: () => _activityRepositoryFor(organizationId).watchAll(),
       builder: (context, activitySnapshot) {
         final activities = activitySnapshot.data ?? const <Activity>[];
 
-        return StreamBuilder<List<Project>>(
-          stream: _projectRepositoryFor(organizationId).watchAll(),
+        return LiveStreamBuilder<List<Project>>(
+          streamKey: _projectRepositoryFor(organizationId),
+          stream: () => _projectRepositoryFor(organizationId).watchAll(),
           builder: (context, projectSnapshot) {
             final projects = projectSnapshot.data ?? const <Project>[];
 
-            return StreamBuilder<List<SafetyMeetingPoint>>(
-              stream: _repositoryFor(organizationId).watchAll(),
+            return LiveStreamBuilder<List<SafetyMeetingPoint>>(
+              streamKey: _repositoryFor(organizationId),
+              stream: () => _repositoryFor(organizationId).watchAll(),
               builder: (context, snapshot) {
                 final items = snapshot.data ?? const <SafetyMeetingPoint>[];
                 final isLoading =
@@ -272,26 +343,23 @@ class _SafetyMeetingPointsScreenState extends State<SafetyMeetingPointsScreen> {
                   physics: const AlwaysScrollableScrollPhysics(),
                   padding: const EdgeInsets.all(AppSpacing.md),
                   children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Safety Meeting Points',
-                                style: AppTextStyles.headlineMedium,
-                              ),
-                              const Text(
-                                'Reusable topics and locations available '
-                                "for this organization's safety meetings.",
-                                style: AppTextStyles.bodyMedium,
-                              ),
-                            ],
+                    FeatureHeader(
+                      title: 'Safety Meeting Points',
+                      subtitle:
+                          'Reusable topics and locations available for this organization\'s safety meetings.',
+                      icon: Icons.checklist,
+                      color: AppColors.meetings,
+                      footer: Tooltip(
+                        message: 'Add meeting point',
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.white,
+                            foregroundColor: AppColors.meetings,
+                            minimumSize: const Size(
+                              0,
+                              AppSpacing.minTouchTarget,
+                            ),
                           ),
-                        ),
-                        IconButton(
-                          tooltip: 'Add meeting point',
                           onPressed: _isSaving
                               ? null
                               : () => _openCreateDialog(
@@ -299,10 +367,12 @@ class _SafetyMeetingPointsScreenState extends State<SafetyMeetingPointsScreen> {
                                   activities,
                                   projects,
                                 ),
-                          icon: const Icon(Icons.add_circle_outline),
+                          icon: const Icon(Icons.add),
+                          label: const Text('New Meeting Point'),
                         ),
-                      ],
+                      ),
                     ),
+
                     if ((_errorMessage ?? streamError) != null) ...[
                       const SizedBox(height: AppSpacing.md),
                       AuthErrorBanner(message: _errorMessage ?? streamError!),
@@ -310,16 +380,12 @@ class _SafetyMeetingPointsScreenState extends State<SafetyMeetingPointsScreen> {
                     const SizedBox(height: AppSpacing.md),
                     if (isLoading && items.isEmpty)
                       const Padding(
-                        padding: EdgeInsets.symmetric(
-                          vertical: AppSpacing.xl,
-                        ),
+                        padding: EdgeInsets.symmetric(vertical: AppSpacing.xl),
                         child: Center(child: CircularProgressIndicator()),
                       ),
                     if (!isLoading && items.isEmpty && streamError == null)
                       const Padding(
-                        padding: EdgeInsets.symmetric(
-                          vertical: AppSpacing.xl,
-                        ),
+                        padding: EdgeInsets.symmetric(vertical: AppSpacing.xl),
                         child: Text(
                           'No safety meeting points yet.',
                           style: AppTextStyles.bodyMedium,
@@ -377,6 +443,12 @@ class _SafetyMeetingPointCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Card(
       margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(
+          color: (AppColors.forLabel(point.category)).withValues(alpha: 0.5),
+        ),
+      ),
       child: Padding(
         padding: const EdgeInsets.all(AppSpacing.md),
         child: Column(
@@ -384,6 +456,11 @@ class _SafetyMeetingPointCard extends StatelessWidget {
           children: [
             Row(
               children: [
+                AccentIconBadge(
+                  color: AppColors.forLabel(point.category),
+                  emoji: hazardEmojiFor('${point.title} ${point.category}'),
+                ),
+                const SizedBox(width: AppSpacing.sm),
                 Expanded(
                   child: Text(point.title, style: AppTextStyles.titleLarge),
                 ),
@@ -581,20 +658,21 @@ class _SafetyMeetingPointFormDialogState
   List<Widget> _activityTilesFor(List<Activity> activities) {
     final sorted = [...activities]..sort((a, b) => a.name.compareTo(b.name));
     return [
-      for (final activity in sorted)
-        CheckboxListTile(
-          value: _selectedActivityIds.contains(activity.id),
-          onChanged: (checked) => setState(() {
-            if (checked ?? false) {
-              _selectedActivityIds.add(activity.id);
-            } else {
-              _selectedActivityIds.remove(activity.id);
-            }
-          }),
-          title: Text(activity.name),
-          controlAffinity: ListTileControlAffinity.leading,
-          contentPadding: EdgeInsets.zero,
-          dense: true,
+      for (final (index, activity) in sorted.indexed)
+        Padding(
+          padding: const EdgeInsets.only(bottom: AppSpacing.xs + 2),
+          child: ChoiceTile(
+            multi: true,
+            title: activity.name,
+            icon: Icons.construction,
+            color: choicePaletteColor(index),
+            selected: _selectedActivityIds.contains(activity.id),
+            onTap: () => setState(() {
+              if (!_selectedActivityIds.remove(activity.id)) {
+                _selectedActivityIds.add(activity.id);
+              }
+            }),
+          ),
         ),
     ];
   }
@@ -602,103 +680,188 @@ class _SafetyMeetingPointFormDialogState
   @override
   Widget build(BuildContext context) {
     final isEditing = widget.existing != null;
-    return AlertDialog(
-      title: Text(isEditing ? 'Edit Meeting Point' : 'Add Meeting Point'),
-      content: SizedBox(
-        width: double.maxFinite,
-        child: SingleChildScrollView(
-          child: Form(
-            key: _formKey,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                TextFormField(
-                  controller: _titleController,
-                  decoration: const InputDecoration(labelText: 'Title'),
-                  validator: (value) => (value == null || value.trim().isEmpty)
-                      ? 'A title is required.'
-                      : null,
-                ),
-                const SizedBox(height: AppSpacing.sm),
-                TextFormField(
-                  controller: _categoryController,
-                  decoration: const InputDecoration(labelText: 'Category'),
-                  validator: (value) => (value == null || value.trim().isEmpty)
-                      ? 'A category is required.'
-                      : null,
-                ),
-                const SizedBox(height: AppSpacing.sm),
-                TextFormField(
-                  controller: _descriptionController,
-                  decoration: const InputDecoration(labelText: 'Description'),
-                  maxLines: 2,
-                ),
-                const SizedBox(height: AppSpacing.sm),
-                Text('Applicable activities', style: AppTextStyles.label),
-                Text(
-                  'Leave all unchecked to apply to every activity.',
-                  style: AppTextStyles.bodyMedium,
-                ),
-                const SizedBox(height: AppSpacing.xs),
-                if (widget.activities.isEmpty)
-                  const Text(
-                    'No activities exist yet in this organization.',
-                    style: AppTextStyles.bodyMedium,
-                  )
-                else
-                  ..._groupedActivityTiles(),
-                const SizedBox(height: AppSpacing.sm),
-                TextFormField(
-                  controller: _risksController,
-                  decoration: const InputDecoration(
-                    labelText: 'Applicable risks',
-                    helperText: 'Comma-separated risk ids or names.',
-                  ),
-                ),
-                const SizedBox(height: AppSpacing.sm),
-                DropdownButtonFormField<OrganizationRecordStatus>(
-                  initialValue: _status,
-                  decoration: const InputDecoration(labelText: 'Status'),
-                  items: [
-                    for (final status in OrganizationRecordStatus.values)
-                      DropdownMenuItem(
-                        value: status,
-                        child: Text(status.label),
+    final actions = <Widget>[
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('Cancel'),
+      ),
+      ElevatedButton(
+        onPressed: () {
+          if (!(_formKey.currentState?.validate() ?? false)) return;
+          final description = _descriptionController.text.trim();
+          Navigator.of(context).pop(
+            _SafetyMeetingPointFormResult(
+              title: _titleController.text.trim(),
+              category: _categoryController.text.trim(),
+              description: description.isEmpty ? null : description,
+              applicableActivities: _selectedActivityIds.toList(),
+              applicableRisks: _parseCsv(_risksController.text),
+              status: _status,
+            ),
+          );
+        },
+        child: Text(isEditing ? 'Save' : 'Create'),
+      ),
+    ];
+    return Scaffold(
+      appBar: AppBar(),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          child: SizedBox(
+            width: double.maxFinite,
+            child: SingleChildScrollView(
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    FeatureHeader(
+                      eyebrow: isEditing
+                          ? 'Edit meeting point'
+                          : 'New meeting point',
+                      title: _titleController.text.trim().isEmpty
+                          ? 'Safety Meeting Point'
+                          : _titleController.text.trim(),
+                      icon: Icons.checklist,
+                      color: AppColors.forLabel(
+                        _categoryController.text.trim().isEmpty
+                            ? 'meeting'
+                            : _categoryController.text.trim(),
                       ),
+                      chips: [
+                        FeatureChip(
+                          icon: Icons.handyman,
+                          label: _selectedActivityIds.isEmpty
+                              ? 'Every activity'
+                              : '${_selectedActivityIds.length} '
+                                    '${_selectedActivityIds.length == 1 ? 'activity' : 'activities'}',
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: AppSpacing.md),
+                    FormSection(
+                      title: 'About this point',
+                      icon: Icons.edit_note,
+                      color: AppColors.meetings,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          TextFormField(
+                            controller: _titleController,
+                            decoration: const InputDecoration(
+                              labelText: 'Title',
+                            ),
+                            onChanged: (_) => setState(() {}),
+                            autofillHints: const [],
+                            validator: (value) =>
+                                (value == null || value.trim().isEmpty)
+                                ? 'A title is required.'
+                                : null,
+                          ),
+                          const SizedBox(height: AppSpacing.sm),
+                          TextFormField(
+                            controller: _categoryController,
+                            decoration: const InputDecoration(
+                              labelText: 'Category',
+                            ),
+                            onChanged: (_) => setState(() {}),
+                            autofillHints: const [],
+                            validator: (value) =>
+                                (value == null || value.trim().isEmpty)
+                                ? 'A category is required.'
+                                : null,
+                          ),
+                          const SizedBox(height: AppSpacing.sm),
+                          TextFormField(
+                            controller: _descriptionController,
+                            decoration: const InputDecoration(
+                              labelText: 'Description',
+                            ),
+                            maxLines: 2,
+                            autofillHints: const [],
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: AppSpacing.md),
+                    const SizedBox(height: AppSpacing.sm),
+                    FormSection(
+                      title: 'Applicable activities',
+                      icon: Icons.handyman,
+                      color: AppColors.projects,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Text(
+                            'Leave all unchecked to apply to every activity.',
+                            style: AppTextStyles.bodyMedium,
+                          ),
+                          const SizedBox(height: AppSpacing.xs),
+                          if (widget.activities.isEmpty)
+                            const Text(
+                              'No activities exist yet in this organization.',
+                              style: AppTextStyles.bodyMedium,
+                            )
+                          else
+                            ..._groupedActivityTiles(),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: AppSpacing.md),
+                    const SizedBox(height: AppSpacing.sm),
+                    TextFormField(
+                      controller: _risksController,
+                      decoration: const InputDecoration(
+                        labelText: 'Applicable risks',
+                        helperText: 'Comma-separated risk ids or names.',
+                      ),
+                      autofillHints: const [],
+                    ),
+                    const SizedBox(height: AppSpacing.sm),
+                    ChoiceList<OrganizationRecordStatus>(
+                      label: 'Status',
+                      selected: _status,
+                      onChanged: (value) {
+                        if (value != null) setState(() => _status = value);
+                      },
+                      items: const [
+                        ChoiceItem(
+                          value: OrganizationRecordStatus.active,
+                          title: 'Active',
+                          color: AppColors.success,
+                          icon: Icons.check_circle,
+                        ),
+                        ChoiceItem(
+                          value: OrganizationRecordStatus.inactive,
+                          title: 'Inactive',
+                          color: AppColors.textSecondary,
+                          icon: Icons.pause_circle,
+                        ),
+                      ],
+                      allowDeselect: false,
+                    ),
                   ],
-                  onChanged: (value) {
-                    if (value != null) setState(() => _status = value);
-                  },
                 ),
-              ],
+              ),
             ),
           ),
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
+      bottomNavigationBar: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          child: Row(
+            children: [
+              for (final (index, action) in actions.indexed) ...[
+                if (index > 0) const SizedBox(width: AppSpacing.sm),
+                Expanded(child: action),
+              ],
+            ],
+          ),
         ),
-        ElevatedButton(
-          onPressed: () {
-            if (!(_formKey.currentState?.validate() ?? false)) return;
-            final description = _descriptionController.text.trim();
-            Navigator.of(context).pop(
-              _SafetyMeetingPointFormResult(
-                title: _titleController.text.trim(),
-                category: _categoryController.text.trim(),
-                description: description.isEmpty ? null : description,
-                applicableActivities: _selectedActivityIds.toList(),
-                applicableRisks: _parseCsv(_risksController.text),
-                status: _status,
-              ),
-            );
-          },
-          child: Text(isEditing ? 'Save' : 'Create'),
-        ),
-      ],
+      ),
     );
   }
 }
@@ -733,20 +896,7 @@ class _StatusChip extends StatelessWidget {
       OrganizationRecordStatus.active => AppColors.success,
       OrganizationRecordStatus.inactive => AppColors.textSecondary,
     };
-    return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: AppSpacing.sm,
-        vertical: AppSpacing.xs,
-      ),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(AppSpacing.sm),
-      ),
-      child: Text(
-        status.label,
-        style: AppTextStyles.label.copyWith(color: color),
-      ),
-    );
+    return StatusBadge(label: status.label, color: color);
   }
 }
 
@@ -763,7 +913,7 @@ class _DetailRow extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 16, color: AppColors.textSecondary),
+          Icon(icon, size: 16, color: AppColors.primaryBright),
           const SizedBox(width: AppSpacing.sm),
           Expanded(child: Text(value, style: AppTextStyles.bodyMedium)),
         ],

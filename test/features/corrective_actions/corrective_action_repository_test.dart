@@ -19,6 +19,7 @@ void main() {
     String? hazardId,
     String siteId = 'site-1',
     String status = 'open',
+    String assignedTo = 'worker-1',
   }) async {
     await firestore.doc('organizations/$orgId/corrective_actions/$id').set({
       'organizationId': orgId,
@@ -29,7 +30,7 @@ void main() {
       'hazardId': hazardId,
       'title': 'Action $id',
       'description': 'Description $id',
-      'assignedTo': 'worker-1',
+      'assignedTo': assignedTo,
       'assignedBy': 'foreman-1',
       'dueDate': Timestamp.fromDate(DateTime(2026, 9, 1)),
       'status': status,
@@ -54,23 +55,26 @@ void main() {
     expect(actions.map((a) => a.id).toSet(), {'ca1', 'ca2'});
   });
 
-  test('watchForConcern returns only actions raised from that concern',
-      () async {
-    await seedAction('org-alpha', 'ca1', meetingId: 'm1', concernId: 'c1');
-    await seedAction('org-alpha', 'ca2', meetingId: 'm1', concernId: 'c2');
-    await seedAction('org-alpha', 'ca3', meetingId: 'm1');
+  test(
+    'watchForConcern returns only actions raised from that concern',
+    () async {
+      await seedAction('org-alpha', 'ca1', meetingId: 'm1', concernId: 'c1');
+      await seedAction('org-alpha', 'ca2', meetingId: 'm1', concernId: 'c2');
+      await seedAction('org-alpha', 'ca3', meetingId: 'm1');
 
-    final repository = CorrectiveActionRepository(
-      firestoreService: FirestoreService(firestore: firestore),
-      organizationId: 'org-alpha',
-    );
+      final repository = CorrectiveActionRepository(
+        firestoreService: FirestoreService(firestore: firestore),
+        organizationId: 'org-alpha',
+      );
 
-    final actions = await repository.watchForConcern('c1').first;
+      final actions = await repository.watchForConcern('c1').first;
 
-    expect(actions.map((a) => a.id).toList(), ['ca1']);
-  });
+      expect(actions.map((a) => a.id).toList(), ['ca1']);
+    },
+  );
 
-  test('watchForHazard returns only the action raised from that hazard',
+  test(
+    'watchForHazard returns only the action raised from that hazard',
     () async {
       await seedAction('org-alpha', 'ca1', hazardId: 'hazard-1');
       await seedAction('org-alpha', 'ca2', meetingId: 'm1');
@@ -85,21 +89,56 @@ void main() {
       expect(actions.map((a) => a.id).toList(), ['ca1']);
       expect(actions.single.hazardId, 'hazard-1');
       expect(actions.single.meetingId, isNull);
-    });
+    },
+  );
 
-  test('watchForOrganization returns every action across meetings/sites',
-      () async {
+  test(
+    'watchForOrganization returns every action across meetings/sites',
+    () async {
+      await seedAction('org-alpha', 'ca1', meetingId: 'm1', siteId: 'site-1');
+      await seedAction('org-alpha', 'ca2', meetingId: 'm2', siteId: 'site-2');
+
+      final repository = CorrectiveActionRepository(
+        firestoreService: FirestoreService(firestore: firestore),
+        organizationId: 'org-alpha',
+      );
+
+      final actions = await repository.watchForOrganization().first;
+
+      expect(actions.map((a) => a.id).toSet(), {'ca1', 'ca2'});
+    },
+  );
+
+  test(
+    "watchForOrganization excludes another organization's actions",
+    () async {
+      await seedAction('org-alpha', 'ca1', meetingId: 'm1');
+      await seedAction('org-beta', 'ca1', meetingId: 'm1');
+
+      final repository = CorrectiveActionRepository(
+        firestoreService: FirestoreService(firestore: firestore),
+        organizationId: 'org-alpha',
+      );
+
+      final actions = await repository.watchForOrganization().first;
+
+      expect(actions, hasLength(1));
+      expect(actions.single.organizationId, 'org-alpha');
+    },
+  );
+
+  test('watchForAssignee returns only actions assigned to that uid', () async {
     await seedAction(
       'org-alpha',
       'ca1',
       meetingId: 'm1',
-      siteId: 'site-1',
+      assignedTo: 'worker-1',
     );
     await seedAction(
       'org-alpha',
       'ca2',
-      meetingId: 'm2',
-      siteId: 'site-2',
+      meetingId: 'm1',
+      assignedTo: 'worker-2',
     );
 
     final repository = CorrectiveActionRepository(
@@ -107,22 +146,31 @@ void main() {
       organizationId: 'org-alpha',
     );
 
-    final actions = await repository.watchForOrganization().first;
+    final actions = await repository.watchForAssignee('worker-1').first;
 
-    expect(actions.map((a) => a.id).toSet(), {'ca1', 'ca2'});
+    expect(actions.map((a) => a.id).toList(), ['ca1']);
   });
 
-  test("watchForOrganization excludes another organization's actions",
-      () async {
-    await seedAction('org-alpha', 'ca1', meetingId: 'm1');
-    await seedAction('org-beta', 'ca1', meetingId: 'm1');
+  test("watchForAssignee excludes another organization's actions", () async {
+    await seedAction(
+      'org-alpha',
+      'ca1',
+      meetingId: 'm1',
+      assignedTo: 'worker-1',
+    );
+    await seedAction(
+      'org-beta',
+      'ca1',
+      meetingId: 'm1',
+      assignedTo: 'worker-1',
+    );
 
     final repository = CorrectiveActionRepository(
       firestoreService: FirestoreService(firestore: firestore),
       organizationId: 'org-alpha',
     );
 
-    final actions = await repository.watchForOrganization().first;
+    final actions = await repository.watchForAssignee('worker-1').first;
 
     expect(actions, hasLength(1));
     expect(actions.single.organizationId, 'org-alpha');
@@ -137,8 +185,7 @@ void main() {
     expect(await repository.getById('missing'), isNull);
   });
 
-  test('organizationId exposes the scope this repository was built with',
-      () {
+  test('organizationId exposes the scope this repository was built with', () {
     final repository = CorrectiveActionRepository(
       firestoreService: FirestoreService(firestore: firestore),
       organizationId: 'org-alpha',

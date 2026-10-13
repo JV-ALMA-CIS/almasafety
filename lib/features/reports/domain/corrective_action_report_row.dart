@@ -11,6 +11,7 @@ class CorrectiveActionReportRow {
     required this.siteName,
     required this.title,
     required this.assignedTo,
+    this.assignedToName = 'Unknown person',
     required this.dueDate,
     required this.status,
   });
@@ -20,6 +21,9 @@ class CorrectiveActionReportRow {
   final String siteName;
   final String title;
   final String assignedTo;
+
+  /// The assignee's name as shown on the report.
+  final String assignedToName;
   final DateTime dueDate;
   final CorrectiveActionStatus status;
 

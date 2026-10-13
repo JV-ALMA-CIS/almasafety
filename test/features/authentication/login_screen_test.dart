@@ -21,8 +21,7 @@ void main() {
         GoRoute(path: AppRoutes.login, builder: (_, _) => child),
         GoRoute(
           path: AppRoutes.register,
-          builder: (_, _) =>
-              const Scaffold(body: Text('registration screen')),
+          builder: (_, _) => const Scaffold(body: Text('registration screen')),
         ),
       ],
     );

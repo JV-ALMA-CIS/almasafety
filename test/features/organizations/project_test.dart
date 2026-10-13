@@ -75,20 +75,16 @@ void main() {
         validData(organizationId: null),
       );
 
-      expect(
-        () => Project.fromFirestore(doc),
-        throwsA(isA<DataException>()),
-      );
+      expect(() => Project.fromFirestore(doc), throwsA(isA<DataException>()));
     });
 
     test('throws on an unrecognised status', () async {
-      final doc = await seedProject('project-bad-status',
-          validData(status: 'archived'));
-
-      expect(
-        () => Project.fromFirestore(doc),
-        throwsA(isA<DataException>()),
+      final doc = await seedProject(
+        'project-bad-status',
+        validData(status: 'archived'),
       );
+
+      expect(() => Project.fromFirestore(doc), throwsA(isA<DataException>()));
     });
   });
 }

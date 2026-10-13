@@ -31,6 +31,8 @@ class CorrectiveActionRepository {
 
   Future<CorrectiveAction?> getById(String id) => _repository.getById(id);
 
+  Stream<CorrectiveAction?> watchById(String id) => _repository.watchById(id);
+
   /// Streams every corrective action raised from one meeting — the meeting
   /// workspace's "corrective actions raised from this meeting" view.
   Stream<List<CorrectiveAction>> watchForMeeting(String meetingId) {
@@ -42,8 +44,15 @@ class CorrectiveActionRepository {
   /// Streams every corrective action raised from one concern.
   Stream<List<CorrectiveAction>> watchForConcern(String concernId) {
     return _repository.watchCollection(
-      queryBuilder: (query) =>
-          query.where('concernId', isEqualTo: concernId),
+      queryBuilder: (query) => query.where('concernId', isEqualTo: concernId),
+    );
+  }
+
+  /// Streams every corrective action raised from [incidentId] — an
+  /// incident may have several.
+  Stream<List<CorrectiveAction>> watchForIncident(String incidentId) {
+    return _repository.watchCollection(
+      queryBuilder: (query) => query.where('incidentId', isEqualTo: incidentId),
     );
   }
 
@@ -63,6 +72,15 @@ class CorrectiveActionRepository {
   /// Actions list.
   Stream<List<CorrectiveAction>> watchForOrganization() {
     return _repository.watchCollection();
+  }
+
+  /// Streams every corrective action assigned to [uid] within this
+  /// organization — the assignee's own "my corrective actions" view, the
+  /// counterpart to [watchForOrganization]'s reviewer-wide list.
+  Stream<List<CorrectiveAction>> watchForAssignee(String uid) {
+    return _repository.watchCollection(
+      queryBuilder: (query) => query.where('assignedTo', isEqualTo: uid),
+    );
   }
 
   /// The organization this repository is scoped to.

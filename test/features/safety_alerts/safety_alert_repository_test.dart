@@ -45,8 +45,7 @@ void main() {
     expect(alerts.map((a) => a.id).toSet(), {'a1', 'a2'});
   });
 
-  test("watchForOrganization excludes another organization's alerts",
-      () async {
+  test("watchForOrganization excludes another organization's alerts", () async {
     await seedAlert('org-alpha', 'a1');
     await seedAlert('org-beta', 'a1');
 
@@ -100,8 +99,7 @@ void main() {
     expect(await repository.getById('missing'), isNull);
   });
 
-  test('organizationId exposes the scope this repository was built with',
-      () {
+  test('organizationId exposes the scope this repository was built with', () {
     final repository = SafetyAlertRepository(
       firestoreService: FirestoreService(firestore: firestore),
       organizationId: 'org-alpha',

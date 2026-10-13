@@ -17,13 +17,10 @@ class SafetyAlertRepository {
   }) : _organizationId = organizationId,
        _repository = FirestoreRepository<SafetyAlert>(
          firestoreService: firestoreService,
-         collectionPath: FirestorePaths.safetyAlertsCollection(
-           organizationId,
-         ),
+         collectionPath: FirestorePaths.safetyAlertsCollection(organizationId),
          fromFirestore: SafetyAlert.fromFirestore,
-         toFirestore: (_) => throw UnsupportedError(
-           'Safety alerts are written server-side.',
-         ),
+         toFirestore: (_) =>
+             throw UnsupportedError('Safety alerts are written server-side.'),
        );
 
   final String _organizationId;

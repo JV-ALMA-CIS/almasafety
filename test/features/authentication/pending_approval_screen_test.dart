@@ -14,9 +14,7 @@ void main() {
   }
 
   group('PendingApprovalScreen', () {
-    testWidgets('explains that the account is awaiting review', (
-      tester,
-    ) async {
+    testWidgets('explains that the account is awaiting review', (tester) async {
       await tester.pumpWidget(wrap(const PendingApprovalScreen()));
 
       expect(find.text('Account Pending Approval'), findsOneWidget);
@@ -75,9 +73,7 @@ void main() {
   });
 
   group('AccessDeniedScreen', () {
-    testWidgets('renders without crashing and offers sign-out', (
-      tester,
-    ) async {
+    testWidgets('renders without crashing and offers sign-out', (tester) async {
       // With Firebase unavailable the session sits in `loading`, which maps
       // to the generic fallback copy — the screen must still render.
       await tester.pumpWidget(wrap(const AccessDeniedScreen()));

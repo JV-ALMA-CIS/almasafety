@@ -14,8 +14,9 @@ void main() {
   Future<DocumentSnapshot<Map<String, dynamic>>> seed(
     Map<String, dynamic> data,
   ) async {
-    final ref =
-        firestore.doc('organizations/org-alpha/safety_meeting_points/mp1');
+    final ref = firestore.doc(
+      'organizations/org-alpha/safety_meeting_points/mp1',
+    );
     await ref.set(data);
     return ref.get();
   }
@@ -94,8 +95,9 @@ void main() {
   });
 
   test('throws on a missing document', () async {
-    final ref =
-        firestore.doc('organizations/org-alpha/safety_meeting_points/gone');
+    final ref = firestore.doc(
+      'organizations/org-alpha/safety_meeting_points/gone',
+    );
     final doc = await ref.get();
 
     expect(

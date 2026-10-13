@@ -18,7 +18,6 @@ import 'package:jva_safety/features/authentication/domain/worker_type.dart';
 import 'package:jva_safety/features/authentication/presentation/pending_approvals_screen.dart';
 import 'package:jva_safety/features/organizations/data/organization_repository.dart';
 import 'package:jva_safety/features/organizations/data/site_repository.dart';
-import 'package:jva_safety/features/organizations/domain/organization.dart';
 
 /// A fake approval service.
 ///
@@ -256,8 +255,7 @@ void main() {
     await tester.pumpAndSettle();
 
     if (role != null) {
-      await tester.tap(find.byType(DropdownButtonFormField<AppRole>));
-      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text(role.label).last);
       await tester.tap(find.text(role.label).last);
       await tester.pumpAndSettle();
     }
@@ -394,9 +392,7 @@ void main() {
 
         await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
         await tester.pumpAndSettle();
-        await tester.tap(find.byType(DropdownButtonFormField<AppRole>));
-        await tester.pumpAndSettle();
-
+        // Every grantable role is listed in the dialog itself.
         expect(find.text(AppRole.admin.label), findsNothing);
         expect(find.text(AppRole.siteManager.label), findsNothing);
         expect(find.text(AppRole.worker.label), findsNothing);
@@ -670,9 +666,8 @@ void main() {
         // Defaults to the first (here, also the "active") organization.
         expect(find.text('JV Alma CIS'), findsOneWidget);
 
-        await tester.tap(find.byType(DropdownButtonFormField<String>));
-        await tester.pumpAndSettle();
         expect(find.text('JV Second Site'), findsOneWidget);
+        await tester.ensureVisible(find.text('JV Second Site').last);
         await tester.tap(find.text('JV Second Site').last);
         await tester.pumpAndSettle();
 
@@ -693,12 +688,10 @@ void main() {
       await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
       await tester.pumpAndSettle();
 
-      // The default selection is "none yet," so the organization's own
-      // name/code only appears once the dropdown is opened.
-      await tester.tap(find.byType(DropdownButtonFormField<Organization?>));
-      await tester.pumpAndSettle();
-
-      expect(find.text('Test Org (12345)'), findsOneWidget);
+      // Every organization is listed: its name, with its code in the
+      // badge and on the line underneath.
+      expect(find.text('Test Org'), findsOneWidget);
+      expect(find.text('12345'), findsWidgets);
       expect(find.text('aImNf59EoZ99hNQms2YR'), findsNothing);
     });
 
@@ -732,9 +725,8 @@ void main() {
         await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
         await tester.pumpAndSettle();
 
-        await tester.tap(find.byType(DropdownButtonFormField<Organization?>));
-        await tester.pumpAndSettle();
-        await tester.tap(find.text('Test Org (12345)').last);
+        await tester.ensureVisible(find.text('Test Org').last);
+        await tester.tap(find.text('Test Org').last);
         await tester.pumpAndSettle();
 
         await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').last);
@@ -762,9 +754,8 @@ void main() {
         await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
         await tester.pumpAndSettle();
 
-        await tester.tap(find.byType(DropdownButtonFormField<Organization?>));
-        await tester.pumpAndSettle();
-        await tester.tap(find.text('Beta Org (BETA)').last);
+        await tester.ensureVisible(find.text('Beta Org').last);
+        await tester.tap(find.text('Beta Org').last);
         await tester.pumpAndSettle();
 
         await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').last);
@@ -784,9 +775,6 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.widgetWithText(ElevatedButton, 'Approve').first);
       await tester.pumpAndSettle();
-      await tester.tap(find.byType(DropdownButtonFormField<AppRole>));
-      await tester.pumpAndSettle();
-
       expect(find.text(AppRole.siteManager.label), findsWidgets);
       expect(find.text(AppRole.foreman.label), findsNothing);
       expect(find.text(AppRole.worker.label), findsNothing);

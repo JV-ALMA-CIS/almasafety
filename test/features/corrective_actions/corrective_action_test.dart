@@ -15,8 +15,7 @@ void main() {
   Future<DocumentSnapshot<Map<String, dynamic>>> seed(
     Map<String, dynamic> data,
   ) async {
-    final ref =
-        firestore.doc('organizations/org-alpha/corrective_actions/ca1');
+    final ref = firestore.doc('organizations/org-alpha/corrective_actions/ca1');
     await ref.set(data);
     return ref.get();
   }
@@ -216,7 +215,8 @@ void main() {
     );
   });
 
-  test('parses a hazard-originated action (meetingId null, hazardId set)',
+  test(
+    'parses a hazard-originated action (meetingId null, hazardId set)',
     () async {
       final doc = await seed({
         'organizationId': 'org-alpha',
@@ -236,7 +236,8 @@ void main() {
       expect(action.hazardId, 'hazard-1');
       expect(action.meetingId, isNull);
       expect(action.concernId, isNull);
-    });
+    },
+  );
 
   test('throws when title is missing', () async {
     final doc = await seed({
@@ -361,10 +362,13 @@ void main() {
     expect(CorrectiveActionStatus.tryFromId(null), isNull);
   });
 
-  test('the four expected statuses exist', () {
-    expect(
-      CorrectiveActionStatus.values.map((s) => s.id).toSet(),
-      {'open', 'inProgress', 'completed', 'overdue'},
-    );
+  test('the five expected statuses exist', () {
+    expect(CorrectiveActionStatus.values.map((s) => s.id).toSet(), {
+      'open',
+      'inProgress',
+      'submittedForReview',
+      'completed',
+      'overdue',
+    });
   });
 }

@@ -32,8 +32,7 @@ class SafetyMeetingPointRepository {
 
   Future<SafetyMeetingPoint?> getById(String id) => _repository.getById(id);
 
-  Stream<SafetyMeetingPoint?> watchById(String id) =>
-      _repository.watchById(id);
+  Stream<SafetyMeetingPoint?> watchById(String id) => _repository.watchById(id);
 
   /// Streams every safety meeting point in this organization, active and
   /// inactive alike. Used by the admin management screen.
@@ -57,21 +56,25 @@ class SafetyMeetingPointRepository {
   }) {
     return _repository
         .watchCollection(
-          queryBuilder: (query) =>
-              query.where('status', isEqualTo: OrganizationRecordStatus.active.id),
+          queryBuilder: (query) => query.where(
+            'status',
+            isEqualTo: OrganizationRecordStatus.active.id,
+          ),
         )
         .map((points) {
-      if (activityId == null && riskId == null) return points;
-      return points.where((point) {
-        final matchesActivity = activityId == null ||
-            point.applicableActivities.isEmpty ||
-            point.applicableActivities.contains(activityId);
-        final matchesRisk = riskId == null ||
-            point.applicableRisks.isEmpty ||
-            point.applicableRisks.contains(riskId);
-        return matchesActivity && matchesRisk;
-      }).toList();
-    });
+          if (activityId == null && riskId == null) return points;
+          return points.where((point) {
+            final matchesActivity =
+                activityId == null ||
+                point.applicableActivities.isEmpty ||
+                point.applicableActivities.contains(activityId);
+            final matchesRisk =
+                riskId == null ||
+                point.applicableRisks.isEmpty ||
+                point.applicableRisks.contains(riskId);
+            return matchesActivity && matchesRisk;
+          }).toList();
+        });
   }
 
   /// The organization this repository is scoped to.

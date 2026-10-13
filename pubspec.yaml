@@ -65,6 +65,22 @@ dependencies:
   # WARNING doc comment.
   shared_preferences: ^2.3.3
 
+  # Renders a SafetyLearning video item's contentReference as an actual,
+  # in-app video player instead of a raw link. Chosen over a YouTube/webview
+  # package because contentReference is a plain opaque URL (matching this
+  # codebase's existing test fixture convention of a direct .mp4 URL, not an
+  # embed link) — see LearningDetailScreen's doc comment.
+  video_player: ^2.9.2
+  file_picker: 8.1.6
+  url_launcher: ^6.3.2
+
+  # Infers a Cloud Storage upload's Content-Type from its filename — without
+  # this, Firebase Storage defaults every upload to application/octet-stream,
+  # which most OSes/browsers refuse to open inline (see
+  # SafetyLearningLibraryScreen's upload flow).
+  mime: ^2.0.0
+  camera: ^0.12.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

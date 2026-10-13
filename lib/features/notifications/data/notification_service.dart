@@ -48,11 +48,10 @@ class NotificationService {
 
   /// Marks every one of the caller's own unread notifications within
   /// [organizationId] as read in one call.
-  Future<void> markAllNotificationsRead({
-    required String organizationId,
-  }) => _call<Object?>('markAllNotificationsRead', {
-    'organizationId': organizationId,
-  });
+  Future<void> markAllNotificationsRead({required String organizationId}) =>
+      _call<Object?>('markAllNotificationsRead', {
+        'organizationId': organizationId,
+      });
 
   Future<T> _call<T>(String name, [Map<String, Object?>? data]) async {
     try {

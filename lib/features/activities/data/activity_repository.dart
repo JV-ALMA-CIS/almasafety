@@ -42,6 +42,23 @@ class ActivityRepository {
     );
   }
 
+  /// Streams every activity across several sites within this organization.
+  ///
+  /// Required for a caller whose `firestore.rules` read grant is scoped to
+  /// activities whose OWN `siteId` is in their own membership's `siteIds`
+  /// (a Foreman or Worker — see `firestore.rules`'s
+  /// `activities/{activityId}` rule) rather than "any activity in this
+  /// organization": Firestore refuses an unconstrained [watchAll] outright
+  /// for such a caller, since a security rule cannot partially filter a
+  /// query's results. Returns an empty stream for an empty [siteIds] —
+  /// `whereIn` rejects an empty list rather than matching nothing.
+  Stream<List<Activity>> watchBySites(List<String> siteIds) {
+    if (siteIds.isEmpty) return Stream.value(const []);
+    return _repository.watchCollection(
+      queryBuilder: (query) => query.where('siteId', whereIn: siteIds),
+    );
+  }
+
   /// The organization this repository is scoped to.
   String get organizationId => _organizationId;
 }

@@ -18,8 +18,9 @@ void main() {
 
   group('OrganizationRecordStatus.label', () {
     test('every status has a distinct, human-readable label', () {
-      final labels =
-          OrganizationRecordStatus.values.map((s) => s.label).toSet();
+      final labels = OrganizationRecordStatus.values
+          .map((s) => s.label)
+          .toSet();
       expect(labels, hasLength(OrganizationRecordStatus.values.length));
     });
   });

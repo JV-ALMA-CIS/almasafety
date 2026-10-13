@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import '../../../core/widgets/live_stream_builder.dart';
+import '../../../core/widgets/choice_list.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../../../core/errors/app_exception.dart';
@@ -16,6 +18,9 @@ import '../data/project_repository.dart';
 import '../domain/organization.dart';
 import '../domain/organization_record_status.dart';
 import '../domain/project.dart';
+import '../../../core/widgets/accent_card.dart';
+import '../../../core/widgets/feature_header.dart';
+import '../../../core/widgets/color_choice_chips.dart';
 
 /// Lists the projects belonging to one organization. A System Administrator
 /// (any organization) or an [AppRole.siteManager] of THIS organization may
@@ -65,10 +70,13 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
   bool _isSaving = false;
 
   Future<void> _openCreateDialog() async {
-    final result = await showDialog<_ProjectFormResult>(
-      context: context,
-      builder: (_) => const _ProjectFormDialog(),
-    );
+    final result = await Navigator.of(context, rootNavigator: true)
+        .push<_ProjectFormResult>(
+          MaterialPageRoute(
+            fullscreenDialog: true,
+            builder: (_) => const _ProjectFormDialog(),
+          ),
+        );
     if (result == null || !mounted) return;
 
     setState(() {
@@ -115,10 +123,13 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
   }
 
   Future<void> _openEditDialog(Project project) async {
-    final result = await showDialog<_ProjectFormResult>(
-      context: context,
-      builder: (_) => _ProjectFormDialog(existing: project),
-    );
+    final result = await Navigator.of(context, rootNavigator: true)
+        .push<_ProjectFormResult>(
+          MaterialPageRoute(
+            fullscreenDialog: true,
+            builder: (_) => _ProjectFormDialog(existing: project),
+          ),
+        );
     if (result == null || !mounted) return;
     await _save(
       () => _adminService.updateProject(
@@ -181,8 +192,9 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
       );
     }
 
-    return StreamBuilder<List<Project>>(
-      stream: _repository.watchAll(),
+    return LiveStreamBuilder<List<Project>>(
+      streamKey: _repository,
+      stream: () => _repository.watchAll(),
       builder: (context, snapshot) {
         final projects = snapshot.data ?? const [];
         final isLoading = snapshot.connectionState == ConnectionState.waiting;
@@ -194,29 +206,34 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(AppSpacing.md),
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Projects', style: AppTextStyles.headlineMedium),
-                      Text(
-                        widget.organization.name,
-                        style: AppTextStyles.bodyMedium,
-                      ),
-                    ],
-                  ),
+            FeatureHeader(
+              title: 'Projects',
+              subtitle: widget.organization.name,
+              icon: Icons.apartment,
+              color: AppColors.projects,
+              chips: [
+                FeatureChip(
+                  icon: Icons.check_circle,
+                  label:
+                      '${projects.where((p) => p.status == OrganizationRecordStatus.active).length} active',
                 ),
-                if (canManage)
-                  Flexible(
-                    child: ElevatedButton.icon(
+                FeatureChip(
+                  icon: Icons.inventory_2,
+                  label: '${projects.length} total',
+                ),
+              ],
+              footer: canManage
+                  ? ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.white,
+                        foregroundColor: AppColors.projects,
+                        minimumSize: const Size(0, AppSpacing.minTouchTarget),
+                      ),
                       onPressed: _isSaving ? null : _openCreateDialog,
                       icon: const Icon(Icons.add),
                       label: const Text('Add Project'),
-                    ),
-                  ),
-              ],
+                    )
+                  : null,
             ),
             if ((_errorMessage ?? streamError) != null) ...[
               const SizedBox(height: AppSpacing.md),
@@ -277,61 +294,39 @@ class _ProjectCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.all(AppSpacing.md),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(project.name, style: AppTextStyles.titleLarge),
-                ),
-                _StatusChip(status: project.status),
-              ],
-            ),
-            const SizedBox(height: AppSpacing.xs),
-            _DetailRow(icon: Icons.qr_code_outlined, value: project.code),
-            if (project.description != null)
-              _DetailRow(
-                icon: Icons.description_outlined,
-                value: project.description!,
-              ),
-            const SizedBox(height: AppSpacing.md),
-            Wrap(
-              spacing: AppSpacing.sm,
-              runSpacing: AppSpacing.sm,
-              children: [
-                if (onEdit != null)
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(
-                      minHeight: AppSpacing.minTouchTarget,
-                      minWidth: 140,
-                    ),
-                    child: OutlinedButton.icon(
-                      onPressed: onEdit,
-                      icon: const Icon(Icons.edit_outlined),
-                      label: const Text('Edit'),
-                    ),
-                  ),
-                ConstrainedBox(
-                  constraints: const BoxConstraints(
-                    minHeight: AppSpacing.minTouchTarget,
-                    minWidth: 140,
-                  ),
-                  child: ElevatedButton.icon(
-                    onPressed: onViewSites,
-                    icon: const Icon(Icons.location_city_outlined),
-                    label: const Text('Sites'),
-                  ),
-                ),
-              ],
-            ),
-          ],
+    final active = project.status == OrganizationRecordStatus.active;
+    return AccentCard(
+      color: active ? AppColors.projects : AppColors.textSecondary,
+      icon: Icons.apartment,
+      title: project.name,
+      dimmed: !active,
+      badges: [
+        AccentBadge(
+          label: project.status.label,
+          color: active ? AppColors.success : AppColors.textSecondary,
         ),
-      ),
+      ],
+      details: [
+        AccentDetail(icon: Icons.qr_code, text: project.code),
+        if (project.description != null)
+          AccentDetail(icon: Icons.description, text: project.description!),
+      ],
+      actions: [
+        if (onEdit != null)
+          AccentButton(
+            label: 'Edit',
+            icon: Icons.edit,
+            color: AppColors.projects,
+            outlined: true,
+            onPressed: onEdit,
+          ),
+        AccentButton(
+          label: 'Sites',
+          icon: Icons.location_city,
+          color: AppColors.analytics,
+          onPressed: onViewSites,
+        ),
+      ],
     );
   }
 }
@@ -388,122 +383,139 @@ class _ProjectFormDialogState extends State<_ProjectFormDialog> {
   @override
   Widget build(BuildContext context) {
     final isEditing = widget.existing != null;
-    return AlertDialog(
-      title: Text(isEditing ? 'Edit Project' : 'Add Project'),
-      content: Form(
-        key: _formKey,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            TextFormField(
-              controller: _nameController,
-              decoration: const InputDecoration(labelText: 'Name'),
-              validator: (value) => (value == null || value.trim().isEmpty)
-                  ? 'A name is required.'
-                  : null,
-            ),
-            const SizedBox(height: AppSpacing.sm),
-            TextFormField(
-              controller: _codeController,
-              decoration: const InputDecoration(labelText: 'Code'),
-              validator: (value) => (value == null || value.trim().isEmpty)
-                  ? 'A code is required.'
-                  : null,
-            ),
-            const SizedBox(height: AppSpacing.sm),
-            TextFormField(
-              controller: _descriptionController,
-              decoration: const InputDecoration(labelText: 'Description'),
-              maxLines: 2,
-            ),
-            const SizedBox(height: AppSpacing.sm),
-            DropdownButtonFormField<OrganizationRecordStatus>(
-              initialValue: _status,
-              decoration: const InputDecoration(labelText: 'Status'),
-              items: [
-                for (final status in OrganizationRecordStatus.values)
-                  DropdownMenuItem(value: status, child: Text(status.label)),
-              ],
-              onChanged: (value) {
-                if (value != null) setState(() => _status = value);
-              },
-            ),
-          ],
-        ),
+    final actions = <Widget>[
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('Cancel'),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        ElevatedButton(
-          onPressed: () {
-            if (!(_formKey.currentState?.validate() ?? false)) return;
-            final description = _descriptionController.text.trim();
-            Navigator.of(context).pop(
-              _ProjectFormResult(
-                name: _nameController.text.trim(),
-                code: _codeController.text.trim(),
-                description: description.isEmpty ? null : description,
-                status: _status,
-                startDate: widget.existing?.startDate,
-                endDate: widget.existing?.endDate,
+      ElevatedButton(
+        onPressed: () {
+          if (!(_formKey.currentState?.validate() ?? false)) return;
+          final description = _descriptionController.text.trim();
+          Navigator.of(context).pop(
+            _ProjectFormResult(
+              name: _nameController.text.trim(),
+              code: _codeController.text.trim(),
+              description: description.isEmpty ? null : description,
+              status: _status,
+              startDate: widget.existing?.startDate,
+              endDate: widget.existing?.endDate,
+            ),
+          );
+        },
+        child: Text(isEditing ? 'Save' : 'Create'),
+      ),
+    ];
+    return Scaffold(
+      appBar: AppBar(),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          child: SingleChildScrollView(
+            child: Form(
+              key: _formKey,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  FeatureHeader(
+                    eyebrow: isEditing ? 'Edit' : 'New',
+                    title: _nameController.text.trim().isEmpty
+                        ? 'Project'
+                        : _nameController.text.trim(),
+                    icon: Icons.apartment,
+                    color: AppColors.projects,
+                    chips: [
+                      FeatureChip(
+                        icon: Icons.qr_code,
+                        label: _codeController.text.trim().isEmpty
+                            ? 'No code yet'
+                            : _codeController.text.trim(),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: AppSpacing.md),
+                  FormSection(
+                    title: 'About this project',
+                    icon: Icons.edit_note,
+                    color: AppColors.projects,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        TextFormField(
+                          controller: _nameController,
+                          onChanged: (_) => setState(() {}),
+                          decoration: const InputDecoration(labelText: 'Name'),
+                          autofillHints: const [],
+                          validator: (value) =>
+                              (value == null || value.trim().isEmpty)
+                              ? 'A name is required.'
+                              : null,
+                        ),
+                        const SizedBox(height: AppSpacing.sm),
+                        TextFormField(
+                          controller: _codeController,
+                          decoration: const InputDecoration(labelText: 'Code'),
+                          autofillHints: const [],
+                          validator: (value) =>
+                              (value == null || value.trim().isEmpty)
+                              ? 'A code is required.'
+                              : null,
+                        ),
+                        const SizedBox(height: AppSpacing.sm),
+                        TextFormField(
+                          controller: _descriptionController,
+                          decoration: const InputDecoration(
+                            labelText: 'Description',
+                          ),
+                          maxLines: 2,
+                          autofillHints: const [],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: AppSpacing.md),
+                  const SizedBox(height: AppSpacing.sm),
+                  ChoiceList<OrganizationRecordStatus>(
+                    label: 'Status',
+                    selected: _status,
+                    onChanged: (value) {
+                      if (value != null) setState(() => _status = value);
+                    },
+                    items: const [
+                      ChoiceItem(
+                        value: OrganizationRecordStatus.active,
+                        title: 'Active',
+                        color: AppColors.success,
+                        icon: Icons.check_circle,
+                      ),
+                      ChoiceItem(
+                        value: OrganizationRecordStatus.inactive,
+                        title: 'Inactive',
+                        color: AppColors.textSecondary,
+                        icon: Icons.pause_circle,
+                      ),
+                    ],
+                    allowDeselect: false,
+                  ),
+                ],
               ),
-            );
-          },
-          child: Text(isEditing ? 'Save' : 'Create'),
+            ),
+          ),
         ),
-      ],
-    );
-  }
-}
-
-class _StatusChip extends StatelessWidget {
-  const _StatusChip({required this.status});
-
-  final OrganizationRecordStatus status;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = switch (status) {
-      OrganizationRecordStatus.active => AppColors.success,
-      OrganizationRecordStatus.inactive => AppColors.textSecondary,
-    };
-    return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: AppSpacing.sm,
-        vertical: AppSpacing.xs,
       ),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(AppSpacing.sm),
-      ),
-      child: Text(
-        status.label,
-        style: AppTextStyles.label.copyWith(color: color),
-      ),
-    );
-  }
-}
-
-class _DetailRow extends StatelessWidget {
-  const _DetailRow({required this.icon, required this.value});
-
-  final IconData icon;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(top: AppSpacing.xs),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, size: 16, color: AppColors.textSecondary),
-          const SizedBox(width: AppSpacing.sm),
-          Expanded(child: Text(value, style: AppTextStyles.bodyMedium)),
-        ],
+      bottomNavigationBar: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          child: Row(
+            children: [
+              for (final (index, action) in actions.indexed) ...[
+                if (index > 0) const SizedBox(width: AppSpacing.sm),
+                Expanded(child: action),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }

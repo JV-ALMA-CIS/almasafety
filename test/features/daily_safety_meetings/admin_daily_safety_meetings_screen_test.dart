@@ -56,7 +56,8 @@ class _FakeSession extends SessionController {
         // active Membership instead.
         platformRole: role == AppRole.admin ? role : null,
       ),
-      _membership = role == null || role == AppRole.admin || organizationId == null
+      _membership =
+          role == null || role == AppRole.admin || organizationId == null
           ? null
           : Membership(
               organizationId: organizationId,
@@ -140,19 +141,21 @@ void main() {
     String status = 'completed',
     String date = '2026-08-21',
   }) async {
-    await firestore.doc('organizations/org-alpha/daily_safety_meetings/$id').set({
-      'organizationId': 'org-alpha',
-      'projectId': projectId,
-      'siteId': siteId,
-      'date': date,
-      'foremanId': foremanId,
-      'activityIds': activityIds,
-      'meetingPointIds': meetingPointIds,
-      'status': status,
-      'concerns': concerns,
-      'correctiveActionIds': <String>[],
-      'createdAt': Timestamp.now(),
-    });
+    await firestore
+        .doc('organizations/org-alpha/daily_safety_meetings/$id')
+        .set({
+          'organizationId': 'org-alpha',
+          'projectId': projectId,
+          'siteId': siteId,
+          'date': date,
+          'foremanId': foremanId,
+          'activityIds': activityIds,
+          'meetingPointIds': meetingPointIds,
+          'status': status,
+          'concerns': concerns,
+          'correctiveActionIds': <String>[],
+          'createdAt': Timestamp.now(),
+        });
   }
 
   Widget wrap({
@@ -168,7 +171,8 @@ void main() {
           body: AdminDailySafetyMeetingsScreen(
             organization: organization,
             firestoreService: FirestoreService(firestore: firestore),
-            meetingRepository: meetingRepository ??
+            meetingRepository:
+                meetingRepository ??
                 DailySafetyMeetingRepository(
                   firestoreService: FirestoreService(firestore: firestore),
                   organizationId: 'org-alpha',
@@ -203,66 +207,53 @@ void main() {
       );
     });
 
-    testWidgets(
-      'a Site Manager of the matching organization can view',
-      (tester) async {
-        await seedSite('site-1');
-        await seedProject('project-1');
-        await seedMeeting('meeting-1');
+    testWidgets('a Site Manager of the matching organization can view', (
+      tester,
+    ) async {
+      await seedSite('site-1');
+      await seedProject('project-1');
+      await seedMeeting('meeting-1');
 
-        await tester.pumpWidget(
-          wrap(
-            role: AppRole.siteManager,
-            organizationId: 'org-alpha',
-          ),
-        );
-        await tester.pumpAndSettle();
+      await tester.pumpWidget(
+        wrap(role: AppRole.siteManager, organizationId: 'org-alpha'),
+      );
+      await tester.pumpAndSettle();
 
-        expect(find.text('Test Site · 2026-08-21'), findsOneWidget);
-      },
-    );
+      expect(find.text('Test Site · 2026-08-21'), findsOneWidget);
+    });
 
-    testWidgets(
-      'a Site Manager of a different organization is refused',
-      (tester) async {
-        await tester.pumpWidget(
-          wrap(
-            role: AppRole.siteManager,
-            organizationId: 'org-beta',
-          ),
-        );
-        await tester.pumpAndSettle();
+    testWidgets('a Site Manager of a different organization is refused', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        wrap(role: AppRole.siteManager, organizationId: 'org-beta'),
+      );
+      await tester.pumpAndSettle();
 
-        expect(
-          find.text('You do not have permission to view daily safety meetings.'),
-          findsOneWidget,
-        );
-      },
-    );
+      expect(
+        find.text('You do not have permission to view daily safety meetings.'),
+        findsOneWidget,
+      );
+    });
 
-    testWidgets(
-      'a foreman of the matching organization does not receive '
-      'administrative review access — reviewing other Foremen\'s meetings '
-      'is a Site Manager/Admin authority (PROJECT_CONTEXT.md Â§22A); a '
-      'Foreman sees their own meetings through the Meeting Workspace '
-      'instead',
-      (tester) async {
-        await tester.pumpWidget(
-          wrap(role: AppRole.foreman, organizationId: 'org-alpha'),
-        );
-        await tester.pumpAndSettle();
+    testWidgets('a foreman of the matching organization does not receive '
+        'administrative review access — reviewing other Foremen\'s meetings '
+        'is a Site Manager/Admin authority (PROJECT_CONTEXT.md Â§22A); a '
+        'Foreman sees their own meetings through the Meeting Workspace '
+        'instead', (tester) async {
+      await tester.pumpWidget(
+        wrap(role: AppRole.foreman, organizationId: 'org-alpha'),
+      );
+      await tester.pumpAndSettle();
 
-        expect(
-          find.text(
-            'You do not have permission to view daily safety meetings.',
-          ),
-          findsOneWidget,
-        );
-        // Crucially, no "Start Today's Meeting" or other operational control
-        // exists on this screen — the administrator gets review only.
-        expect(find.text("Start Today's Meeting"), findsNothing);
-      },
-    );
+      expect(
+        find.text('You do not have permission to view daily safety meetings.'),
+        findsOneWidget,
+      );
+      // Crucially, no "Start Today's Meeting" or other operational control
+      // exists on this screen — the administrator gets review only.
+      expect(find.text("Start Today's Meeting"), findsNothing);
+    });
   });
 
   group('AdminDailySafetyMeetingsScreen (list content)', () {
@@ -276,9 +267,7 @@ void main() {
         meetingPointIds: ['point-1'],
       );
 
-      await tester.pumpWidget(
-        wrap(role: AppRole.admin, users: [tomas]),
-      );
+      await tester.pumpWidget(wrap(role: AppRole.admin, users: [tomas]));
       await tester.pumpAndSettle();
 
       expect(find.text('Test Site · 2026-08-21'), findsOneWidget);
@@ -336,9 +325,7 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(
-          find.text(
-            'Unable to load daily safety meetings. Please try again.',
-          ),
+          find.text('Unable to load daily safety meetings. Please try again.'),
           findsOneWidget,
         );
         expect(
@@ -348,26 +335,21 @@ void main() {
       },
     );
 
-    testWidgets(
-      'a completed meeting still displays normally when the stream '
-      'succeeds',
-      (tester) async {
-        await seedSite('site-1');
-        await seedProject('project-1');
-        await seedMeeting('meeting-1', status: 'completed');
+    testWidgets('a completed meeting still displays normally when the stream '
+        'succeeds', (tester) async {
+      await seedSite('site-1');
+      await seedProject('project-1');
+      await seedMeeting('meeting-1', status: 'completed');
 
-        await tester.pumpWidget(wrap(role: AppRole.admin));
-        await tester.pumpAndSettle();
+      await tester.pumpWidget(wrap(role: AppRole.admin));
+      await tester.pumpAndSettle();
 
-        expect(find.text('Test Site · 2026-08-21'), findsOneWidget);
-        expect(
-          find.text(
-            'Unable to load daily safety meetings. Please try again.',
-          ),
-          findsNothing,
-        );
-      },
-    );
+      expect(find.text('Test Site · 2026-08-21'), findsOneWidget);
+      expect(
+        find.text('Unable to load daily safety meetings. Please try again.'),
+        findsNothing,
+      );
+    });
   });
 
   group('AdminDailySafetyMeetingsScreen (opening a summary)', () {
@@ -388,27 +370,33 @@ void main() {
       await firestore
           .doc('organizations/org-alpha/safety_meeting_points/point-1')
           .set({
-        'organizationId': 'org-alpha',
-        'title': 'Working at Height',
-        'category': 'safety',
-        'status': 'active',
-        'applicableActivities': <String>[],
-        'applicableRisks': <String>[],
-        'createdAt': Timestamp.now(),
-        'updatedAt': Timestamp.now(),
-      });
+            'organizationId': 'org-alpha',
+            'title': 'Working at Height',
+            'category': 'safety',
+            'status': 'active',
+            'applicableActivities': <String>[],
+            'applicableRisks': <String>[],
+            'createdAt': Timestamp.now(),
+            'updatedAt': Timestamp.now(),
+          });
       await seedMeeting('meeting-1', activityIds: ['activity-1']);
 
-      await tester.pumpWidget(
-        wrap(role: AppRole.admin, users: [tomas]),
-      );
+      await tester.pumpWidget(wrap(role: AppRole.admin, users: [tomas]));
       await tester.pumpAndSettle();
 
       await tester.tap(find.text('Test Site · 2026-08-21'));
       await tester.pumpAndSettle();
 
-      expect(find.text('Meeting Summary'), findsOneWidget);
+      // The summary's banner is its title (the top bar has none).
+      expect(find.text('DAILY SAFETY MEETING'), findsOneWidget);
       expect(find.text('Roofing'), findsOneWidget);
+      // The summary is a list of colored section cards; scroll to the
+      // safety points section.
+      await tester.scrollUntilVisible(
+        find.text('Working at Height'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       expect(find.text('Working at Height'), findsOneWidget);
       // No operational controls (Start/Complete/Assign worker etc.) exist
       // on the summary screen.
@@ -423,9 +411,7 @@ void main() {
       await seedProject('project-1', name: 'Test Project');
       await seedMeeting('meeting-1');
 
-      await tester.pumpWidget(
-        wrap(role: AppRole.admin, users: [tomas]),
-      );
+      await tester.pumpWidget(wrap(role: AppRole.admin, users: [tomas]));
       await tester.pumpAndSettle();
 
       await tester.tap(find.text('Test Site · 2026-08-21'));
@@ -449,47 +435,47 @@ void main() {
             'attendance/worker-2',
           )
           .set({
-        'meetingId': 'meeting-1',
-        'organizationId': 'org-alpha',
-        'siteId': 'site-1',
-        'workerId': 'worker-2',
-        'status': 'present',
-        'recordedAt': Timestamp.now(),
-        'recordedBy': tomas.uid,
-      });
+            'meetingId': 'meeting-1',
+            'organizationId': 'org-alpha',
+            'siteId': 'site-1',
+            'workerId': 'worker-2',
+            'status': 'present',
+            'recordedAt': Timestamp.now(),
+            'recordedBy': tomas.uid,
+          });
       await firestore
           .doc(
             'organizations/org-alpha/daily_safety_meetings/meeting-1/'
             'concerns/concern-1',
           )
           .set({
-        'meetingId': 'meeting-1',
-        'organizationId': 'org-alpha',
-        'siteId': 'site-1',
-        'description': 'Unstable ladder at east wing.',
-        'category': 'safety',
-        'reportedBy': tomas.uid,
-        'status': 'open',
-        'createdAt': Timestamp.now(),
-      });
+            'meetingId': 'meeting-1',
+            'organizationId': 'org-alpha',
+            'siteId': 'site-1',
+            'description': 'Unstable ladder at east wing.',
+            'category': 'safety',
+            'reportedBy': tomas.uid,
+            'status': 'open',
+            'createdAt': Timestamp.now(),
+          });
       await firestore
           .doc('organizations/org-alpha/corrective_actions/action-1')
           .set({
-        'organizationId': 'org-alpha',
-        'projectId': 'project-1',
-        'siteId': 'site-1',
-        'meetingId': 'meeting-1',
-        'concernId': 'concern-1',
-        'title': 'Replace ladder',
-        'description': 'Remove and replace before use.',
-        'assignedTo': 'worker-2',
-        'assignedBy': tomas.uid,
-        'dueDate': Timestamp.fromDate(DateTime(2026, 8, 25)),
-        'status': 'open',
-        'evidenceRequired': false,
-        'createdAt': Timestamp.now(),
-        'updatedAt': Timestamp.now(),
-      });
+            'organizationId': 'org-alpha',
+            'projectId': 'project-1',
+            'siteId': 'site-1',
+            'meetingId': 'meeting-1',
+            'concernId': 'concern-1',
+            'title': 'Replace ladder',
+            'description': 'Remove and replace before use.',
+            'assignedTo': 'worker-2',
+            'assignedBy': tomas.uid,
+            'dueDate': Timestamp.fromDate(DateTime(2026, 8, 25)),
+            'status': 'open',
+            'evidenceRequired': false,
+            'createdAt': Timestamp.now(),
+            'updatedAt': Timestamp.now(),
+          });
 
       const worker2 = OrganizationUser(
         uid: 'worker-2',
@@ -509,8 +495,18 @@ void main() {
       await tester.tap(find.text('Test Site · 2026-08-21'));
       await tester.pumpAndSettle();
 
+      await tester.scrollUntilVisible(
+        find.textContaining('Peter'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       expect(find.textContaining('Peter'), findsWidgets);
       expect(find.text(worker2.uid), findsNothing);
+      await tester.scrollUntilVisible(
+        find.textContaining('Unstable ladder at east wing.'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       expect(
         find.textContaining('Unstable ladder at east wing.'),
         findsOneWidget,

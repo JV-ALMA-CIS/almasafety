@@ -4,11 +4,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:jva_safety/core/services/firestore_service.dart';
+import 'package:jva_safety/core/widgets/choice_list.dart';
 import 'package:jva_safety/core/services/session_controller.dart';
 import 'package:jva_safety/features/activities/data/activity_repository.dart';
 import 'package:jva_safety/features/authentication/domain/account_status.dart';
 import 'package:jva_safety/features/authentication/domain/app_role.dart';
 import 'package:jva_safety/features/authentication/domain/user_profile.dart';
+import 'package:jva_safety/features/organizations/data/organization_repository.dart';
 import 'package:jva_safety/features/organizations/data/project_repository.dart';
 import 'package:jva_safety/features/organizations/domain/organization_record_status.dart';
 import 'package:jva_safety/features/safety_meeting_points/data/safety_meeting_point_admin_service.dart';
@@ -20,12 +22,14 @@ import 'package:jva_safety/features/safety_meeting_points/presentation/safety_me
 /// `_FakeAdminService`).
 class _FakeAdminService extends SafetyMeetingPointAdminService {
   final List<
-      ({
-        String organizationId,
-        String title,
-        String category,
-        List<String> applicableActivities,
-      })> createCalls = [];
+    ({
+      String organizationId,
+      String title,
+      String category,
+      List<String> applicableActivities,
+    })
+  >
+  createCalls = [];
 
   @override
   Future<String> createSafetyMeetingPoint({
@@ -48,7 +52,7 @@ class _FakeAdminService extends SafetyMeetingPointAdminService {
 }
 
 class _FakeSession extends SessionController {
-  _FakeSession({required AppRole? role})
+  _FakeSession({required AppRole? role, this._organizationId = 'org-alpha'})
     : _profile = UserProfile(
         uid: 'admin-uid',
         name: 'Admin',
@@ -58,12 +62,13 @@ class _FakeSession extends SessionController {
       );
 
   final UserProfile _profile;
+  final String? _organizationId;
 
   @override
   UserProfile? get profile => _profile;
 
   @override
-  String? get activeOrganizationId => 'org-alpha';
+  String? get activeOrganizationId => _organizationId;
 }
 
 void main() {
@@ -210,7 +215,11 @@ void main() {
           find.widgetWithText(TextFormField, 'Category'),
           'Safety',
         );
-        await tester.tap(find.byType(CheckboxListTile));
+        // The form is a full page now — bring the activity into view.
+        final activity = find.widgetWithText(ChoiceTile, 'Roofing');
+        await tester.ensureVisible(activity);
+        await tester.pumpAndSettle();
+        await tester.tap(activity);
         await tester.pumpAndSettle();
         await tester.tap(find.widgetWithText(ElevatedButton, 'Create'));
         await tester.pumpAndSettle();
@@ -221,9 +230,7 @@ void main() {
         // is exactly what `DailySafetyMeetingScreen`'s recommendation
         // matching (`applicableActivities.any(activityIds.contains)`)
         // requires to ever recommend this point for a Roofing meeting.
-        expect(service.createCalls.single.applicableActivities, [
-          'activity-1',
-        ]);
+        expect(service.createCalls.single.applicableActivities, ['activity-1']);
       },
     );
   });
@@ -236,15 +243,15 @@ void main() {
         await firestore
             .doc('organizations/org-alpha/safety_meeting_points/point-1')
             .set({
-          'organizationId': 'org-alpha',
-          'title': 'Working at Height',
-          'category': 'Safety',
-          'status': 'active',
-          'applicableActivities': ['activity-1'],
-          'applicableRisks': <String>[],
-          'createdAt': Timestamp.now(),
-          'updatedAt': Timestamp.now(),
-        });
+              'organizationId': 'org-alpha',
+              'title': 'Working at Height',
+              'category': 'Safety',
+              'status': 'active',
+              'applicableActivities': ['activity-1'],
+              'applicableRisks': <String>[],
+              'createdAt': Timestamp.now(),
+              'updatedAt': Timestamp.now(),
+            });
 
         await tester.pumpWidget(wrap(_FakeAdminService()));
         await tester.pumpAndSettle();
@@ -258,15 +265,15 @@ void main() {
       await firestore
           .doc('organizations/org-alpha/safety_meeting_points/point-1')
           .set({
-        'organizationId': 'org-alpha',
-        'title': 'Ladder Safety',
-        'category': 'Safety',
-        'status': 'active',
-        'applicableActivities': <String>[],
-        'applicableRisks': <String>[],
-        'createdAt': Timestamp.now(),
-        'updatedAt': Timestamp.now(),
-      });
+            'organizationId': 'org-alpha',
+            'title': 'Ladder Safety',
+            'category': 'Safety',
+            'status': 'active',
+            'applicableActivities': <String>[],
+            'applicableRisks': <String>[],
+            'createdAt': Timestamp.now(),
+            'updatedAt': Timestamp.now(),
+          });
 
       await tester.pumpWidget(wrap(_FakeAdminService()));
       await tester.pumpAndSettle();
@@ -286,31 +293,89 @@ void main() {
       await firestore
           .doc('organizations/org-alpha/safety_meeting_points/point-1')
           .set({
-        'organizationId': 'org-alpha',
-        'title': 'Ladder Safety',
-        'category': 'Safety',
-        'status': 'active',
-        'applicableActivities': <String>[],
-        'applicableRisks': <String>[],
-        'createdAt': Timestamp.now(),
-        'updatedAt': Timestamp.now(),
-      });
+            'organizationId': 'org-alpha',
+            'title': 'Ladder Safety',
+            'category': 'Safety',
+            'status': 'active',
+            'applicableActivities': <String>[],
+            'applicableRisks': <String>[],
+            'createdAt': Timestamp.now(),
+            'updatedAt': Timestamp.now(),
+          });
 
       await tester.pumpWidget(wrap(_FakeAdminService()));
       await tester.pumpAndSettle();
 
       expect(tester.takeException(), isNull);
       expect(find.widgetWithText(OutlinedButton, 'Edit'), findsOneWidget);
-      expect(
-        find.widgetWithText(OutlinedButton, 'Deactivate'),
-        findsOneWidget,
-      );
+      expect(find.widgetWithText(OutlinedButton, 'Deactivate'), findsOneWidget);
 
       await tester.tap(find.byTooltip('Add meeting point'));
       await tester.pumpAndSettle();
 
       expect(tester.takeException(), isNull);
-      expect(find.text('Add Meeting Point'), findsOneWidget);
+      expect(find.text('NEW MEETING POINT'), findsOneWidget);
+    });
+  });
+
+  group('SafetyMeetingPointsScreen (Admin, no organizationId supplied)', () {
+    // A regression test for a bug where an Admin who reached this screen
+    // directly from the sidebar (no `extra`, so `organizationId` is null)
+    // was refused with "You do not have permission to manage safety
+    // meeting points" — `organizationId` fell back to
+    // `SessionController.activeOrganizationId`, which is always null for
+    // an Admin (org-less by construction), even though `isPlatformAdministrator`
+    // plainly grants `canManage`. The sole organization is now resolved
+    // silently instead, the same way AdminDashboardScreen/
+    // DailySafetyMeetingsRouterScreen do.
+    testWidgets('resolves the sole organization silently instead of refusing', (
+      tester,
+    ) async {
+      await firestore.doc('organizations/org-alpha').set({
+        'name': 'JV Alma CIS',
+        'code': 'CODE-org-alpha',
+        'status': 'active',
+        'createdAt': Timestamp.now(),
+        'updatedAt': Timestamp.now(),
+      });
+
+      await tester.pumpWidget(
+        ChangeNotifierProvider<SessionController>(
+          create: (_) =>
+              _FakeSession(role: AppRole.admin, organizationId: null),
+          child: MaterialApp(
+            home: Scaffold(
+              body: SafetyMeetingPointsScreen(
+                adminService: _FakeAdminService(),
+                organizationRepository: OrganizationRepository(
+                  firestoreService: FirestoreService(firestore: firestore),
+                ),
+                repository: SafetyMeetingPointRepository(
+                  firestoreService: FirestoreService(firestore: firestore),
+                  organizationId: 'org-alpha',
+                ),
+                activityRepository: ActivityRepository(
+                  firestoreService: FirestoreService(firestore: firestore),
+                  organizationId: 'org-alpha',
+                ),
+                projectRepository: ProjectRepository(
+                  firestoreService: FirestoreService(firestore: firestore),
+                  organizationId: 'org-alpha',
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text(
+          'You do not have permission to manage safety meeting points.',
+        ),
+        findsNothing,
+      );
+      expect(find.text('Safety Meeting Points'), findsOneWidget);
     });
   });
 }

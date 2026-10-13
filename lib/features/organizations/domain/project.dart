@@ -43,9 +43,7 @@ class Project {
 
   /// Parses a project document. Throws [DataException] on a missing or
   /// malformed document — see [Organization.fromFirestore] for why.
-  factory Project.fromFirestore(
-    DocumentSnapshot<Map<String, dynamic>> doc,
-  ) {
+  factory Project.fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     final data = doc.data();
     if (data == null) {
       throw const DataException('That project could not be loaded.');

@@ -176,15 +176,12 @@ void main() {
   });
 
   test('the five expected types exist', () {
-    expect(
-      AppNotificationType.values.map((t) => t.id).toSet(),
-      {
-        'safetyAlert',
-        'correctiveAction',
-        'safetyMeeting',
-        'safetyLearning',
-        'system',
-      },
-    );
+    expect(AppNotificationType.values.map((t) => t.id).toSet(), {
+      'safetyAlert',
+      'correctiveAction',
+      'safetyMeeting',
+      'safetyLearning',
+      'system',
+    });
   });
 }

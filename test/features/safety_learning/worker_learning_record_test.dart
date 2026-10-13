@@ -43,8 +43,8 @@ void main() {
     expect(record.knowledgeCheckResult, isNull);
   });
 
-  test('fromFirestore parses a completed record with a knowledge check '
-      'result', () async {
+  test('fromFirestore parses a completed record with a server-graded '
+      'knowledge check result', () async {
     final doc = await seed({
       'workerUid': 'worker-1',
       'organizationId': 'org-alpha',
@@ -53,7 +53,11 @@ void main() {
       'assignedAt': Timestamp.now(),
       'startedAt': Timestamp.now(),
       'completedAt': Timestamp.now(),
-      'knowledgeCheckResult': {'passed': true, 'score': 90},
+      'knowledgeCheckResult': {
+        'passed': true,
+        'score': 9,
+        'totalQuestions': 10,
+      },
     });
 
     final record = WorkerLearningRecord.fromFirestore(doc);
@@ -62,7 +66,31 @@ void main() {
     expect(record.completedAt, isNotNull);
     expect(record.knowledgeCheckResult, isNotNull);
     expect(record.knowledgeCheckResult!.passed, isTrue);
-    expect(record.knowledgeCheckResult!.score, 90);
+    expect(record.knowledgeCheckResult!.score, 9);
+    expect(record.knowledgeCheckResult!.totalQuestions, 10);
+  });
+
+  test('fromFirestore still parses a record completed BEFORE this phase — '
+      'the old self-attested {passed: true} shape with no score/'
+      'totalQuestions at all', () async {
+    final doc = await seed({
+      'workerUid': 'worker-1',
+      'organizationId': 'org-alpha',
+      'learningId': 'l1',
+      'status': 'completed',
+      'assignedAt': Timestamp.now(),
+      'startedAt': Timestamp.now(),
+      'completedAt': Timestamp.now(),
+      'knowledgeCheckResult': {'passed': true},
+    });
+
+    final record = WorkerLearningRecord.fromFirestore(doc);
+
+    expect(record.status, WorkerLearningStatus.completed);
+    expect(record.knowledgeCheckResult, isNotNull);
+    expect(record.knowledgeCheckResult!.passed, isTrue);
+    expect(record.knowledgeCheckResult!.score, isNull);
+    expect(record.knowledgeCheckResult!.totalQuestions, isNull);
   });
 
   test('throws when workerUid is missing', () async {

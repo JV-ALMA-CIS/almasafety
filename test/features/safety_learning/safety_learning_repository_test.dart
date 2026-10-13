@@ -51,8 +51,7 @@ void main() {
     expect(await repository.getById('missing'), isNull);
   });
 
-  test('organizationId exposes the scope this repository was built with',
-      () {
+  test('organizationId exposes the scope this repository was built with', () {
     final repository = SafetyLearningRepository(
       firestoreService: FirestoreService(firestore: firestore),
       organizationId: 'org-alpha',

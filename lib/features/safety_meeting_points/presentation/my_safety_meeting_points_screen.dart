@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../core/widgets/live_stream_builder.dart';
 import 'package:provider/provider.dart';
 import '../../../core/services/firestore_service.dart';
 import '../../../core/services/session_controller.dart';
@@ -38,7 +39,8 @@ class _MySafetyMeetingPointsScreenState
     if (existing != null && existing.organizationId == organizationId) {
       return existing;
     }
-    final created = widget.repository ??
+    final created =
+        widget.repository ??
         SafetyMeetingPointRepository(
           firestoreService: FirestoreService(),
           organizationId: organizationId,
@@ -65,8 +67,9 @@ class _MySafetyMeetingPointsScreenState
       );
     }
 
-    return StreamBuilder<List<SafetyMeetingPoint>>(
-      stream: _repositoryFor(organizationId).watchActive(),
+    return LiveStreamBuilder<List<SafetyMeetingPoint>>(
+      streamKey: _repositoryFor(organizationId),
+      stream: () => _repositoryFor(organizationId).watchActive(),
       builder: (context, snapshot) {
         final items = snapshot.data ?? const <SafetyMeetingPoint>[];
         final isLoading = snapshot.connectionState == ConnectionState.waiting;

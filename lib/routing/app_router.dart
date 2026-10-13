@@ -1,8 +1,14 @@
 import 'package:flutter/material.dart';
+import '../features/inspections/presentation/inspections_screen.dart';
+import '../features/safety_reporting/presentation/report_safety_issue_screen.dart';
+import '../core/widgets/live_stream_builder.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import '../core/services/firestore_service.dart';
 import '../core/services/session_controller.dart';
+import '../core/widgets/organization_scope_selector.dart';
 import '../core/widgets/placeholder_screen.dart';
+import '../features/dashboard/presentation/dashboard_router_screen.dart';
 import '../features/authentication/domain/account_status.dart';
 import '../features/authentication/presentation/access_denied_screen.dart';
 import '../features/authentication/presentation/administration_screen.dart';
@@ -15,6 +21,7 @@ import '../features/authentication/presentation/session_loading_screen.dart';
 import '../features/activities/domain/activity.dart';
 import '../features/activities/presentation/activities_screen.dart';
 import '../features/activities/presentation/activity_workers_screen.dart';
+import '../features/organizations/data/organization_repository.dart';
 import '../features/organizations/domain/organization.dart';
 import '../features/organizations/domain/project.dart';
 import '../features/organizations/domain/site.dart';
@@ -22,18 +29,20 @@ import '../features/organizations/presentation/my_workers_screen.dart';
 import '../features/organizations/presentation/projects_router_screen.dart';
 import '../features/organizations/presentation/site_workers_screen.dart';
 import '../features/organizations/presentation/sites_screen.dart';
-import '../features/safety_learning/presentation/my_safety_learning_screen.dart';
+import '../features/safety_learning/presentation/todays_safety_readiness_screen.dart';
 import '../features/safety_learning/presentation/safety_learning_library_screen.dart';
 import '../features/safety_meeting_points/presentation/my_safety_meeting_points_screen.dart';
 import '../features/safety_meeting_points/presentation/safety_meeting_points_screen.dart';
 import '../features/daily_safety_meetings/presentation/admin_daily_safety_meetings_screen.dart';
 import '../features/daily_safety_meetings/presentation/daily_safety_meetings_router_screen.dart';
-import '../features/hazards/presentation/my_hazards_screen.dart';
+import '../features/hazards/presentation/hazards_router_screen.dart';
+import '../features/incidents/presentation/incidents_screen.dart';
 import '../features/analytics/presentation/analytics_screen.dart';
-import '../features/corrective_actions/presentation/corrective_actions_screen.dart';
+import '../features/corrective_actions/presentation/corrective_actions_router_screen.dart';
 import '../features/notifications/presentation/notifications_screen.dart';
 import '../features/reports/presentation/reports_screen.dart';
 import '../features/safety_alerts/presentation/safety_alerts_screen.dart';
+import '../features/safety_learning_compliance/presentation/safety_learning_compliance_screen.dart';
 import '../features/safety_requirements/presentation/safety_requirements_screen.dart';
 import 'app_routes.dart';
 import 'app_shell.dart';
@@ -206,10 +215,7 @@ GoRouter buildAppRouter(SessionController session) {
         routes: [
           GoRoute(
             path: AppRoutes.dashboard,
-            builder: (context, state) => const PlaceholderScreen(
-              featureName: 'Dashboard',
-              icon: Icons.dashboard_outlined,
-            ),
+            builder: (context, state) => const DashboardRouterScreen(),
           ),
           GoRoute(
             path: AppRoutes.pendingApprovals,
@@ -253,7 +259,9 @@ GoRouter buildAppRouter(SessionController session) {
           ),
           GoRoute(
             path: AppRoutes.safetyLearning,
-            builder: (context, state) => const MySafetyLearningScreen(),
+            // Worker/Foreman only (see AppShell): today's priorities first,
+            // the full inventory one tap away via "All my learning".
+            builder: (context, state) => const SafetyLearningTab(),
           ),
           GoRoute(
             path: AppRoutes.safetyVideos,
@@ -273,11 +281,24 @@ GoRouter buildAppRouter(SessionController session) {
           ),
           GoRoute(
             path: AppRoutes.hazards,
-            builder: (context, state) => const MyHazardsScreen(),
+            builder: (context, state) => const HazardsRouterScreen(),
+          ),
+          GoRoute(
+            path: AppRoutes.incidents,
+            builder: (context, state) => const IncidentsScreen(),
+          ),
+          GoRoute(
+            path: AppRoutes.inspections,
+            builder: (context, state) => const InspectionsScreen(),
+          ),
+          GoRoute(
+            path: AppRoutes.reportSafetyIssue,
+            builder: (context, state) =>
+                const ReportSafetyIssueScreen(embedded: true),
           ),
           GoRoute(
             path: AppRoutes.correctiveActions,
-            builder: (context, state) => const CorrectiveActionsScreen(),
+            builder: (context, state) => const CorrectiveActionsRouterScreen(),
           ),
           GoRoute(
             path: AppRoutes.safetyAlerts,
@@ -294,6 +315,10 @@ GoRouter buildAppRouter(SessionController session) {
           GoRoute(
             path: AppRoutes.analytics,
             builder: (context, state) => const AnalyticsScreen(),
+          ),
+          GoRoute(
+            path: AppRoutes.safetyLearningCompliance,
+            builder: (context, state) => const SafetyLearningComplianceScreen(),
           ),
           GoRoute(
             path: AppRoutes.administration,
@@ -391,30 +416,43 @@ GoRouter buildAppRouter(SessionController session) {
           ),
           GoRoute(
             path: AppRoutes.manageSafetyLearning,
-            // Reached only via a Card tap on AdministrationScreen, which
-            // supplies the tapped Organization as `extra` (the acting
-            // admin's own organization for an organizationAdministrator, or
-            // a System Administrator's chosen organization). Same fallback
-            // reasoning as manageSites above.
+            // Reachable directly from the sidebar's "Safety Learning
+            // Library" entry (no `extra` at all) — SafetyLearningLibraryScreen
+            // already falls back to the signed-in user's own
+            // activeOrganizationId when `organizationId` is omitted (see its
+            // class doc comment), matching manageSafetyMeetingPoints below.
+            // PHASE 1 (single-company model) removed AdministrationScreen's
+            // former Organizations drill-down, which used to be the only
+            // thing that ever supplied `extra` here — bailing out to
+            // ProjectsRouterScreen whenever `extra` was absent left this
+            // route permanently unreachable from the sidebar (a silent
+            // redirect masquerading as a working nav entry) until this fix.
             builder: (context, state) {
               final organization = state.extra;
-              if (organization is! Organization) {
-                return const ProjectsRouterScreen();
-              }
               return SafetyLearningLibraryScreen(
-                organizationId: organization.id,
+                organizationId: organization is Organization
+                    ? organization.id
+                    : null,
               );
             },
           ),
           GoRoute(
             path: AppRoutes.manageSafetyRequirements,
-            // Same `extra` contract as manageSafetyLearning above.
+            // Reachable directly from the sidebar's "Safety Requirements"
+            // entry (no `extra` at all), matching manageSafetyLearning
+            // above. Unlike that screen, SafetyRequirementsScreen needs a
+            // full Organization object (it displays the name, and every
+            // repository it builds is scoped to `.id`), not just an id — so
+            // this resolves one from the signed-in user's own
+            // activeOrganizationId when `extra` is absent, the same
+            // resolve-by-id pattern DailySafetyMeetingsRouterScreen already
+            // uses for AdminDailySafetyMeetingsScreen.
             builder: (context, state) {
               final organization = state.extra;
-              if (organization is! Organization) {
-                return const ProjectsRouterScreen();
+              if (organization is Organization) {
+                return SafetyRequirementsScreen(organization: organization);
               }
-              return SafetyRequirementsScreen(organization: organization);
+              return const _OwnOrganizationSafetyRequirementsScreen();
             },
           ),
           GoRoute(
@@ -454,4 +492,64 @@ GoRouter buildAppRouter(SessionController session) {
 /// session controller from Provider context.
 GoRouter appRouterFrom(BuildContext context) {
   return buildAppRouter(context.read<SessionController>());
+}
+
+/// Resolves the signed-in user's own [Organization] (via
+/// [SessionController.activeOrganizationId]) and renders
+/// [SafetyRequirementsScreen] for it — the fallback for
+/// [AppRoutes.manageSafetyRequirements] when reached without an `extra`
+/// [Organization] (e.g. a direct sidebar tap), matching
+/// [SafetyLearningLibraryScreen]'s own null-organizationId fallback.
+/// [SafetyRequirementsScreen] needs the full document (it displays the
+/// name), not just an id, so this fetches it rather than passing an id
+/// through.
+class _OwnOrganizationSafetyRequirementsScreen extends StatefulWidget {
+  const _OwnOrganizationSafetyRequirementsScreen();
+
+  @override
+  State<_OwnOrganizationSafetyRequirementsScreen> createState() =>
+      _OwnOrganizationSafetyRequirementsScreenState();
+}
+
+class _OwnOrganizationSafetyRequirementsScreenState
+    extends State<_OwnOrganizationSafetyRequirementsScreen> {
+  String? _selectedOrganizationId;
+
+  @override
+  Widget build(BuildContext context) {
+    final sessionController = context.watch<SessionController>();
+    final isPlatformAdministrator =
+        sessionController.profile?.isPlatformAdministrator ?? false;
+    final organizationId =
+        sessionController.activeOrganizationId ??
+        (isPlatformAdministrator ? _selectedOrganizationId : null);
+
+    if (organizationId == null) {
+      if (!isPlatformAdministrator) {
+        return const ProjectsRouterScreen();
+      }
+      return Padding(
+        padding: const EdgeInsets.all(16),
+        child: OrganizationScopeSelector(
+          selectedOrganizationId: _selectedOrganizationId,
+          onChanged: (value) => setState(() => _selectedOrganizationId = value),
+        ),
+      );
+    }
+    return LiveStreamBuilder<Organization?>(
+      streamKey: organizationId,
+      stream: () => OrganizationRepository(
+        firestoreService: FirestoreService(),
+      ).watchById(organizationId),
+      builder: (context, snapshot) {
+        final organization = snapshot.data;
+        if (organization == null) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+        return SafetyRequirementsScreen(organization: organization);
+      },
+    );
+  }
 }

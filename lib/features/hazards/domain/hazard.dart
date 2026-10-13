@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/errors/app_exception.dart';
 import 'hazard_category.dart';
+import 'hazard_kind.dart';
 import 'hazard_status.dart';
 
 /// A worker-reported hazard, stored flat at
@@ -9,7 +10,7 @@ import 'hazard_status.dart';
 /// `FirestorePaths.hazardsCollection`'s shape. See
 /// `FIRESTORE_DATA_MODEL.md` §7 for the full field/lifecycle rationale.
 ///
-/// **This is a report, not the remediation.** [category], [description],
+/// **This is a report, not the remediation.** [kind], [category], [description],
 /// [location] and [photoUrl] are the ORIGINAL report content and are never
 /// client-editable after creation — see
 /// `functions/src/hazard_callable.ts`'s header note. Only the
@@ -34,6 +35,7 @@ class Hazard {
     required this.category,
     required this.description,
     required this.status,
+    this.kind = HazardKind.hazard,
     this.location,
     this.photoUrl,
     this.correctiveActionId,
@@ -43,7 +45,18 @@ class Hazard {
     this.closedAt,
     this.createdAt,
     this.updatedAt,
+    this.inspectionId,
+    this.inspectionName,
   });
+
+  /// Set when this hazard is a DEFICIENCY found by a site inspection
+  /// ("Not OK" on a checklist item) — see `inspection_callable.ts`.
+  final String? inspectionId;
+
+  /// The checklist it came from, e.g. "Weekly HSE walk-down".
+  final String? inspectionName;
+
+  bool get isDeficiency => inspectionId != null;
 
   final String id;
   final String organizationId;
@@ -53,6 +66,10 @@ class Hazard {
   /// The uid of the worker who filed this report — always the caller's own
   /// uid at creation time server-side, never a request argument.
   final String reportedByUid;
+
+  /// Whether this is a hazard or a near-miss — see [HazardKind]. Part of the
+  /// original report content, so never edited after creation.
+  final HazardKind kind;
 
   final HazardCategory category;
   final String description;
@@ -90,9 +107,7 @@ class Hazard {
 
   /// Parses a hazard document. Throws [DataException] on a missing or
   /// malformed document — see [CorrectiveAction.fromFirestore] for why.
-  factory Hazard.fromFirestore(
-    DocumentSnapshot<Map<String, dynamic>> doc,
-  ) {
+  factory Hazard.fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     final data = doc.data();
     if (data == null) {
       throw const DataException('That hazard could not be loaded.');
@@ -108,6 +123,10 @@ class Hazard {
     final category = HazardCategory.tryFromId(data['category'] as String?);
     if (category == null) {
       throw const DataException('That hazard has an unrecognised category.');
+    }
+    final kind = HazardKind.tryFromId(data['kind'] as String?);
+    if (kind == null) {
+      throw const DataException('That hazard has an unrecognised kind.');
     }
     final organizationId = data['organizationId'] as String?;
     if (organizationId == null || organizationId.isEmpty) {
@@ -136,6 +155,7 @@ class Hazard {
       projectId: projectId,
       siteId: siteId,
       reportedByUid: reportedByUid,
+      kind: kind,
       category: category,
       description: description,
       location: data['location'] as String?,
@@ -143,14 +163,16 @@ class Hazard {
       status: status,
       correctiveActionId:
           (rawCorrectiveActionId != null && rawCorrectiveActionId.isNotEmpty)
-              ? rawCorrectiveActionId
-              : null,
+          ? rawCorrectiveActionId
+          : null,
       acknowledgedBy: data['acknowledgedBy'] as String?,
       acknowledgedAt: (data['acknowledgedAt'] as Timestamp?)?.toDate(),
       closedBy: data['closedBy'] as String?,
       closedAt: (data['closedAt'] as Timestamp?)?.toDate(),
       createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
       updatedAt: (data['updatedAt'] as Timestamp?)?.toDate(),
+      inspectionId: data['inspectionId'] as String?,
+      inspectionName: data['inspectionName'] as String?,
     );
   }
 }

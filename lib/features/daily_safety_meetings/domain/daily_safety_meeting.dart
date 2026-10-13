@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/errors/app_exception.dart';
+import '../../pre_start_checks/domain/pre_start_outcome.dart';
 import 'daily_safety_meeting_status.dart';
 
 /// A record of one toolbox-talk-style Daily Safety Meeting, stored at
@@ -38,6 +39,8 @@ class DailySafetyMeeting {
     this.correctiveActionIds = const [],
     this.createdAt,
     this.completedAt,
+    this.crewOutcome,
+    this.crewOutcomeNote,
   });
 
   final String id;
@@ -63,6 +66,14 @@ class DailySafetyMeeting {
   final List<String> correctiveActionIds;
   final DateTime? createdAt;
   final DateTime? completedAt;
+
+  /// The Foreman's GO / GO corrected / STOP result for the crew, recorded
+  /// when the meeting was completed. Null while in progress, and for a
+  /// meeting completed before crew results existed.
+  final PreStartOutcome? crewOutcome;
+
+  /// The Foreman's note for a GO corrected / STOP [crewOutcome].
+  final String? crewOutcomeNote;
 
   bool get isCompleted => status == DailySafetyMeetingStatus.completed;
 
@@ -136,6 +147,8 @@ class DailySafetyMeeting {
           const [],
       createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
       completedAt: (data['completedAt'] as Timestamp?)?.toDate(),
+      crewOutcome: PreStartOutcome.tryFromId(data['crewOutcome']),
+      crewOutcomeNote: data['crewOutcomeNote'] as String?,
     );
   }
 }

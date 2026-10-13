@@ -31,16 +31,19 @@ void main() {
       expect(result, isEmpty);
     });
 
-    test('resolves every named organization, ignoring ones not requested', () async {
-      await seedOrg('alpha');
-      await seedOrg('beta');
-      await seedOrg('gamma');
+    test(
+      'resolves every named organization, ignoring ones not requested',
+      () async {
+        await seedOrg('alpha');
+        await seedOrg('beta');
+        await seedOrg('gamma');
 
-      final result = await repository.watchByIds(['alpha', 'beta']).first;
-      final names = result.map((o) => o.name).toSet();
+        final result = await repository.watchByIds(['alpha', 'beta']).first;
+        final names = result.map((o) => o.name).toSet();
 
-      expect(names, {'Org alpha', 'Org beta'});
-    });
+        expect(names, {'Org alpha', 'Org beta'});
+      },
+    );
 
     test('re-emits when one of the watched organizations changes', () async {
       await seedOrg('alpha');
@@ -60,13 +63,15 @@ void main() {
       expect(emissions.last, ['Renamed']);
     });
 
-    test('a document that does not exist is simply omitted, not an error', () async {
-      await seedOrg('alpha');
+    test(
+      'a document that does not exist is simply omitted, not an error',
+      () async {
+        await seedOrg('alpha');
 
-      final result =
-          await repository.watchByIds(['alpha', 'missing']).first;
+        final result = await repository.watchByIds(['alpha', 'missing']).first;
 
-      expect(result.map((o) => o.id), ['alpha']);
-    });
+        expect(result.map((o) => o.id), ['alpha']);
+      },
+    );
   });
 }

@@ -19,9 +19,7 @@ void main() {
     required String date,
     String status = 'inProgress',
   }) async {
-    await firestore
-        .doc('organizations/$orgId/daily_safety_meetings/$id')
-        .set({
+    await firestore.doc('organizations/$orgId/daily_safety_meetings/$id').set({
       'organizationId': orgId,
       'projectId': 'project-1',
       'siteId': siteId,
@@ -36,52 +34,54 @@ void main() {
     });
   }
 
-  test('watchForForemanSiteAndDate returns only that foreman+site+date',
-      () async {
-    await seedMeeting(
-      'org-alpha',
-      'm1',
-      foremanId: 'foreman-1',
-      siteId: 'site-1',
-      date: '2026-08-20',
-    );
-    await seedMeeting(
-      'org-alpha',
-      'm2',
-      foremanId: 'foreman-2',
-      siteId: 'site-1',
-      date: '2026-08-20',
-    );
-    await seedMeeting(
-      'org-alpha',
-      'm3',
-      foremanId: 'foreman-1',
-      siteId: 'site-2',
-      date: '2026-08-20',
-    );
-    await seedMeeting(
-      'org-alpha',
-      'm4',
-      foremanId: 'foreman-1',
-      siteId: 'site-1',
-      date: '2026-08-19',
-    );
+  test(
+    'watchForForemanSiteAndDate returns only that foreman+site+date',
+    () async {
+      await seedMeeting(
+        'org-alpha',
+        'm1',
+        foremanId: 'foreman-1',
+        siteId: 'site-1',
+        date: '2026-08-20',
+      );
+      await seedMeeting(
+        'org-alpha',
+        'm2',
+        foremanId: 'foreman-2',
+        siteId: 'site-1',
+        date: '2026-08-20',
+      );
+      await seedMeeting(
+        'org-alpha',
+        'm3',
+        foremanId: 'foreman-1',
+        siteId: 'site-2',
+        date: '2026-08-20',
+      );
+      await seedMeeting(
+        'org-alpha',
+        'm4',
+        foremanId: 'foreman-1',
+        siteId: 'site-1',
+        date: '2026-08-19',
+      );
 
-    final repository = DailySafetyMeetingRepository(
-      firestoreService: FirestoreService(firestore: firestore),
-      organizationId: 'org-alpha',
-    );
+      final repository = DailySafetyMeetingRepository(
+        firestoreService: FirestoreService(firestore: firestore),
+        organizationId: 'org-alpha',
+      );
 
-    final items = await repository
-        .watchForForemanSiteAndDate(
-          foremanId: 'foreman-1',
-          siteId: 'site-1',
-          date: '2026-08-20',
-        )
-        .first;
+      final items = await repository
+          .watchForForemanSiteAndDate(
+            foremanId: 'foreman-1',
+            siteId: 'site-1',
+            date: '2026-08-20',
+          )
+          .first;
 
-    expect(items.map((i) => i.id).toSet(), {'m1'});
-  });
+      expect(items.map((i) => i.id).toSet(), {'m1'});
+    },
+  );
 
   test('watchForForemanSiteAndDate excludes another organization', () async {
     await seedMeeting(
@@ -115,31 +115,28 @@ void main() {
     expect(items.map((i) => i.id).toSet(), {'m1'});
   });
 
-  test('watchHistoryForForeman returns only that foreman across dates',
-      () async {
+  test('watchForSiteAndDate returns every meeting at that site+date, '
+      'regardless of foreman', () async {
     await seedMeeting(
       'org-alpha',
       'm1',
       foremanId: 'foreman-1',
       siteId: 'site-1',
-      date: '2026-08-18',
-      status: 'completed',
+      date: '2026-08-20',
     );
     await seedMeeting(
       'org-alpha',
       'm2',
-      foremanId: 'foreman-1',
-      siteId: 'site-1',
-      date: '2026-08-19',
-      status: 'completed',
+      foremanId: 'foreman-2',
+      siteId: 'site-2',
+      date: '2026-08-20',
     );
     await seedMeeting(
       'org-alpha',
       'm3',
-      foremanId: 'foreman-2',
+      foremanId: 'foreman-1',
       siteId: 'site-1',
       date: '2026-08-19',
-      status: 'completed',
     );
 
     final repository = DailySafetyMeetingRepository(
@@ -147,11 +144,79 @@ void main() {
       organizationId: 'org-alpha',
     );
 
-    final items =
-        await repository.watchHistoryForForeman('foreman-1').first;
+    final items = await repository
+        .watchForSiteAndDate(siteId: 'site-1', date: '2026-08-20')
+        .first;
 
-    expect(items.map((i) => i.id).toList(), ['m2', 'm1']);
+    expect(items.map((i) => i.id).toSet(), {'m1'});
   });
+
+  test('watchForSiteAndDate excludes another organization', () async {
+    await seedMeeting(
+      'org-alpha',
+      'm1',
+      foremanId: 'foreman-1',
+      siteId: 'site-1',
+      date: '2026-08-20',
+    );
+    await seedMeeting(
+      'org-beta',
+      'm2',
+      foremanId: 'foreman-1',
+      siteId: 'site-1',
+      date: '2026-08-20',
+    );
+
+    final repository = DailySafetyMeetingRepository(
+      firestoreService: FirestoreService(firestore: firestore),
+      organizationId: 'org-alpha',
+    );
+
+    final items = await repository
+        .watchForSiteAndDate(siteId: 'site-1', date: '2026-08-20')
+        .first;
+
+    expect(items.map((i) => i.id).toSet(), {'m1'});
+  });
+
+  test(
+    'watchHistoryForForeman returns only that foreman across dates',
+    () async {
+      await seedMeeting(
+        'org-alpha',
+        'm1',
+        foremanId: 'foreman-1',
+        siteId: 'site-1',
+        date: '2026-08-18',
+        status: 'completed',
+      );
+      await seedMeeting(
+        'org-alpha',
+        'm2',
+        foremanId: 'foreman-1',
+        siteId: 'site-1',
+        date: '2026-08-19',
+        status: 'completed',
+      );
+      await seedMeeting(
+        'org-alpha',
+        'm3',
+        foremanId: 'foreman-2',
+        siteId: 'site-1',
+        date: '2026-08-19',
+        status: 'completed',
+      );
+
+      final repository = DailySafetyMeetingRepository(
+        firestoreService: FirestoreService(firestore: firestore),
+        organizationId: 'org-alpha',
+      );
+
+      final items = await repository.watchHistoryForForeman('foreman-1').first;
+
+      expect(items.map((i) => i.id).toList(), ['m2', 'm1']);
+    },
+  );
 
   test('getById returns null for a missing document', () async {
     final repository = DailySafetyMeetingRepository(
@@ -162,8 +227,7 @@ void main() {
     expect(await repository.getById('missing'), isNull);
   });
 
-  test('organizationId exposes the scope this repository was built with',
-      () {
+  test('organizationId exposes the scope this repository was built with', () {
     final repository = DailySafetyMeetingRepository(
       firestoreService: FirestoreService(firestore: firestore),
       organizationId: 'org-alpha',
