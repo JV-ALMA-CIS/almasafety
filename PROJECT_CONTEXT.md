@@ -1517,12 +1517,39 @@ Corrective Actions (raised from a meeting concern, tracked to closure)
 Safety Alerts
 Notifications foundation
 Reports and Analytics (organization-scoped summaries over the above)
+Hazards / hazard reporting (report, acknowledge, link corrective action,
+  close — hazard_callable.ts)
+Daily Pre-Start Check (October 2026): each Worker answers five standard
+  questions plus one per applicable Safety Requirement before work; the
+  server decides GO / GO corrected / STOP. A STOP notifies the site's
+  Foremen and becomes a concern on today's meeting. Foremen see crew
+  results on their dashboard and record a crew GO / GO corrected / STOP
+  when completing the meeting (a crew STOP notifies Site Managers).
+  Warn-only for now — it does not block attendance. Asks only what today's
+  work needs (standard five + one line per activity with high-risk
+  requirements). See FIRESTORE_DATA_MODEL.md §6A.
+"Needed today" learning (October 2026): instead of every "Before meeting"
+  lesson, each Worker/Foreman must finish only a small daily plan before the
+  meeting — one lesson per activity they do today plus one general lesson,
+  highest risk first. The rest is "When you can" and comes up one a day;
+  tomorrow's lesson is shown in advance so workers can get ahead. A Foreman
+  can mark a worker present as "Briefed in person" (recorded; the lesson
+  stays due). No time budget is assumed — workers arrive with different
+  amounts of time. See FIRESTORE_DATA_MODEL.md §4A.
+
+Near-misses (October 2026): a hazard report "kind" — "Something nearly
+  happened" on the Report a Hazard form. See FIRESTORE_DATA_MODEL.md §7.
+Incidents (October 2026): report → investigate (severity) → corrective
+  actions → close with root cause. Visible only to the reporter and
+  Foremen/Site Managers/Admin. See FIRESTORE_DATA_MODEL.md §7A.
+
+Site inspections (October 2026): daily site inspection and weekly HSE
+  walk-down from the Safety Plan (Section 7), editable checklists, each
+  "Not OK" becomes a deficiency (hazard) tracked to closure, sign-off by
+  another Site Manager/Admin, and a Deficiency Log. See
+  FIRESTORE_DATA_MODEL.md §7B.
 
 NOT YET IMPLEMENTED
-Hazards / hazard reporting
-Near misses
-Incidents
-Safety Inspections
 Gemini integration (recommendations, summaries, hazard classification,
   trend analysis, content assistance — see §30-32)
 Free-text/ad-hoc Safety Meeting Points (deliberately excluded — see §4;

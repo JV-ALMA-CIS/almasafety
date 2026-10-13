@@ -244,30 +244,237 @@ collection that has a linked `uid` is `worker`, stored on the corresponding
 
 ## 4. Safety Learning
 
+**Worker → Site → Activity → Required Safety Learning → Completion Status.**
+This is the Phase 1 foundation for the LEARN → BRIEF → WORK workflow: before
+a worker participates in a Daily Safety Meeting, JVA Safety can determine
+whether they have completed the safety learning required for the
+Activity/Site they are assigned to. This phase does not yet gate meeting
+participation — see `daily_safety_meeting_callable.ts` (unmodified).
+
 ### `organizations/{orgId}/safety_learning/{itemId}`
-The learning library (videos, courses, knowledge checks) — admin-authored.
+The learning library (videos, courses, visual guides, documents, knowledge
+checks) — admin-authored.
 
 ```
 title: string
 organizationId: string
-type: string                 // video | course | document | knowledgeCheck
-description: string
-mediaUrl: string?            // Storage path
-applicableTrades: string[]?  // trade labels this applies to, e.g. ["Electrician", "Mason"] — never platform roles
-active: boolean
+type: string                 // video | course | visualGuide | document | knowledgeCheck
+description: string?
+contentReference: string     // a single opaque URL/reference — a direct video file URL for `video` items renders as an embedded player when recognisable, else falls back to a link
+status: string                // active | inactive
+minimumWatchSeconds: number?  // ANY type — see "Minimum engagement-time gate" below
+passingScorePercent: number?  // 0-100 — see "Knowledge check gate" below; NOT confined to type == knowledgeCheck
 createdAt, createdBy, updatedAt, updatedBy
 ```
 
-### `organizations/{orgId}/safety_learning/{itemId}/completions/{workerId}`
-Per-worker completion record — answers "did this worker receive this instruction?" (PROJECT_CONTEXT.md §11).
+**Minimum engagement-time gate.** ANY learning item (not just `video`) with
+a positive `minimumWatchSeconds` cannot be completed until that many
+seconds have elapsed, server-side, between the worker's own `startLearning`
+call (a real `FieldValue.serverTimestamp()`) and their `completeLearning`
+call. This is an honest elapsed-time signal, not verified playback/reading:
+this architecture (a direct-URL `video_player` embed or an externally-
+opened content link, no hosting/DRM/analytics service) has no way to
+confirm actual watch position, scroll position, or reading completion from
+the server, so no client-reported value of any of those is ever trusted.
+`completeLearning` (`functions/src/worker_learning_callable.ts`) is the
+single, callable-only authority on this — a worker can never write
+`worker_learning_records.status = "completed"` directly (see
+`firestore.rules`' denial below).
+
+### `organizations/{orgId}/safety_learning/{itemId}/knowledge_check_questions/{questionId}`
+Multiple-choice knowledge-check questions for one learning item —
+admin-authored, `admin`-only, via `addKnowledgeCheckQuestion`/
+`updateKnowledgeCheckQuestion`/`removeKnowledgeCheckQuestion`
+(`safety_learning_callable.ts`).
 
 ```
-workerId: string
-organizationId: string
-completedAt: Timestamp
-knowledgeCheckScore: number?
-status: string                // notStarted | inProgress | completed
+prompt: string
+options: { id: string, text: string }[]  // 2-6 entries, unique ids
+correctOptionId: string                   // must match one of options[].id
+order: number
+createdAt, updatedAt
 ```
+
+**A knowledge check is NOT confined to `type == "knowledgeCheck"`** — any
+learning item (including a `video`) may have questions configured, and a
+video with both `minimumWatchSeconds` and questions requires BOTH gates to
+pass independently. **A knowledge-check item with ZERO configured
+questions has no knowledge-check gate at all** — it completes exactly like
+any other item, keeping every item that predates this feature (or simply
+has no quiz) unaffected.
+
+**Answer-key security — the reason this is a subcollection, not fields on
+the parent document.** `safety_learning/{itemId}` itself is readable by any
+org member (unchanged, correct — workers need to see title/type/
+description), but `correctOptionId` must never reach a worker. Firestore
+rules are document-level, not field-level, so the two requirements cannot
+coexist on one document; `firestore.rules` therefore denies EVERY client
+read/write of `knowledge_check_questions` outright
+(`allow read, write: if false`), and grants access only through two
+narrow, audited callables:
+- `getKnowledgeCheckQuestions` (`worker_learning_callable.ts`) — worker-
+  facing, strips `correctOptionId` before the response is built (there is
+  no field for it in that response type at all, not merely an omitted
+  one).
+- `listKnowledgeCheckQuestions` (`safety_learning_callable.ts`) —
+  `admin`-only, returns the full question including `correctOptionId`, for
+  the authoring UI. This is the one path in this codebase that ever
+  returns a correct answer.
+
+### `organizations/{orgId}/safety_requirements/{requirementId}`
+Names which `safety_learning` items are mandatory, and for whom.
+
+```
+organizationId: string
+name: string
+category: string              // free text
+risk: string                  // low | medium | high
+description: string?
+requiredLearningIds: string[] // -> safety_learning
+status: string                 // active | inactive
+gatesAttendance: bool?         // missing = true. FALLBACK for lessons with no learningSettings entry
+requiredBeforeWork: bool?      // missing = false. FALLBACK for lessons with no learningSettings entry
+learningSettings: map?         // { [learningId]: { gatesAttendance: bool, requiredBeforeWork: bool } } — per selected lesson, within THIS requirement only
+siteId: string?                // scopes this requirement to one site — mutually exclusive with activityId
+activityId: string?            // scopes this requirement to one activity (implicitly that activity's own site too)
+createdAt, createdBy, updatedAt, updatedBy
+```
+
+**Scope resolution rule.** A requirement applies to a worker when:
+- both `siteId` and `activityId` are absent (organization-wide — the
+  original, still-default behavior; every pre-Phase-1 requirement reads back
+  this way, unchanged), OR
+- `siteId` matches a site the worker holds an `ActivityAssignment` at, OR
+- `activityId` matches an activity the worker holds an `ActivityAssignment`
+  for.
+
+A worker's full required-learning set is the de-duplicated union of
+`requiredLearningIds` across every ACTIVE, applicable requirement, narrowed
+to ACTIVE `safety_learning` items. This is implemented in exactly two
+places, deliberately kept in sync by convention rather than shared code:
+`SafetyRequirementRepository.watchResolvedRequiredLearning` (Dart, drives
+display) and `resolveRequiredLearning`/`workerWorkContext` in
+`worker_learning_callable.ts` (TypeScript, the server-side source of truth —
+re-derived fresh from the worker's own `ActivityAssignment` documents on
+every call, never trusted from the client). At most one of `siteId`/
+`activityId` may be set on a requirement; both are validated server-side to
+name a real document in the same organization before writing.
+
+**Required vs. pre-work vs. attendance-gating.** Three independent sets,
+all resolved per learning id from the requirements that contribute it
+(`resolveApplicableRequirementLearningIds`), never inferred after
+flattening:
+- *required*: every applicable requirement — `resolveRequiredLearningForScope`
+  (compliance, `MySafetyLearningScreen`, start/complete checks). Unaffected
+  by either flag.
+- *attendance-gating*: at least one contributing requirement has
+  `gatesAttendance != false` — `resolveAttendanceGatingLearningIds` (the only
+  resolver the Daily Safety Meeting gates use).
+- *pre-work*: at least one contributing requirement has
+  `requiredBeforeWork == true` — `resolvePreWorkLearningIds`. Display only
+  (Today's Safety Readiness); gates nothing.
+
+Neither flag implies the other; all four combinations are valid. No
+migration: legacy documents read back as gating and not pre-work.
+
+**Per-lesson settings.** `requiredLearningIds` still decides WHICH lessons
+belong to a requirement; `learningSettings[learningId]` decides how each
+behaves within that requirement (the requirement→learning relationship —
+never stored on `safety_learning`, so one lesson can differ between
+requirements). A lesson's own entry wins; a lesson with no entry falls back
+to the requirement-level flags, so requirements saved before this existed
+behave unchanged. The callables only ever write a map covering exactly the
+selected lessons (both booleans set), and when an update changes the lesson
+list without resending settings, removed lessons' entries are dropped and
+added lessons default to `{false, false}`. Flags are resolved per lesson,
+per requirement, before ids are aggregated, so a lesson that is gating (or
+pre-work) under ANY applicable requirement stays gating (or pre-work).
+`getMyTodaysSafetyReadiness` (worker, own data only) and
+`getSiteCrewReadiness` (Foreman, own authorized site only, gating learning
+only) are read-only callables built on these resolvers.
+
+### `organizations/{orgId}/worker_learning_records/{workerUid}_{learningId}`
+Per-worker progress against one required learning item — answers "did this
+worker complete this instruction?" Deterministic composite document id
+(`${workerUid}_${learningId}`) so at most one record exists per pair and
+creation is idempotent.
+
+```
+workerUid: string
+organizationId: string
+learningId: string             // -> safety_learning
+status: string                  // assigned | inProgress | completed
+assignedAt: Timestamp
+startedAt: Timestamp?
+completedAt: Timestamp?
+knowledgeCheckResult: { passed: boolean, score: number?, totalQuestions: number? }?
+```
+
+Materialized lazily: `getMyRequiredLearning` creates an `assigned` record
+for each of the caller's currently-required items that has no record yet,
+so both the worker's own view and an admin's compliance view are plain
+queries over real documents, not runtime resolution re-run per viewer.
+`startLearning`/`completeLearning` accept no `workerUid` argument at all —
+the acting worker is always the caller's own auth uid, so a worker cannot
+create, advance, or complete another worker's record.
+
+**`knowledgeCheckResult` is SERVER-COMPUTED, never client-submitted.** The
+client sends only `selectedAnswers: [{questionId, optionId}]` to
+`completeLearning`; the server loads the authoritative questions (including
+`correctOptionId`) via Admin SDK, grades the submission itself, and writes
+this shape verbatim. No `passed`/`score`/`percent`/`completedAt` value the
+client might send is ever read. A `questionId` in the submission that
+doesn't match a real question for that item is silently ignored — it
+affects neither the numerator nor the denominator, so it can neither
+inflate a score nor shrink the pass threshold's denominator.
+
+**A failed knowledge check is an expected outcome, not an error.**
+`completeLearning` does not throw when grading concludes `passed: false` —
+it returns `{status: <unchanged>, knowledgeCheckResult: {passed: false,
+score, totalQuestions}}`, the record stays `assigned`/`inProgress`, and the
+worker may resubmit (no retry limit in this phase).
+
+`score`/`totalQuestions` are absent on a record completed before this
+phase (the old self-attested `{passed: true}` shape, written before any
+question or grading logic existed) — `KnowledgeCheckResult.fromMap` (Dart)
+and every reader of this field tolerate that shape, so an existing
+completed record is never broken by this change.
+
+---
+
+## 4A. Daily learning plan — "Needed today"
+
+### `organizations/{orgId}/daily_learning_plans/{uid}_{date}`  *(implemented, callable-only)*
+Each Worker's / Foreman's small plan of the learning they must finish
+before **today's** meeting. Clients never read it directly
+(`firestore.rules` excludes it); `daily_learning_plan.ts` builds and serves
+it to the readiness and meeting callables.
+
+```
+uid, date, siteId
+byActivity: { [activityId]: learningId | null }  // one per activity they do today
+general: learningId | null                       // one site/project/org-wide lesson
+updatedAt
+```
+
+**The rule.** From "Before meeting" lessons only (per-lesson
+`gatesAttendance`), not yet completed: **one per activity the person does
+today** (from requirements scoped to that activity) plus **one general
+lesson** (from requirements not tied to an activity) — highest requirement
+risk first. Everything else is "When you can": still required, and later
+days' plans draw from it, one per slot per day. No time budget is assumed.
+
+**Today's work.** A worker: their activity assignments at today's site (or
+the meeting's activities if they have none there). A Foreman: their
+meeting's activities, or all active activities at their site before it
+starts. When a specific meeting is being checked, that meeting is used.
+
+**Stable for the day.** Completing a planned lesson does not pull the
+next one into today. Tomorrow's plan is shown today ("Get ahead for
+tomorrow") and never repeats today's lessons, so a lesson done the
+evening before means nothing is needed in the morning. Picks are
+re-checked on every read: if a Site Manager turns "Before meeting" off on a
+planned lesson, or deactivates it, the slot is planned again.
 
 ---
 
@@ -312,17 +519,94 @@ concerns: [
 correctiveActionIds: string[]  // -> corrective_actions created from this meeting
 status: string                 // draft | completed
 completedAt: Timestamp?
+crewOutcome: string?           // go | goCorrected | stop — the Foreman's crew result, set on completion (null for meetings completed before this existed)
+crewOutcomeNote: string?       // required for goCorrected / stop
 createdAt, createdBy, updatedAt, updatedBy
 ```
 
+**Crew result.** `completeDailySafetyMeeting` takes an optional
+`crewOutcome` (the app always sends one) using the same three values as a
+worker's Pre-Start Check (§6A). A note is required for anything but `go`. A
+`stop` notifies every active Site Manager of the organization.
+
 **Auditability rule:** once `status == "completed"`, the document becomes immutable to clients (no field edits, no deletes) — enforced in `firestore.rules`, not just app logic. Corrections happen via new corrective actions/concerns, never by editing history.
+
+**Safety Learning gate (Phase 2, LEARN → BRIEF → WORK).**
+`completeDailySafetyMeeting` refuses to complete the meeting unless the
+FOREMAN THEMSELF has a `completed` `worker_learning_records` entry for every
+`safety_learning` item named by an ACTIVE `safety_requirement` that applies
+to this meeting's own `siteId`/`activityIds` — resolved via
+`resolveRequiredLearningForScope` (§4's scope-resolution rule, applied to
+the meeting's own site/activities directly, not the foreman's assignments,
+since a foreman holds no `ActivityAssignment`). A foreman with nothing
+required of them for this meeting is never blocked. This gates only the
+foreman completing the record, not individual attendees — attendee-level
+gating is out of scope for this phase. The refusal is a `failed-precondition`
+naming the outstanding learning item titles, surfaced verbatim to the
+foreman by the existing error-banner path (no new client UI was needed).
 
 ### `organizations/{orgId}/daily_safety_meetings/{meetingId}/attendance/{workerId}`
 ```
 workerId: string
-present: boolean
+status: string                 // present | absent
+briefedInPerson: boolean       // present without today's lessons done — the Foreman briefed them face to face
+briefedLearningTitles: string[]// the lessons that were outstanding (they stay due)
 recordedAt: Timestamp
+recordedBy: string
 ```
+
+**Who may be marked present.** Only a worker's outstanding **"Needed
+today"** lessons (§4A) block `present`. The Foreman may still mark them
+present with `briefedInPerson: true`; that is recorded with the lesson
+titles, and the lessons remain due.
+
+---
+
+## 6A. Daily Pre-Start Checks
+
+### `organizations/{orgId}/pre_start_checks/{workerUid}_{date}`  *(implemented)*
+A worker's daily "safe to start?" checklist (a Take 5 / Safety Green
+Light), one per worker per day. `date` is the server's UTC `YYYY-MM-DD` —
+the same day boundary Daily Safety Meetings use.
+
+```
+organizationId: string
+workerUid: string
+workerName: string
+siteId: string                 // today's meeting site, else the worker's assigned site
+projectId: string?
+activityIds: string[]          // the worker's activities at that site
+date: string
+outcome: string                // go | goCorrected | stop — computed server-side
+answers: [
+  { questionId, prompt, kind: "standard" | "requirement", risk: string?,
+    answer: "yes" | "fixed" | "cannotFix", note: string? }
+]
+issueCount: number             // answers other than "yes"
+meetingId: string?             // the meeting a STOP concern was raised on
+concernId: string?             // that concern
+submittedAt, createdAt: Timestamp
+```
+
+**Questions** are never stored as configuration: `getMyPreStartCheck`
+re-derives them on every call, asking only what today's work needs — the
+five standard questions, plus **one line per activity the worker does
+today that has HIGH-risk requirements** (naming them all), plus **one line
+for high-risk requirements not tied to an activity**. Medium/low risk
+requirements are left to learning and the meeting. "Today's work" is the
+same context as the daily learning plan (§4A). `submitPreStartCheck` requires exactly one
+answer per question and a note for every "no".
+
+**Outcome:** any `cannotFix` → `stop`; otherwise any `fixed` →
+`goCorrected`; otherwise `go`. A `stop` notifies every active Foreman whose
+membership includes the site, and raises a concern (`source:
+"preStartCheck"`) on today's meeting at that site — immediately if the
+meeting exists, otherwise when `createDailySafetyMeeting` starts it.
+
+**Warn-only.** No other callable reads this collection: a worker who has not
+checked in, or who answered STOP, can still be marked present. Once
+submitted a check is permanent — a second submission the same day is
+refused.
 
 ---
 
@@ -342,6 +626,7 @@ organizationId: string
 projectId: string              // looked up server-side from the site document
 siteId: string                 // re-validated: must be in the reporter's own siteIds
 reportedByUid: string           // caller's own uid; never a request argument
+kind: string                    // hazard | nearMiss — "could happen" vs "nearly happened"; absent on older docs = hazard
 category: string                // workingAtHeight | electrical | equipment | ppe | housekeeping | environment | chemical | fire | other
 description: string
 location: string?               // free text (e.g. "East wing, 3rd floor"); geopoint deferred
@@ -367,7 +652,7 @@ overdue`) is the authoritative remediation-progress record; the hazard itself
 does not duplicate `inProgress`/`overdue`, to avoid two competing status
 sources for the same remediation.
 
-The original report content (`category`, `description`, `location`,
+The original report content (`kind`, `category`, `description`, `location`,
 `photoUrl`) is immutable to clients from the moment of creation — only the
 status-transition fields above are ever written by later callables, matching
 how a completed meeting's concerns are never edited after the fact.
@@ -406,7 +691,18 @@ description: string
 assignedTo: string               // uid; never the creator's own uid
 assignedBy: string                // uid of the creator
 dueDate: Timestamp
-evidenceRequired: boolean
+evidenceRequired: boolean        // true when evidenceKinds is non-empty
+evidenceKinds: string[]          // photo | confirmation — what the assignee must attach (older docs: none + evidenceRequired true = photo)
+evidenceInstructions: string?    // e.g. "Photo of the new guard rail"
+assignedToName: string?          // names stored at creation so no screen shows a uid
+assignedByName: string?
+completionNote: string?          // the assignee's "what I did", sent with submitCorrectiveActionForReview
+evidencePhotos: {storagePath, downloadUrl}[]   // ≤5, uploaded under organizations/{orgId}/corrective_actions/{actionId}/
+submittedAt: Timestamp?
+submittedBy: string?
+reviewFeedback: string?          // why a reviewer sent it back; cleared on resubmit
+completedBy: string?             // the reviewer who approved it
+completedByName: string?
 status: string                    // open | inProgress | completed | overdue
 completedAt: Timestamp?
 createdAt, createdBy, updatedAt, updatedBy
@@ -423,6 +719,88 @@ concern produces one. A corrective action names at most one origin
 **Auditability rule:** once `status == "completed"`, immutable to clients — reopening (if ever needed) happens via a new action referencing the old one, not by editing the closed record.
 
 ---
+
+## 7A. Incidents
+
+### `organizations/{orgId}/incidents/{incidentId}`  *(implemented, callable-only)*
+
+Something that ACTUALLY happened — someone hurt, something damaged, a spill,
+a dangerous event. Distinct from a hazard (could happen) and a near-miss
+(`hazards.kind == "nearMiss"`, nearly happened). Created by
+`createIncident` (any active member with the site in their `siteIds`), then
+`startIncidentInvestigation` → `linkIncidentCorrectiveAction` (any number) →
+`closeIncident`, all reviewer-only (`admin`/`siteManager`/`foreman`) — see
+`functions/src/incident_callable.ts`.
+
+```
+organizationId, projectId, siteId   // projectId looked up from the site
+reportedByUid: string               // caller's own uid
+type: string                        // injury | propertyDamage | environmental | dangerousOccurrence
+description: string
+occurredAt: Timestamp               // when it happened; never in the future
+location: string?
+injuredPersonName: string?          // injury only; dropped for other types
+immediateAction: string?            // what was done straight away
+photoUrl: string?                   // Storage organizations/{orgId}/incidents/{incidentId}/...
+status: string                      // reported | underInvestigation | closed
+severity: string?                   // minor | moderate | serious — set by a reviewer when the investigation starts
+investigationStartedBy, investigationStartedAt
+correctiveActionIds: string[]       // appended by linkIncidentCorrectiveAction
+rootCause: string?                  // required to close
+closingNotes: string?
+closedBy, closedAt
+createdAt, createdBy, updatedAt, updatedBy
+```
+
+**Reads are restricted** (unlike hazards): only the reporter, a reviewer
+role in the same organization, or the System Administrator — an incident can
+name an injured person. `incidents` is also excluded from the operational
+catch-all read rule for that reason. A corrective action raised from an
+incident carries `incidentId` (exactly one of `meetingId`/`hazardId`/
+`incidentId` is set). Completing it does **not** close the incident;
+`closeIncident` refuses while any of its actions is incomplete, and requires
+a root cause. Never deletable.
+
+## 7B. Site inspections (daily inspection, weekly HSE walk-down)
+
+Safety Plan Section 7: daily inspections (Safety Manager, SSHO, Foremen) and
+a deficiency log with follow-up. Callables in `functions/src/inspection_callable.ts`;
+standard checklists in `functions/src/inspection_templates.ts`.
+
+### `organizations/{orgId}/inspection_templates/{templateId}`  *(callable-only)*
+
+```
+organizationId, name, kind            // daily | weekly | environmental | welfare | other
+description: string?
+defaultKey: string?                   // set on the standard ones (installDefaultInspectionTemplates)
+sections: [{title, items: [{id, text, hazardCategory}]}]
+status: string                        // active | inactive
+createdAt, createdBy, updatedAt, updatedBy
+```
+
+### `organizations/{orgId}/inspections/{inspectionId}`  *(callable-only)*
+
+```
+organizationId, projectId, siteId, siteName
+templateId, templateName, kind
+items: [{id, section, text, hazardCategory, result, note, photoUrl, hazardId}]
+                                      // a SNAPSHOT of the template; result ok | notOk | na
+status: string                        // inProgress | submitted | signedOff
+inspectorUid, inspectorName
+okCount, notOkCount, naCount          // set on submit
+startedAt, submittedAt
+signedOffBy, signedOffByName, signedOffAt, signOffNote
+```
+
+Start: a Foreman at their own site, or a Site Manager/Admin. Only the
+inspector answers and submits; submit needs every item answered and a note on
+each "Not OK". **Each "Not OK" becomes a deficiency** — a `hazards` document
+with `inspectionId`, `inspectionItemId`, `inspectionName` — tracked through
+hazard → corrective action → evidence → approval (the plan's deficiency log:
+date identified, description, person responsible, target date, date
+resolved). Sign-off: a Site Manager/Admin other than the inspector. Reads:
+Admin/Site Manager/Foreman of the organization only (excluded from the
+operational catch-all read rule).
 
 ## 8. Safety Alerts & Notifications
 
@@ -464,6 +842,7 @@ Records that become immutable once completed/closed (client-side):
 | `daily_safety_meetings` | `status == "completed"` |
 | `corrective_actions` | `status == "completed"` |
 | `hazards` | `status == "closed"` |
+| `pre_start_checks` | on creation — never editable |
 
 All other collections remain editable by their designated writer roles (§10) since they represent living configuration (safety learning library, meeting point library) or in-progress data (open hazards, draft meetings).
 
@@ -485,14 +864,16 @@ callable enforces server-side — the actual security boundary — using the
 | `organizations` | members; `admin` for any | create: `siteManager` (creating their own organization) or `admin`. update: `siteManager` for the organization(s) they manage; `admin` for any — Admin retains platform-level intervention rights (reassign, suspend, manage) over every organization |
 | `projects`, `sites`, `activities` | org members | `siteManager` for the organization(s) they manage; `admin` for any |
 | `workers` *(not yet implemented)* | org members | create/approve: `foreman` for their own assigned site(s); `siteManager`/`admin` for any worker in an organization they manage/any organization respectively |
-| `safety_learning` (library) | org members | `admin` only — platform-level, company-wide library, not delegated to Site Managers |
-| `safety_learning/*/completions/{workerId}` | org members | the worker themself (`uid == workerId`) or `foreman`+ for workers on their site |
+| `safety_learning` (library), `safety_requirements` | org members | `admin` only — platform-level, company-wide library, not delegated to Site Managers |
+| `safety_learning/*/knowledge_check_questions` | **no client, admin included** (`allow read, write: if false`) | `admin` only, and ONLY via callables — `addKnowledgeCheckQuestion`/`updateKnowledgeCheckQuestion`/`removeKnowledgeCheckQuestion` to write, `listKnowledgeCheckQuestions` (full, including `correctOptionId`) or `getKnowledgeCheckQuestions` (worker-safe, `correctOptionId` stripped) to read — never a direct Firestore read/write by any client, ever |
+| `worker_learning_records` | the owning worker (`workerUid == uid`), `siteManager`, `admin` — deliberately NOT `foreman` (compliance-viewing across the whole organization is a `siteManager`/`admin` responsibility) | the worker themself, and only their own record, via `startLearning`/`completeLearning`/`getMyRequiredLearning` (no `workerUid` argument exists on any of them) |
 | `safety_meeting_points` (library) | org members | `admin` only — platform-level, company-wide library |
+| `pre_start_checks` | the owning worker, a `foreman` whose `siteIds` include the check's site, `siteManager`, `admin` | the worker themself, and only their own check for today, via `submitPreStartCheck` (no `workerUid` argument); **no client writes, no updates, no delete** |
 | `daily_safety_meetings` | org members | `foreman` create/update while `draft`, for their own assigned site(s) only; **no client writes once `completed`** |
 | `daily_safety_meetings/*/attendance/*` | org members | `foreman`, only while parent meeting is `draft`, only for workers on their own site |
 | `hazards` | org members | any active org member with the hazard's own `siteId` in their `siteIds` can **create**; acknowledge/link a corrective action/close: `foreman` for their own site, or `siteManager`/`admin` for the organization(s) they manage/any organization; **no client writes once `closed`**; original report content (`category`/`description`/`location`/`photoUrl`) is never client-editable after creation, even before closure |
 | `corrective_actions` | org members | create: the originating meeting's own `foreman` only, while that meeting is `inProgress` (hazard-originated actions: reuse the same reviewer set that can act on the hazard); status update: `foreman` (their own site), `siteManager` (their organization(s)), or `admin` (any); **no client writes once `completed`**; no delete |
-| `safety_alerts` | org members | `siteManager`+ (`siteManager` for the organization(s) they manage; `admin` for any) |
+| `safety_alerts` | org members | create / acknowledge / resolve: `foreman` for their own assigned site(s) only (they are on the ground with the crew); `siteManager` for any site in the organization(s) they manage; `admin` for any |
 | `notifications` | recipient only | Cloud Functions only (no client writes) |
 
 "`foreman`+" means `foreman`, `siteManager`, `admin`. "`siteManager`+" means `siteManager`, `admin`.
