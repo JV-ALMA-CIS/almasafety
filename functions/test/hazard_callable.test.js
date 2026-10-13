@@ -205,6 +205,53 @@ describe("createHazard", () => {
     );
   });
 
+  test("kind defaults to hazard when not given", async () => {
+    await createHazard.run(
+      callRequest("worker-1", {
+        organizationId: ORG_A,
+        siteId: "site-1",
+        hazardId: "hazard-1",
+        category: "electrical",
+        description: "Exposed wiring near the water tank",
+      })
+    );
+
+    expect((await getHazard("hazard-1")).kind).toBe("hazard");
+  });
+
+  test("a near-miss is stored with kind nearMiss", async () => {
+    await createHazard.run(
+      callRequest("worker-1", {
+        organizationId: ORG_A,
+        siteId: "site-1",
+        hazardId: "hazard-1",
+        kind: "nearMiss",
+        category: "workingAtHeight",
+        description: "Hammer fell from scaffold, landed next to a worker",
+      })
+    );
+
+    const hazard = await getHazard("hazard-1");
+    expect(hazard.kind).toBe("nearMiss");
+    expect(hazard.category).toBe("workingAtHeight");
+    expect(hazard.status).toBe("reported");
+  });
+
+  test("rejects an invalid kind", async () => {
+    await expect(
+      createHazard.run(
+        callRequest("worker-1", {
+          organizationId: ORG_A,
+          siteId: "site-1",
+          hazardId: "hazard-1",
+          kind: "incident",
+          category: "fire",
+          description: "Something",
+        })
+      )
+    ).rejects.toThrow(/kind must be one of/);
+  });
+
   test("rejects an invalid category", async () => {
     await expect(
       createHazard.run(
@@ -266,6 +313,21 @@ describe("createHazard", () => {
 
       const hazard = await getHazard("hazard-4");
       expect(hazard.reportedByUid).toBe("worker-1");
+    });
+
+  test("a Site Manager with no assigned site can report at any site",
+    async () => {
+      await seedSite("site-2");
+      await createHazard.run(
+        callRequest("reviewer-a", {
+          organizationId: ORG_A,
+          siteId: "site-2",
+          hazardId: "hazard-sm",
+          category: "fire",
+          description: "Smoke near the generator",
+        })
+      );
+      expect((await getHazard("hazard-sm")).siteId).toBe("site-2");
     });
 
   test("creating with an id that already exists is refused", async () => {
@@ -613,7 +675,7 @@ describe("createCorrectiveAction hazard branch (mutual exclusivity)", () => {
           dueDate: new Date("2026-09-05").toISOString(),
         })
       )
-    ).rejects.toThrow(/Exactly one of meetingId or hazardId/);
+    ).rejects.toThrow(/Exactly one of meetingId, hazardId or incidentId/);
   });
 
   test("rejects neither meetingId nor hazardId given", async () => {
@@ -629,7 +691,7 @@ describe("createCorrectiveAction hazard branch (mutual exclusivity)", () => {
           dueDate: new Date("2026-09-05").toISOString(),
         })
       )
-    ).rejects.toThrow(/Exactly one of meetingId or hazardId/);
+    ).rejects.toThrow(/Exactly one of meetingId, hazardId or incidentId/);
   });
 
   test("rejects concernId given together with hazardId", async () => {

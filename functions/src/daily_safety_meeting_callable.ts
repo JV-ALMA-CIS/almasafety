@@ -163,10 +163,88 @@
  * `removeMeetingEvidence`, by contrast, IS gated on `inProgress` — evidence
  * on a completed meeting may still be added to, but never removed, exactly
  * like `corrective_actions`' own "no delete" rule for a permanent record.
+ *
+ * SAFETY LEARNING GATE (LEARN -> BRIEF -> WORK, Phase 2/3)
+ *
+ * `createDailySafetyMeeting` and `completeDailySafetyMeeting` both require
+ * the FOREMAN THEMSELF to have COMPLETED every ATTENDANCE-GATING
+ * `SafetyLearning` item required for the meeting's own
+ * `siteId`/`activityIds` — see `requireForemanLearningComplete`, called
+ * once at creation (so a foreman cannot even START today's meeting with
+ * outstanding gating learning) and again at completion (defense in depth,
+ * in case a requirement newly applies mid-meeting — e.g. a meeting
+ * point/activity is added via `updateDailySafetyMeeting` that carries its
+ * own requirement). The rationale is that the foreman is the one
+ * certifying, by running and then completing this record, that the toolbox
+ * talk covered the required ground — that certification is not credible if
+ * the foreman has not themselves completed the GATING learning the
+ * organization requires for the very activities/site they are briefing on.
+ *
+ * `recordMeetingAttendance` requires the SAME of each individual WORKER
+ * before they may be marked `present` (not `absent`) — resolved from the
+ * meeting's own scope the same way. A worker with outstanding gating
+ * learning may still attend and be marked `absent`, so the record is never
+ * structurally stuck; they simply cannot be certified `present` until their
+ * own gating learning is complete.
+ *
+ * **REQUIRED vs. ATTENDANCE-GATING — these are deliberately not the same
+ * set.** `SafetyRequirement.gatesAttendance` (see that class's own doc
+ * comment) distinguishes learning that is merely REQUIRED of a worker
+ * (visible on `MySafetyLearningScreen`, counted in compliance — resolved by
+ * `resolveRequiredLearningForScope`, unchanged) from the narrower subset
+ * that additionally blocks Daily Safety Meeting attendance (resolved by
+ * `resolveAttendanceGatingLearningIds`, both in
+ * `worker_learning_callable.ts`). Every gate in THIS file —
+ * `requireForemanLearningComplete`, `recordMeetingAttendance`'s
+ * present-check, and `getMeetingAttendeeLearningStatus`'s preview below —
+ * uses the GATING resolver exclusively. A requirement whose
+ * `gatesAttendance` is `false` still contributes its learning ids to a
+ * worker's overall required set (unaffected), it simply never appears in
+ * `outstandingLearningTitles` here. A learning id required by BOTH a
+ * gating and a non-gating requirement is still gating — see
+ * `resolveAttendanceGatingLearningIds`'s own doc comment for exactly how
+ * that overlap is resolved (per-learning-id, not per-requirement).
+ *
+ * The check re-derives gating learning from the MEETING's own
+ * `siteId`/`activityIds` via `resolveAttendanceGatingLearningIds`
+ * (`worker_learning_callable.ts`) — NOT from any `ActivityAssignment` the
+ * foreman might hold, because that mechanism is `worker`-role only (see
+ * `activity_assignment_callable.ts`'s `requireWorkerEligible`) and a foreman
+ * is never assigned to an activity that way. Completion is checked against
+ * the foreman's own `worker_learning_records` — the exact same collection
+ * and `status == "completed"` rule `worker_learning_callable.ts` uses for a
+ * worker's own progress, so "the foreman completed this" means the same
+ * thing here as it does on `MySafetyLearningScreen`. A foreman with nothing
+ * gating required of them for this meeting is never blocked.
+ *
+ * ATTENDEE LEARNING VISIBILITY (Phase 3, informational only)
+ *
+ * `getMeetingAttendeeLearningStatus` is the narrow, read-only counterpart to
+ * the gate above: it lets a foreman see which of THEIR OWN meeting's
+ * attendees have outstanding ATTENDANCE-GATING learning, without granting
+ * any broader access to `worker_learning_records` — that collection's own
+ * `firestore.rules` entry still denies `foreman` read access outright; this
+ * callable is the deliberate, audited "elsewhere" its comment refers to. It
+ * never blocks or gates anything (unlike `requireForemanLearningComplete`,
+ * still the only hard gate, still checked only against the foreman) — it
+ * exists purely so the workspace UI can show the foreman a heads-up before
+ * they mark someone present, not to enforce a new rule on workers. It
+ * deliberately uses the SAME gating resolver as the real gate (not the
+ * broader "required" resolver) so this preview can never disagree with
+ * what `recordMeetingAttendance` will actually enforce.
  */
 
 import {FieldValue, getFirestore} from "firebase-admin/firestore";
 import {CallableRequest, HttpsError, onCall} from "firebase-functions/v2/https";
+import {createNotification} from "./notification_callable";
+import {
+  attachPendingPreStartStops,
+  PRE_START_OUTCOMES,
+  PreStartOutcome,
+  siteManagersOf,
+} from "./pre_start_check_callable";
+import {MeetingHint, outstandingNeededToday} from "./daily_learning_plan";
+import {todaysMeetingDate} from "./worker_learning_callable";
 
 /**
  * The single refusal returned for every authorization failure. Mirrors
@@ -427,6 +505,63 @@ async function requireOwnMeeting(
 }
 
 /**
+ * Titles of [uid]'s "Needed today" lessons they have NOT completed yet —
+ * the only learning that blocks a worker from being marked present, or a
+ * Foreman from starting/completing their meeting. "Needed today" is the
+ * person's small daily plan (one lesson per activity they do today plus
+ * one general lesson — see `daily_learning_plan.ts`), resolved from their
+ * own work today, not every "Before meeting" lesson that applies.
+ *
+ * @param {string} organizationId the organization the records belong to.
+ * @param {string} uid the worker/foreman whose completion to check.
+ * @param {MeetingHint} meeting the meeting they are being checked against.
+ * @return {Promise<string[]>} the outstanding lessons' titles.
+ */
+async function outstandingLearningTitles(
+  organizationId: string,
+  uid: string,
+  meeting: MeetingHint
+): Promise<string[]> {
+  const outstanding = await outstandingNeededToday(
+    organizationId,
+    uid,
+    todaysMeetingDate(),
+    meeting
+  );
+  return outstanding.map((lesson) => lesson.title);
+}
+
+/**
+ * Refuses to start or complete the meeting unless [foremanId] has completed
+ * their own "Needed today" lessons — see `outstandingLearningTitles`.
+ *
+ * @param {string} organizationId the organization the meeting belongs to.
+ * @param {string} foremanId the foreman starting/completing the meeting.
+ * @param {MeetingHint} meeting the meeting being started/completed.
+ * @return {Promise<void>} resolves when nothing needed today is
+ * outstanding.
+ */
+async function requireForemanLearningComplete(
+  organizationId: string,
+  foremanId: string,
+  meeting: MeetingHint
+): Promise<void> {
+  const outstanding = await outstandingLearningTitles(
+    organizationId,
+    foremanId,
+    meeting
+  );
+
+  if (outstanding.length > 0) {
+    throw new HttpsError(
+      "failed-precondition",
+      "You must complete the following safety learning before completing " +
+        "this meeting: " + outstanding.join(", ")
+    );
+  }
+}
+
+/**
  * Creates a Daily Safety Meeting for today, within an existing organization,
  * project and site the caller has foreman access to.
  *
@@ -437,6 +572,16 @@ async function requireOwnMeeting(
  * completing it. Both, when given, are validated exactly as
  * `updateDailySafetyMeeting` validates them — see the two validation
  * helpers above.
+ *
+ * LEARN -> BRIEF -> WORK, at the START of the meeting too (Phase 3): a
+ * foreman with outstanding required learning for this site/these
+ * activities may not even START today's meeting — see this file's header
+ * note ("SAFETY LEARNING GATE") and `requireForemanLearningComplete`,
+ * previously checked only at `completeDailySafetyMeeting`. Checking again
+ * here closes the gap where a foreman could open and run an entire meeting
+ * before ever discovering, at the very end, that they are blocked — the
+ * refusal now comes before the workspace even opens, naming exactly what
+ * is outstanding.
  */
 export const createDailySafetyMeeting = onCall(async (request) => {
   const organizationId = requireString(request, "organizationId");
@@ -449,6 +594,11 @@ export const createDailySafetyMeeting = onCall(async (request) => {
   await requireSiteMatches(organizationId, projectId, siteId);
   await requireActivitiesAtSite(organizationId, siteId, activityIds);
   await requireActiveMeetingPoints(organizationId, meetingPointIds);
+  await requireForemanLearningComplete(organizationId, foremanId, {
+    id: null,
+    siteId,
+    activityIds,
+  });
 
   const now = new Date();
   const date = now.toISOString().slice(0, 10);
@@ -472,6 +622,10 @@ export const createDailySafetyMeeting = onCall(async (request) => {
     createdAt: FieldValue.serverTimestamp(),
     completedAt: null,
   });
+
+  // A worker who answered STOP on their Pre-Start Check before this
+  // meeting existed had nowhere to raise it; it becomes a concern now.
+  await attachPendingPreStartStops(organizationId, siteId, date, ref.id);
 
   return {id: ref.id, organizationId, projectId, siteId};
 });
@@ -560,6 +714,14 @@ export const completeDailySafetyMeeting = onCall(async (request) => {
     );
   }
 
+  await requireForemanLearningComplete(organizationId, foremanId, {
+    id,
+    siteId: meeting.siteId as string,
+    activityIds,
+  });
+
+  const {crewOutcome, crewOutcomeNote} = optionalCrewOutcome(request);
+
   const now = FieldValue.serverTimestamp();
   await getFirestore()
     .doc(`organizations/${organizationId}/daily_safety_meetings/${id}`)
@@ -567,10 +729,73 @@ export const completeDailySafetyMeeting = onCall(async (request) => {
       status: "completed",
       endTime: now,
       completedAt: now,
+      crewOutcome,
+      crewOutcomeNote,
     });
 
-  return {id, organizationId, status: "completed"};
+  if (crewOutcome === "stop") {
+    const managers = await siteManagersOf(organizationId);
+    await Promise.all(managers.map((recipientUid) => createNotification({
+      organizationId,
+      recipientUid,
+      type: "safetyMeeting",
+      title: "Crew STOP at today's safety meeting",
+      message: `The Foreman stopped work for the crew: ${crewOutcomeNote}`,
+      relatedEntityType: "dailySafetyMeeting",
+      relatedEntityId: id,
+    })));
+  }
+
+  return {id, organizationId, status: "completed", crewOutcome};
 });
+
+/**
+ * Reads the Foreman's crew result for a meeting being completed — GO, GO
+ * corrected, or STOP, the same three outcomes as a worker's Pre-Start Check
+ * — and its note, which is required for anything other than GO.
+ *
+ * Optional on the server so a client built before crew results existed can
+ * still complete a meeting (stored as null); the app always sends one.
+ *
+ * @param {CallableRequest} request the incoming callable request.
+ * @return {object} the validated `crewOutcome` (or null) and its
+ * `crewOutcomeNote` (or null).
+ */
+function optionalCrewOutcome(request: CallableRequest): {
+  crewOutcome: PreStartOutcome | null;
+  crewOutcomeNote: string | null;
+} {
+  const data = request.data ?? {};
+  const outcome = data.crewOutcome;
+  if (outcome === undefined || outcome === null) {
+    return {crewOutcome: null, crewOutcomeNote: null};
+  }
+  if (!(PRE_START_OUTCOMES as readonly unknown[]).includes(outcome)) {
+    throw new HttpsError(
+      "invalid-argument",
+      "crewOutcome must be one of: " + PRE_START_OUTCOMES.join(", ")
+    );
+  }
+  const note = typeof data.crewOutcomeNote === "string" ?
+    data.crewOutcomeNote.trim() :
+    "";
+  if (outcome !== "go" && !note) {
+    throw new HttpsError(
+      "invalid-argument",
+      "Please add a note explaining the crew result."
+    );
+  }
+  if (note.length > 500) {
+    throw new HttpsError(
+      "invalid-argument",
+      "The crew result note must be 500 characters or fewer."
+    );
+  }
+  return {
+    crewOutcome: outcome as PreStartOutcome,
+    crewOutcomeNote: note || null,
+  };
+}
 
 /**
  * Validates that [workerId] refers to an existing, active user who belongs
@@ -646,8 +871,17 @@ export async function requireWorkerAtSite(
  * overwrites their previous status rather than creating a duplicate,
  * because the document id is the worker's own uid.
  *
- * Deliberately separate from Safety Learning: this callable never reads or
- * writes `worker_learning_records`.
+ * LEARN -> BRIEF -> WORK (Phase 3): marking a worker `present` also
+ * requires that worker to have COMPLETED every ATTENDANCE-GATING
+ * `SafetyLearning` item required for this meeting's own
+ * `siteId`/`activityIds` — resolved via `resolveAttendanceGatingLearningIds`
+ * and `outstandingLearningTitles`, the same helpers
+ * `requireForemanLearningComplete` uses for the foreman (see this file's
+ * header note, "REQUIRED vs. ATTENDANCE-GATING", for why this is
+ * deliberately narrower than the worker's overall required-learning set).
+ * A worker with outstanding gating learning may still be marked `absent`,
+ * so the attendance record is never structurally stuck — only `present` is
+ * gated.
  */
 export const recordMeetingAttendance = onCall(async (request) => {
   const organizationId = requireString(request, "organizationId");
@@ -682,6 +916,33 @@ export const recordMeetingAttendance = onCall(async (request) => {
   const siteId = meeting.siteId as string;
   await requireWorkerAtSite(organizationId, siteId, workerId);
 
+  // "Briefed in person": the Foreman covered today's outstanding lesson(s)
+  // with the worker face to face, so they may attend. Recorded on the
+  // attendance document with the lesson titles; the lessons stay due.
+  const briefedInPerson = (request.data ?? {}).briefedInPerson === true;
+  let briefedLearningTitles: string[] = [];
+  if (statusValue === "present") {
+    const outstanding = await outstandingLearningTitles(
+      organizationId,
+      workerId,
+      {
+        id: meetingId,
+        siteId,
+        activityIds: (meeting.activityIds as string[] | undefined) ?? [],
+      }
+    );
+    if (outstanding.length > 0 && !briefedInPerson) {
+      throw new HttpsError(
+        "failed-precondition",
+        "This worker must complete the following safety learning before " +
+          "being marked present: " + outstanding.join(", ") +
+          ". If you have briefed them on it in person, mark them " +
+          "\"Briefed in person\" instead."
+      );
+    }
+    briefedLearningTitles = outstanding;
+  }
+
   await getFirestore()
     .doc(
       `organizations/${organizationId}/daily_safety_meetings/${meetingId}` +
@@ -693,11 +954,224 @@ export const recordMeetingAttendance = onCall(async (request) => {
       siteId,
       workerId,
       status: statusValue,
+      briefedInPerson: briefedLearningTitles.length > 0,
+      briefedLearningTitles,
       recordedAt: FieldValue.serverTimestamp(),
       recordedBy: foremanId,
     });
 
-  return {organizationId, meetingId, workerId, status: statusValue};
+  return {
+    organizationId,
+    meetingId,
+    workerId,
+    status: statusValue,
+    briefedInPerson: briefedLearningTitles.length > 0,
+  };
+});
+
+/**
+ * Read-only preview of ATTENDEE safety-learning completion for one meeting
+ * — the callable [SAFETY LEARNING GATE] (this file's header note) names as
+ * the narrow, audited access path for attendee-level visibility, kept
+ * deliberately separate from `firestore.rules`' `worker_learning_records`
+ * boundary rather than loosening it.
+ *
+ * `worker_learning_records` denies read access to `foreman` outright
+ * (`firestore.rules`'s own comment: "a Foreman's visibility into their own
+ * crew's training is provided elsewhere via the callables, not this
+ * rule") — this callable IS that "elsewhere," and it stays narrow on
+ * purpose: a foreman calling this can only ever learn the outstanding
+ * TITLES of learning required for a meeting THEY THEMSELVES own
+ * (`requireOwnMeeting`), for workers who are actually assigned to one of
+ * that meeting's own activities (never an arbitrary uid) — never full
+ * record contents (no timestamps, no knowledge-check results), and never
+ * anyone else's crew.
+ *
+ * Informational only: this callable and its result never block or gate
+ * anything — see `requireForemanLearningComplete` for the actual
+ * completion callable, `recordMeetingAttendance`, still enforces the real
+ * hard rule (only on the FOREMAN themself). A worker with nothing required
+ * of them for this meeting is simply omitted from `outstanding` — present
+ * with an empty list, not absent from the result altogether, so the client
+ * can distinguish "checked, nothing outstanding" from "not yet resolved."
+ */
+export const getMeetingAttendeeLearningStatus = onCall(async (request) => {
+  const organizationId = requireString(request, "organizationId");
+  const meetingId = requireString(request, "meetingId");
+  const foremanId = request.auth?.uid;
+  if (!foremanId) throw denied();
+
+  const meeting = await requireOwnMeeting(organizationId, meetingId, foremanId);
+  const activityIds = (meeting.activityIds as string[] | undefined) ?? [];
+
+  // Only workers actually assigned to one of THIS meeting's own activities
+  // — mirrors `_AttendanceSection`'s own client-side roster derivation
+  // (`ActivityAssignmentRepository.watchAssignedWorkers` per activity), so
+  // this callable can never be used to probe an arbitrary worker's status.
+  const db = getFirestore();
+  const assignmentSnapshots = await Promise.all(
+    activityIds.map((activityId) =>
+      db
+        .collection(
+          `organizations/${organizationId}/activities/${activityId}` +
+            "/assignments"
+        )
+        .get()
+    )
+  );
+  const workerIds = new Set<string>();
+  for (const snapshot of assignmentSnapshots) {
+    for (const doc of snapshot.docs) {
+      const uid = doc.data().uid;
+      if (typeof uid === "string" && uid && uid !== foremanId) {
+        workerIds.add(uid);
+      }
+    }
+  }
+
+  const hint: MeetingHint = {
+    id: meetingId,
+    siteId: meeting.siteId as string,
+    activityIds,
+  };
+  const workers = await Promise.all(
+    [...workerIds].map(async (workerId) => ({
+      workerId,
+      outstanding: await outstandingLearningTitles(
+        organizationId,
+        workerId,
+        hint
+      ),
+    }))
+  );
+
+  return {organizationId, meetingId, workers};
+});
+
+/**
+ * The calling Foreman's OWN outstanding "Needed today" lessons for a
+ * meeting they are about to start (no `meetingId`) or are running — exactly
+ * what `requireForemanLearningComplete` will check, so the meeting screen
+ * can show it before the Foreman taps Start / Complete instead of only
+ * after a refusal. Read-only; the start/complete callables remain the
+ * authority.
+ *
+ * The caller must be an active Foreman of `siteId`; `activityIds` are the
+ * meeting's (or the proposed meeting's) activities.
+ */
+export const getMyMeetingLearningGate = onCall(async (request) => {
+  const organizationId = requireString(request, "organizationId");
+  const siteId = requireString(request, "siteId");
+  const foremanId = await requireActiveForeman(request, organizationId, siteId);
+  const activityIds = optionalStringArray(request, "activityIds") ?? [];
+  const rawMeetingId = (request.data ?? {}).meetingId;
+  const meetingId = typeof rawMeetingId === "string" && rawMeetingId ?
+    rawMeetingId :
+    null;
+
+  const outstanding = await outstandingNeededToday(
+    organizationId,
+    foremanId,
+    todaysMeetingDate(),
+    {id: meetingId, siteId, activityIds}
+  );
+  return {
+    organizationId,
+    outstanding: outstanding.map((lesson) => ({
+      learningId: lesson.learningId,
+      title: lesson.title,
+    })),
+  };
+});
+
+/**
+ * Read-only PRE-MEETING crew readiness for one of the caller's own
+ * authorized sites — the Foreman dashboard's view before today's meeting
+ * has been started (a meeting document only exists once
+ * `createDailySafetyMeeting` runs, so `getMeetingAttendeeLearningStatus`
+ * has nothing to resolve from until then).
+ *
+ * AUTHORIZATION: `requireActiveForeman` — the caller must be an active
+ * `foreman` of [organizationId] whose own membership `siteIds` includes the
+ * named `siteId`. There is no way to name another foreman's site.
+ *
+ * SCOPE: the site's own `projectId`, the site itself, and every ACTIVE
+ * activity at that site — the same activities the Foreman's meeting-start
+ * flow proposes — resolved through `resolveAttendanceGatingLearningIds`,
+ * the SAME gating resolver `recordMeetingAttendance` enforces with. The
+ * roster is every worker holding an `ActivityAssignment` to one of those
+ * activities (never an arbitrary uid), excluding the caller. Only
+ * ATTENDANCE-GATING learning is ever reported: other required learning,
+ * including `requiredBeforeWork` learning, is never shown as a meeting
+ * blocker here.
+ *
+ * Informational only: it gates nothing, and it deliberately leaves
+ * `getMeetingAttendeeLearningStatus` and `recordMeetingAttendance`
+ * untouched. Once the meeting starts, the meeting's own (possibly edited)
+ * `activityIds` are what count. Unlike `getMeetingAttendeeLearningStatus`,
+ * every rostered worker is always returned (with an empty `outstanding`
+ * list when ready), so the client can count "Ready" vs "Need attention".
+ * All reads happen server-side in one call — no per-worker client reads.
+ */
+export const getSiteCrewReadiness = onCall(async (request) => {
+  const organizationId = requireString(request, "organizationId");
+  const siteId = requireString(request, "siteId");
+  const foremanId = await requireActiveForeman(request, organizationId, siteId);
+
+  const db = getFirestore();
+  const siteSnapshot = await db
+    .doc(`organizations/${organizationId}/sites/${siteId}`)
+    .get();
+  const site = siteSnapshot.data();
+  if (!siteSnapshot.exists || !site || site.organizationId !== organizationId) {
+    throw new HttpsError("failed-precondition", "That site does not exist.");
+  }
+  const projectId = typeof site.projectId === "string" ? site.projectId : null;
+
+  const activitySnapshot = await db
+    .collection(`organizations/${organizationId}/activities`)
+    .where("siteId", "==", siteId)
+    .where("status", "==", "active")
+    .get();
+  const activities = activitySnapshot.docs.map((doc) => ({
+    id: doc.id,
+    name: typeof doc.data().name === "string" ? doc.data().name : "",
+  }));
+  const activityIds = activities.map((activity) => activity.id);
+
+  const assignmentSnapshots = await Promise.all(
+    activityIds.map((activityId) =>
+      db
+        .collection(
+          `organizations/${organizationId}/activities/${activityId}` +
+            "/assignments"
+        )
+        .get()
+    )
+  );
+  const workerIds = new Set<string>();
+  for (const snapshot of assignmentSnapshots) {
+    for (const doc of snapshot.docs) {
+      const uid = doc.data().uid;
+      if (typeof uid === "string" && uid && uid !== foremanId) {
+        workerIds.add(uid);
+      }
+    }
+  }
+
+  const workers = await Promise.all(
+    [...workerIds].sort().map(async (workerId) => ({
+      workerId,
+      // No meeting yet: the site and its active activities stand in for it.
+      outstanding: await outstandingLearningTitles(
+        organizationId,
+        workerId,
+        {id: null, siteId, activityIds}
+      ),
+    }))
+  );
+
+  return {organizationId, siteId, projectId, activities, workers};
 });
 
 const CONCERN_CATEGORIES = [

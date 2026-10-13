@@ -273,6 +273,41 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // ---- Collection-group rule for .../activities/{activityId}/assignments/{uid} ----
+    // Required IN ADDITION to that subcollection's own PATH-scoped `match`
+    // block further below (under `organizations/{organizationId}/
+    // activities/{activityId}`) — that block alone is NOT enough for
+    // `ActivityAssignmentRepository.watchAssignmentsForWorker`'s
+    // `collectionGroup('assignments')` query. A collection-group query has
+    // no fixed path prefix for Firestore to bind `organizationId` from, so
+    // a rule that reads `organizationId` off the PATH (as the nested block
+    // does, via the enclosing `match /organizations/{organizationId}`)
+    // cannot be proven safe for ANY collection-group query over
+    // `assignments` — Firestore must verify the rule against every
+    // possible path the collection id could appear under, and a
+    // path-bound variable is meaningless without a fixed path. This
+    // surfaced as `permission-denied` for every role, but only once real
+    // `assignments` documents existed to make `watchAssignmentsForWorker`
+    // actually match something — an empty result set is (trivially, and
+    // misleadingly) unaffected by this whole class of failure.
+    //
+    // The fix: a SEPARATE rule, matched by `{path=**}` (any prefix) so it
+    // applies regardless of the query's path shape, checking
+    // `resource.data.organizationId` — a FIELD, written by
+    // `assignWorkerToActivity`/`removeWorkerFromActivity`
+    // (`activity_assignment_callable.ts`) to always equal the path's own
+    // `organizationId` — instead of a path segment. This is exactly the
+    // pattern Firestore's own collection-group rules documentation
+    // prescribes: "store the field, and use `resource.data`, never the
+    // path" for a collection-group match. `belongsToOrganization` and
+    // `isAdmin` are unaffected — both already read the CALLER's own
+    // profile/membership, never touching this document's path or data.
+    match /{path=**}/assignments/{uid} {
+      allow read: if belongsToOrganization(resource.data.organizationId)
+        || isAdmin();
+      allow write: if false;
+    }
+
     // ---- users/{uid} — identity documents ----
     match /users/{userId} {
       // Read: your own profile only.
@@ -364,13 +399,47 @@ service cloud.firestore {
       // beyond `membershipDoc` (already read for `belongsToOrganization`),
       // since `siteIds` already lives on that same membership document.
       match /sites/{siteId} {
-        allow read: if isAdmin()
+        // `get`/`list` are split here — NOT one `allow read` — because
+        // "rules are not filters": Cloud Firestore proves a rule safe for a
+        // LIST query using only the query's own constraints, evaluating
+        // every `||` branch of the rule against the query shape. A branch
+        // that references `resource.data`/the document id (the
+        // Foreman/Worker `siteIds.hasAny([siteId])` check below) can never
+        // be proven safe against `SiteRepository.watchAll()` (no
+        // `.where()` at all), so Firestore rejects that ENTIRE query for
+        // EVERY caller — including an Admin/siteManager who'd trivially
+        // satisfy an earlier, query-independent branch — because it cannot
+        // selectively ignore an unprovable branch just because another one
+        // would have sufficed. This previously surfaced as
+        // `permission-denied` for an Admin/Site Manager account, on
+        // `activities`' identical shape, calling
+        // `SafetyComplianceRepository.buildSiteCompliance` — a screen no
+        // Foreman/Worker even reaches for this particular project's
+        // dataset — because the RULE TEXT poisoned the query regardless of
+        // who actually issued it.
+        //
+        // `allow get` (single-document reads, always provable) keeps the
+        // full site-scoped grant. `allow list` (collection queries) is
+        // deliberately narrower — ONLY the query-independent conditions
+        // (`isAdmin()`, `role == 'siteManager'`) — which is exactly what
+        // [SiteRepository.watchAll] needs (Admin/Site Manager only) and
+        // matches how the client actually queries: a Foreman/Worker never
+        // calls `watchAll()`, only [SiteRepository.watchByIds] (a
+        // `documentId in [...]` query, itself safely provable — but kept
+        // out of `list` here too, since Firestore's static prover cannot
+        // special-case one query shape within a single rule expression;
+        // the client already scopes Foreman/Worker requests correctly, and
+        // per-document `get()` reads remain available to them via
+        // `SiteRepository.watchById` if ever needed).
+        allow get: if isAdmin()
           || (belongsToOrganization(organizationId)
-            ? membershipDoc(organizationId).role == 'siteManager'
-            : false)
+              && membershipDoc(organizationId).role == 'siteManager')
           || (belongsToOrganization(organizationId)
               && membershipDoc(organizationId).siteIds is list
               && membershipDoc(organizationId).siteIds.hasAny([siteId]));
+        allow list: if isAdmin()
+          || (belongsToOrganization(organizationId)
+              && membershipDoc(organizationId).role == 'siteManager');
         // Provisioned exclusively through `createSite`/`updateSite`, which
         // additionally verifies server-side that the named project's own
         // `organizationId` matches this path's `organizationId` before
@@ -388,13 +457,30 @@ service cloud.firestore {
       // a Foreman or Worker sees only an activity whose own `siteId` is in
       // their membership `siteIds`.
       match /activities/{activityId} {
-        allow read: if isAdmin()
+        // `get`/`list` split — see `sites/{siteId}`'s own doc comment for
+        // why: "rules are not filters," so a rule branch that depends on
+        // `resource.data` (the Foreman/Worker site-scope check here) can
+        // poison an ENTIRE list query for EVERY caller, including one who'd
+        // trivially satisfy `isAdmin()`/`role == 'siteManager'`, the moment
+        // Firestore cannot statically prove that branch safe for the query
+        // shape — which is exactly what was surfacing as
+        // `permission-denied` for an ADMIN/Site Manager account on
+        // `ActivityRepository.watchBySite(siteId)` (a `where('siteId',
+        // ==, ...)` query — provably constrained on its face, but
+        // `hasAny()` over that constrained value is apparently not one of
+        // the forms Firestore's static prover simplifies away, unlike a
+        // plain `==`), even though that account never needed the
+        // Foreman-only branch to succeed at all.
+        allow get: if isAdmin()
           || (belongsToOrganization(organizationId)
             ? membershipDoc(organizationId).role == 'siteManager'
-            : false)
+              || (membershipDoc(organizationId).siteIds is list
+                  && membershipDoc(organizationId).siteIds
+                      .hasAny([resource.data.siteId]))
+            : false);
+        allow list: if isAdmin()
           || (belongsToOrganization(organizationId)
-              && membershipDoc(organizationId).siteIds is list
-              && membershipDoc(organizationId).siteIds.hasAny([resource.data.siteId]));
+              && membershipDoc(organizationId).role == 'siteManager');
         // Provisioned exclusively through `createActivity`/`updateActivity`
         // (`activity_callable.ts`), which additionally verifies server-side
         // that the named site's own `organizationId`/`projectId` match this
@@ -427,6 +513,23 @@ service cloud.firestore {
         allow write: if false;
       }
 
+      // ---- organizations/{orgId}/safety_learning/{id}/knowledge_check_questions/{qId} ----
+      // Deliberately DENIED to every client, unlike the parent document
+      // above — a question here carries `correctOptionId`, which a worker
+      // must never be able to read directly. The ONLY path a worker ever
+      // sees question content through is `getKnowledgeCheckQuestions`
+      // (`worker_learning_callable.ts`), which strips `correctOptionId`
+      // server-side before responding. Admin authoring goes through
+      // `addKnowledgeCheckQuestion`/`updateKnowledgeCheckQuestion`/
+      // `removeKnowledgeCheckQuestion` (`safety_learning_callable.ts`).
+      // Explicitly `match`ed (rather than left to the catch-all below) so
+      // this denial is unambiguous and doesn't depend on the catch-all's
+      // exclusion list staying correct.
+      match /safety_learning/{learningId}/knowledge_check_questions/{questionId} {
+        allow read: if false;
+        allow write: if false;
+      }
+
       // ---- organizations/{organizationId}/safety_requirements/{requirementId} ----
       match /safety_requirements/{requirementId} {
         allow read: if belongsToOrganization(organizationId) || isAdmin();
@@ -455,21 +558,34 @@ service cloud.firestore {
       // "any org member" grant like most collections in this file —
       // Site Manager/Admin review every meeting org-wide (PROJECT_CONTEXT.md
       // §16), a Foreman reviews only the meetings THEY conducted
-      // (`resource.data.foremanId == request.auth.uid`), and a Worker has no
-      // read access here at all (their own participation is visible through
-      // the `attendance` subcollection below instead, not the meeting
-      // document itself). This mirrors `worker_learning_records`' siteManager
-      // carve-out pattern: the caller's own membership document for THIS
-      // meeting's organization is checked, not a top-level profile field,
-      // since role is per-organization.
+      // (`resource.data.foremanId == request.auth.uid`). This mirrors
+      // `worker_learning_records`' siteManager carve-out pattern: the
+      // caller's own membership document for THIS meeting's organization is
+      // checked, not a top-level profile field, since role is
+      // per-organization.
+      //
+      // DASHBOARD (Phase 2): a Worker additionally may read a meeting whose
+      // OWN `siteId` is in their own membership's `siteIds` — narrower than
+      // the Foreman/siteManager grants above (no write, and the client
+      // query narrows further to today's date; this rule only bounds WHICH
+      // meetings a worker's query is allowed to touch at all, matching the
+      // same `siteIds.hasAny([...])` shape `sites/{siteId}` and
+      // `activities/{activityId}` already use for a Foreman). Before this,
+      // a Worker had no way to discover today's meeting at their own site
+      // (their own participation was visible only via the `attendance`
+      // subcollection below, which requires already knowing the
+      // `meetingId` — undiscoverable without this grant).
       match /daily_safety_meetings/{meetingId} {
         allow read: if isAdmin()
           || (belongsToOrganization(organizationId)
             ? membershipDoc(organizationId).role == 'siteManager'
-            : false)
-          || (belongsToOrganization(organizationId)
-              && membershipDoc(organizationId).role == 'foreman'
-              && resource.data.foremanId == request.auth.uid);
+              || (membershipDoc(organizationId).role == 'foreman'
+                  && resource.data.foremanId == request.auth.uid)
+              || (membershipDoc(organizationId).role == 'worker'
+                  && membershipDoc(organizationId).siteIds is list
+                  && membershipDoc(organizationId).siteIds
+                      .hasAny([resource.data.siteId]))
+            : false);
         // Provisioned exclusively through `createDailySafetyMeeting`/
         // `updateDailySafetyMeeting`/`completeDailySafetyMeeting`
         // (`daily_safety_meeting_callable.ts`), which additionally verifies
@@ -497,11 +613,10 @@ service cloud.firestore {
           allow read: if isAdmin()
             || (belongsToOrganization(organizationId)
               ? membershipDoc(organizationId).role == 'siteManager'
-              : false)
-            || (belongsToOrganization(organizationId)
-                && membershipDoc(organizationId).role == 'foreman'
-                && get(/databases/$(database)/documents/organizations/$(organizationId)/daily_safety_meetings/$(meetingId)).data.foremanId == request.auth.uid)
-            || (belongsToOrganization(organizationId) && workerId == request.auth.uid);
+                || (membershipDoc(organizationId).role == 'foreman'
+                    && get(/databases/$(database)/documents/organizations/$(organizationId)/daily_safety_meetings/$(meetingId)).data.foremanId == request.auth.uid)
+                || workerId == request.auth.uid
+              : false);
           allow write: if false;
         }
 
@@ -524,10 +639,9 @@ service cloud.firestore {
           allow read: if isAdmin()
             || (belongsToOrganization(organizationId)
               ? membershipDoc(organizationId).role == 'siteManager'
-              : false)
-            || (belongsToOrganization(organizationId)
-                && membershipDoc(organizationId).role == 'foreman'
-                && get(/databases/$(database)/documents/organizations/$(organizationId)/daily_safety_meetings/$(meetingId)).data.foremanId == request.auth.uid);
+                || (membershipDoc(organizationId).role == 'foreman'
+                    && get(/databases/$(database)/documents/organizations/$(organizationId)/daily_safety_meetings/$(meetingId)).data.foremanId == request.auth.uid)
+              : false);
           allow write: if false;
         }
 
@@ -548,10 +662,9 @@ service cloud.firestore {
           allow read: if isAdmin()
             || (belongsToOrganization(organizationId)
               ? membershipDoc(organizationId).role == 'siteManager'
-              : false)
-            || (belongsToOrganization(organizationId)
-                && membershipDoc(organizationId).role == 'foreman'
-                && get(/databases/$(database)/documents/organizations/$(organizationId)/daily_safety_meetings/$(meetingId)).data.foremanId == request.auth.uid);
+                || (membershipDoc(organizationId).role == 'foreman'
+                    && get(/databases/$(database)/documents/organizations/$(organizationId)/daily_safety_meetings/$(meetingId)).data.foremanId == request.auth.uid)
+              : false);
           allow write: if false;
         }
 
@@ -576,10 +689,9 @@ service cloud.firestore {
           allow read: if isAdmin()
             || (belongsToOrganization(organizationId)
               ? membershipDoc(organizationId).role == 'siteManager'
-              : false)
-            || (belongsToOrganization(organizationId)
-                && membershipDoc(organizationId).role == 'foreman'
-                && get(/databases/$(database)/documents/organizations/$(organizationId)/daily_safety_meetings/$(meetingId)).data.foremanId == request.auth.uid);
+                || (membershipDoc(organizationId).role == 'foreman'
+                    && get(/databases/$(database)/documents/organizations/$(organizationId)/daily_safety_meetings/$(meetingId)).data.foremanId == request.auth.uid)
+              : false);
           allow write: if false;
         }
       }
@@ -612,6 +724,49 @@ service cloud.firestore {
         allow write: if false;
       }
 
+      // ---- organizations/{organizationId}/inspection_templates/{id} ----
+      // ---- organizations/{organizationId}/inspections/{id} ----
+      // Site inspections (daily site inspection, weekly HSE walk-down) and
+      // their checklists — `inspection_callable.ts`. Read by the people who
+      // inspect and review (Admin/Site Manager/Foreman) and the System
+      // Administrator; every write goes through the callables. Deficiencies
+      // found become `hazards` (readable as usual).
+      match /inspection_templates/{templateId} {
+        allow read: if isAdmin()
+          || (belongsToOrganization(organizationId)
+            && membershipDoc(organizationId).role in
+              ['admin', 'siteManager', 'foreman']);
+        allow write: if false;
+      }
+      match /inspections/{inspectionId} {
+        allow read: if isAdmin()
+          || (belongsToOrganization(organizationId)
+            && membershipDoc(organizationId).role in
+              ['admin', 'siteManager', 'foreman']);
+        allow write: if false;
+      }
+
+      // ---- organizations/{organizationId}/incidents/{incidentId} ----
+      // Flat under the organization, like `hazards`. Unlike a hazard, an
+      // incident can name an injured person and describe an injury, so it
+      // is NOT readable by every org member: only the reporter themselves,
+      // a reviewer role (`admin`/`siteManager`/`foreman` — the same set
+      // `incident_callable.ts`'s `requireOrganizationScopedReviewer`
+      // accepts) in this organization, or the System Administrator. A
+      // worker's "My Incidents" query must therefore be constrained to
+      // `reportedByUid == request.auth.uid` for the rule to admit it.
+      match /incidents/{incidentId} {
+        allow read: if isAdmin()
+          || (belongsToOrganization(organizationId)
+            && (resource.data.reportedByUid == request.auth.uid
+              || membershipDoc(organizationId).role in
+                ['admin', 'siteManager', 'foreman']));
+        // Provisioned exclusively through `createIncident`/
+        // `startIncidentInvestigation`/`linkIncidentCorrectiveAction`/
+        // `closeIncident` (`incident_callable.ts`). Never deletable.
+        allow write: if false;
+      }
+
       // ---- organizations/{organizationId}/corrective_actions/{id} ----
       // Flat under the organization (a sibling of `daily_safety_meetings`,
       // not a subcollection of one) — a corrective action's meeting/concern
@@ -636,11 +791,15 @@ service cloud.firestore {
         // In either case, `assignedTo` must be an active member of this
         // organization, and never the caller's own uid — a worker cannot
         // assign a corrective action to themselves.
-        // `updateCorrectiveActionStatus` transitions `status` afterward,
-        // restricted to the same reviewer roles (`admin`/`siteManager`, plus
-        // `foreman` for their own site) already trusted to review pending
-        // accounts — see `account_approval.ts`'s `canReviewPendingAccounts`.
-        // There is
+        // `submitCorrectiveActionForReview` lets the action's own
+        // `assignedTo` move `open`/`inProgress` to `submittedForReview` —
+        // "I've done the work." `updateCorrectiveActionStatus` transitions
+        // every OTHER status afterward, restricted to the same reviewer
+        // roles (`admin`/`siteManager`, plus `foreman` for their own site)
+        // already trusted to review pending accounts — see
+        // `account_approval.ts`'s `canReviewPendingAccounts`; `completed` is
+        // only reachable from `submittedForReview` — "a reviewer verified
+        // that claim." There is
         // no delete callable and this rule denies delete too: a corrective
         // action, like a completed meeting's concerns, is a permanent part
         // of the safety record once created.
@@ -709,7 +868,31 @@ service cloud.firestore {
       // elsewhere: compliance-viewing across the whole organization is a
       // `siteManager`/`admin` responsibility (PROJECT_CONTEXT.md §12/§16),
       // not a Foreman one — a Foreman's visibility into their own crew's
-      // training is provided elsewhere via the callables, not this rule.
+      // training is provided by `getCrewLearningRecords`
+      // (`worker_learning_callable.ts`) instead, an Admin-SDK callable that
+      // re-derives and enforces the Foreman's own site scope server-side,
+      // never trusting a client-supplied worker list.
+      // ---- organizations/{organizationId}/pre_start_checks/{uid}_{date} ----
+      // A worker's Daily Pre-Start Check (GO / GO corrected / STOP). Read:
+      // the worker themselves; a Foreman whose own membership includes the
+      // check's site; any Site Manager of the organization; an Admin.
+      // Provisioned exclusively through `submitPreStartCheck`
+      // (`pre_start_check_callable.ts`), which takes no workerUid argument
+      // and computes the outcome server-side — a check, once submitted, is
+      // a permanent safety record, so no client may write or delete one.
+      match /pre_start_checks/{checkId} {
+        allow read: if isAdmin()
+          || (belongsToOrganization(organizationId)
+            ? resource.data.workerUid == request.auth.uid
+              || membershipDoc(organizationId).role == 'siteManager'
+              || (membershipDoc(organizationId).role == 'foreman'
+                  && membershipDoc(organizationId).siteIds is list
+                  && membershipDoc(organizationId).siteIds
+                      .hasAny([resource.data.siteId]))
+            : false);
+        allow write: if false;
+      }
+
       match /worker_learning_records/{recordId} {
         // The siteManager carve-out below checks the CALLER's own
         // membership document for THIS record's organization, not a
@@ -763,13 +946,34 @@ service cloud.firestore {
       // (see its own doc comment), so excluding `activities` here does not
       // change its behavior, only prevents this catch-all from double
       // granting the PARENT activity document's read.
+      //
+      // `safety_learning` is excluded for the same reason as `activities`:
+      // its own top-level `match` block above already grants the PARENT
+      // document's read to any org member (that part is intentional and
+      // unchanged), but its `knowledge_check_questions/{questionId}`
+      // SUBCOLLECTION has its own explicit `allow read: if false` — Firestore
+      // rules OR every matching block's `allow` together, so without this
+      // exclusion this catch-all would silently re-grant that denied read
+      // (the exact bug this comment already documents for the other
+      // exclusions above).
       match /{operationalCollection}/{documentId=**} {
         allow read: if belongsToOrganization(organizationId)
           && operationalCollection != 'notifications'
           && operationalCollection != 'worker_learning_records'
+          && operationalCollection != 'pre_start_checks'
+          // Each person's daily "Needed today" learning plan — served only
+          // through the learning/meeting callables, never read directly.
+          && operationalCollection != 'daily_learning_plans'
           && operationalCollection != 'daily_safety_meetings'
           && operationalCollection != 'sites'
-          && operationalCollection != 'activities';
+          && operationalCollection != 'activities'
+          && operationalCollection != 'safety_learning'
+          // Incidents can name an injured person — reporter/reviewer-only
+          // via their own `match` block above.
+          && operationalCollection != 'incidents'
+          // Supervisor-only — see their own `match` blocks above.
+          && operationalCollection != 'inspection_templates'
+          && operationalCollection != 'inspections';
         allow write: if false;
       }
     }

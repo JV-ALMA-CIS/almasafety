@@ -79,7 +79,11 @@ export {
   removeWorkerFromSite,
 } from "./site_assignment_callable";
 
-export {createActivity, updateActivity} from "./activity_callable";
+export {
+  createActivity,
+  updateActivity,
+  getSiteActivities,
+} from "./activity_callable";
 
 export {
   assignWorkerToActivity,
@@ -91,12 +95,19 @@ export {
   updateSafetyLearning,
   createSafetyRequirement,
   updateSafetyRequirement,
+  addKnowledgeCheckQuestion,
+  updateKnowledgeCheckQuestion,
+  removeKnowledgeCheckQuestion,
+  listKnowledgeCheckQuestions,
 } from "./safety_learning_callable";
 
 export {
   getMyRequiredLearning,
   startLearning,
   completeLearning,
+  getKnowledgeCheckQuestions,
+  getCrewLearningRecords,
+  getMyTodaysSafetyReadiness,
 } from "./worker_learning_callable";
 
 export {
@@ -111,6 +122,9 @@ export {
   updateDailySafetyMeeting,
   completeDailySafetyMeeting,
   recordMeetingAttendance,
+  getMeetingAttendeeLearningStatus,
+  getSiteCrewReadiness,
+  getMyMeetingLearningGate,
   addMeetingConcern,
   updateMeetingConcern,
   removeMeetingConcern,
@@ -121,8 +135,15 @@ export {
 } from "./daily_safety_meeting_callable";
 
 export {
+  getMyPreStartCheck,
+  submitPreStartCheck,
+  getSiteCrewPreStartChecks,
+} from "./pre_start_check_callable";
+
+export {
   createCorrectiveAction,
   updateCorrectiveActionStatus,
+  submitCorrectiveActionForReview,
 } from "./corrective_action_callable";
 
 export {
@@ -131,6 +152,22 @@ export {
   linkHazardCorrectiveAction,
   closeHazard,
 } from "./hazard_callable";
+
+export {
+  createIncident,
+  startIncidentInvestigation,
+  linkIncidentCorrectiveAction,
+  closeIncident,
+} from "./incident_callable";
+
+export {
+  installDefaultInspectionTemplates,
+  saveInspectionTemplate,
+  startInspection,
+  recordInspectionItem,
+  submitInspection,
+  signOffInspection,
+} from "./inspection_callable";
 
 export {
   createSafetyAlert,

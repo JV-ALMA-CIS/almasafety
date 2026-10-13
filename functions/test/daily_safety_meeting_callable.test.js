@@ -31,7 +31,10 @@ const ORG_B = "org-beta";
 let app;
 let db;
 let createDailySafetyMeeting;
+let completeDailySafetyMeeting;
 let recordMeetingAttendance;
+let getMeetingAttendeeLearningStatus;
+let getSiteCrewReadiness;
 let addMeetingConcern;
 let updateMeetingConcern;
 let removeMeetingConcern;
@@ -51,7 +54,10 @@ beforeAll(() => {
 
   ({
     createDailySafetyMeeting,
+    completeDailySafetyMeeting,
     recordMeetingAttendance,
+    getMeetingAttendeeLearningStatus,
+    getSiteCrewReadiness,
     addMeetingConcern,
     updateMeetingConcern,
     removeMeetingConcern,
@@ -154,6 +160,64 @@ async function seedMeetingPoint(orgId, id, overrides = {}) {
     status: "active",
     ...overrides,
   });
+}
+
+async function seedSafetyLearning(orgId, id, overrides = {}) {
+  await db.doc(`organizations/${orgId}/safety_learning/${id}`).set({
+    organizationId: orgId,
+    title: `Learning ${id}`,
+    type: "document",
+    contentReference: `ref-${id}`,
+    status: "active",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  });
+}
+
+async function seedSafetyRequirement(orgId, id, overrides = {}) {
+  await db.doc(`organizations/${orgId}/safety_requirements/${id}`).set({
+    organizationId: orgId,
+    name: `Requirement ${id}`,
+    category: "General",
+    risk: "medium",
+    requiredLearningIds: [],
+    status: "active",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  });
+}
+
+async function seedWorkerLearningRecord(orgId, workerUid, learningId, status) {
+  await db
+    .doc(
+      `organizations/${orgId}/worker_learning_records/` +
+        `${workerUid}_${learningId}`
+    )
+    .set({
+      workerUid,
+      organizationId: orgId,
+      learningId,
+      status,
+      assignedAt: new Date(),
+      ...(status === "completed" ? {completedAt: new Date()} : {}),
+    });
+}
+
+async function seedAssignment(orgId, activityId, uid, siteId) {
+  await db
+    .doc(
+      `organizations/${orgId}/activities/${activityId}/assignments/${uid}`
+    )
+    .set({
+      uid,
+      organizationId: orgId,
+      siteId,
+      activityId,
+      assignedAt: new Date(),
+      assignedBy: "assigner-1",
+    });
 }
 
 async function seedMeeting(orgId, id, overrides = {}) {
@@ -429,6 +493,302 @@ describe("createDailySafetyMeeting", () => {
   });
 });
 
+describe("createDailySafetyMeeting (safety learning gate)", () => {
+  test("is refused when the foreman has outstanding required learning " +
+    "for this site", async () => {
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      siteId: "site-1",
+    });
+
+    await expect(
+      createDailySafetyMeeting.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          projectId: "project-1",
+          siteId: "site-1",
+        })
+      )
+    ).rejects.toThrow(/must complete the following safety learning/);
+  });
+
+  test("is refused when the foreman has outstanding required learning " +
+    "for one of the activities passed at creation time", async () => {
+    await seedActivity(ORG_A, "activity-1", {siteId: "site-1"});
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      activityId: "activity-1",
+    });
+
+    await expect(
+      createDailySafetyMeeting.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          projectId: "project-1",
+          siteId: "site-1",
+          activityIds: ["activity-1"],
+        })
+      )
+    ).rejects.toThrow(/must complete the following safety learning/);
+  });
+
+  test("succeeds once the foreman has completed the required learning",
+    async () => {
+      await seedSafetyLearning(ORG_A, "l1");
+      await seedSafetyRequirement(ORG_A, "r1", {
+        requiredLearningIds: ["l1"],
+        siteId: "site-1",
+      });
+      await seedWorkerLearningRecord(ORG_A, "foreman-a", "l1", "completed");
+
+      const result = await createDailySafetyMeeting.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          projectId: "project-1",
+          siteId: "site-1",
+        })
+      );
+
+      expect(result.organizationId).toBe(ORG_A);
+    });
+
+  test("no meeting document is written when the gate refuses", async () => {
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      siteId: "site-1",
+    });
+
+    await expect(
+      createDailySafetyMeeting.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          projectId: "project-1",
+          siteId: "site-1",
+        })
+      )
+    ).rejects.toThrow();
+
+    const collection = await db
+      .collection(`organizations/${ORG_A}/daily_safety_meetings`)
+      .get();
+    expect(collection.empty).toBe(true);
+  });
+});
+
+describe("gatesAttendance semantics (foreman gate, via " +
+  "createDailySafetyMeeting)", () => {
+  test("a legacy requirement with no gatesAttendance field blocks " +
+    "attendance (missing/null defaults to true)", async () => {
+    await seedSafetyLearning(ORG_A, "l1");
+    // No gatesAttendance key at all in the write — mirrors a document
+    // written before this field existed.
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      siteId: "site-1",
+    });
+
+    await expect(
+      createDailySafetyMeeting.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          projectId: "project-1",
+          siteId: "site-1",
+        })
+      )
+    ).rejects.toThrow(/must complete the following safety learning/);
+  });
+
+  test("gatesAttendance: true blocks attendance when learning is " +
+    "incomplete", async () => {
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      siteId: "site-1",
+      gatesAttendance: true,
+    });
+
+    await expect(
+      createDailySafetyMeeting.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          projectId: "project-1",
+          siteId: "site-1",
+        })
+      )
+    ).rejects.toThrow(/must complete the following safety learning/);
+  });
+
+  test("gatesAttendance: false allows starting the meeting even with " +
+    "incomplete learning", async () => {
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      siteId: "site-1",
+      gatesAttendance: false,
+    });
+
+    const result = await createDailySafetyMeeting.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        projectId: "project-1",
+        siteId: "site-1",
+      })
+    );
+
+    expect(result.organizationId).toBe(ORG_A);
+  });
+
+  test("when every applicable requirement is non-gating, incomplete " +
+    "learning never blocks the meeting", async () => {
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyLearning(ORG_A, "l2");
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      siteId: "site-1",
+      gatesAttendance: false,
+    });
+    await seedSafetyRequirement(ORG_A, "r2", {
+      requiredLearningIds: ["l2"],
+      siteId: "site-1",
+      gatesAttendance: false,
+    });
+
+    const result = await createDailySafetyMeeting.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        projectId: "project-1",
+        siteId: "site-1",
+      })
+    );
+
+    expect(result.organizationId).toBe(ORG_A);
+  });
+
+  test("a mix of gating and non-gating requirements: only the gating " +
+    "one's incomplete learning blocks the meeting", async () => {
+    await seedSafetyLearning(ORG_A, "gating-learning");
+    await seedSafetyLearning(ORG_A, "non-gating-learning");
+    await seedSafetyRequirement(ORG_A, "r-gating", {
+      requiredLearningIds: ["gating-learning"],
+      siteId: "site-1",
+      gatesAttendance: true,
+    });
+    await seedSafetyRequirement(ORG_A, "r-non-gating", {
+      requiredLearningIds: ["non-gating-learning"],
+      siteId: "site-1",
+      gatesAttendance: false,
+    });
+    // Complete only the non-gating item — the gating one is still
+    // outstanding and must still block.
+    await seedWorkerLearningRecord(
+      ORG_A, "foreman-a", "non-gating-learning", "completed"
+    );
+
+    await expect(
+      createDailySafetyMeeting.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          projectId: "project-1",
+          siteId: "site-1",
+        })
+      )
+    ).rejects.toThrow(/must complete the following safety learning/);
+  });
+
+  test("LEARNING-ID OVERLAP: a learning id required by both a gating and " +
+    "a non-gating requirement still blocks attendance while incomplete",
+  async () => {
+    await seedSafetyLearning(ORG_A, "L1");
+    await seedSafetyLearning(ORG_A, "L2");
+    await seedSafetyLearning(ORG_A, "L3");
+    // Requirement A: gating, requires L1 and L2.
+    await seedSafetyRequirement(ORG_A, "requirement-a", {
+      requiredLearningIds: ["L1", "L2"],
+      siteId: "site-1",
+      gatesAttendance: true,
+    });
+    // Requirement B: non-gating, requires L2 and L3. L2 overlaps with A.
+    await seedSafetyRequirement(ORG_A, "requirement-b", {
+      requiredLearningIds: ["L2", "L3"],
+      siteId: "site-1",
+      gatesAttendance: false,
+    });
+    // Complete L1 and L3, leave L2 (the overlapping id) incomplete.
+    await seedWorkerLearningRecord(ORG_A, "foreman-a", "L1", "completed");
+    await seedWorkerLearningRecord(ORG_A, "foreman-a", "L3", "completed");
+
+    await expect(
+      createDailySafetyMeeting.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          projectId: "project-1",
+          siteId: "site-1",
+        })
+      )
+    ).rejects.toThrow(/must complete the following safety learning/);
+  });
+
+  test("LEARNING-ID OVERLAP (reverse): a learning id required by a " +
+    "non-gating requirement FIRST and a gating requirement SECOND still " +
+    "blocks attendance while incomplete", async () => {
+    await seedSafetyLearning(ORG_A, "L1");
+    // Requirement A: non-gating, requires L1.
+    await seedSafetyRequirement(ORG_A, "requirement-a", {
+      requiredLearningIds: ["L1"],
+      siteId: "site-1",
+      gatesAttendance: false,
+    });
+    // Requirement B: gating, ALSO requires L1.
+    await seedSafetyRequirement(ORG_A, "requirement-b", {
+      requiredLearningIds: ["L1"],
+      siteId: "site-1",
+      gatesAttendance: true,
+    });
+
+    await expect(
+      createDailySafetyMeeting.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          projectId: "project-1",
+          siteId: "site-1",
+        })
+      )
+    ).rejects.toThrow(/must complete the following safety learning/);
+  });
+
+  test("LEARNING-ID OVERLAP: once the shared id is completed, the meeting " +
+    "may start (non-gating requirement's contribution never blocked it " +
+    "independently)", async () => {
+    await seedSafetyLearning(ORG_A, "L1");
+    await seedSafetyLearning(ORG_A, "L2");
+    await seedSafetyRequirement(ORG_A, "requirement-a", {
+      requiredLearningIds: ["L1", "L2"],
+      siteId: "site-1",
+      gatesAttendance: true,
+    });
+    await seedSafetyRequirement(ORG_A, "requirement-b", {
+      requiredLearningIds: ["L2"],
+      siteId: "site-1",
+      gatesAttendance: false,
+    });
+    await seedWorkerLearningRecord(ORG_A, "foreman-a", "L1", "completed");
+    await seedWorkerLearningRecord(ORG_A, "foreman-a", "L2", "completed");
+
+    const result = await createDailySafetyMeeting.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        projectId: "project-1",
+        siteId: "site-1",
+      })
+    );
+
+    expect(result.organizationId).toBe(ORG_A);
+  });
+});
+
 describe("recordMeetingAttendance", () => {
   test("the meeting's own foreman can record a worker's attendance",
     async () => {
@@ -499,6 +859,855 @@ describe("recordMeetingAttendance", () => {
         )
       ).rejects.toThrow();
     });
+});
+
+describe("recordMeetingAttendance (safety learning gate)", () => {
+  test("is refused when marking a worker present who has outstanding " +
+    "required learning for this meeting's scope", async () => {
+    await seedActivity(ORG_A, "activity-1", {siteId: "site-1"});
+    await seedSafetyLearning(ORG_A, "l1", {title: "Working at Height"});
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      activityId: "activity-1",
+    });
+    await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+    await seedWorker("worker-a", "site-1");
+
+    await expect(
+      recordMeetingAttendance.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          workerId: "worker-a",
+          status: "present",
+        })
+      )
+    ).rejects.toThrow(/must complete the following safety learning/);
+  });
+
+  test("still allows marking that same worker absent", async () => {
+    await seedActivity(ORG_A, "activity-1", {siteId: "site-1"});
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      activityId: "activity-1",
+    });
+    await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+    await seedWorker("worker-a", "site-1");
+
+    const result = await recordMeetingAttendance.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        workerId: "worker-a",
+        status: "absent",
+      })
+    );
+
+    expect(result.status).toBe("absent");
+  });
+
+  test("succeeds marking present once the worker has completed the " +
+    "required learning", async () => {
+    await seedActivity(ORG_A, "activity-1", {siteId: "site-1"});
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      activityId: "activity-1",
+    });
+    await seedWorkerLearningRecord(ORG_A, "worker-a", "l1", "completed");
+    await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+    await seedWorker("worker-a", "site-1");
+
+    const result = await recordMeetingAttendance.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        workerId: "worker-a",
+        status: "present",
+      })
+    );
+
+    expect(result.status).toBe("present");
+  });
+
+  test("another worker's own completion does not satisfy this worker's " +
+    "requirement", async () => {
+    await seedActivity(ORG_A, "activity-1", {siteId: "site-1"});
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      activityId: "activity-1",
+    });
+    await seedWorker("worker-b", "site-1");
+    await seedWorkerLearningRecord(ORG_A, "worker-b", "l1", "completed");
+    await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+    await seedWorker("worker-a", "site-1");
+
+    await expect(
+      recordMeetingAttendance.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          workerId: "worker-a",
+          status: "present",
+        })
+      )
+    ).rejects.toThrow(/must complete the following safety learning/);
+  });
+});
+
+describe("gatesAttendance semantics (worker Present gate, via " +
+  "recordMeetingAttendance)", () => {
+  test("a legacy requirement with no gatesAttendance field blocks " +
+    "Present (missing/null defaults to true)", async () => {
+    await seedActivity(ORG_A, "activity-1", {siteId: "site-1"});
+    await seedSafetyLearning(ORG_A, "l1");
+    // No gatesAttendance key at all.
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      activityId: "activity-1",
+    });
+    await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+    await seedWorker("worker-a", "site-1");
+
+    await expect(
+      recordMeetingAttendance.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          workerId: "worker-a",
+          status: "present",
+        })
+      )
+    ).rejects.toThrow(/must complete the following safety learning/);
+  });
+
+  test("gatesAttendance: false allows marking Present even with " +
+    "incomplete learning", async () => {
+    await seedActivity(ORG_A, "activity-1", {siteId: "site-1"});
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      activityId: "activity-1",
+      gatesAttendance: false,
+    });
+    await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+    await seedWorker("worker-a", "site-1");
+
+    const result = await recordMeetingAttendance.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        workerId: "worker-a",
+        status: "present",
+      })
+    );
+
+    expect(result.status).toBe("present");
+  });
+
+  test("gatesAttendance: false still allows marking Absent (unaffected — " +
+    "Absent was never gated by either kind of requirement)", async () => {
+    await seedActivity(ORG_A, "activity-1", {siteId: "site-1"});
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      activityId: "activity-1",
+      gatesAttendance: true,
+    });
+    await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+    await seedWorker("worker-a", "site-1");
+
+    const result = await recordMeetingAttendance.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        workerId: "worker-a",
+        status: "absent",
+      })
+    );
+
+    expect(result.status).toBe("absent");
+  });
+
+  test("when every applicable requirement is non-gating, incomplete " +
+    "learning never blocks Present", async () => {
+    await seedActivity(ORG_A, "activity-1", {siteId: "site-1"});
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyLearning(ORG_A, "l2");
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      activityId: "activity-1",
+      gatesAttendance: false,
+    });
+    await seedSafetyRequirement(ORG_A, "r2", {
+      requiredLearningIds: ["l2"],
+      activityId: "activity-1",
+      gatesAttendance: false,
+    });
+    await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+    await seedWorker("worker-a", "site-1");
+
+    const result = await recordMeetingAttendance.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        workerId: "worker-a",
+        status: "present",
+      })
+    );
+
+    expect(result.status).toBe("present");
+  });
+
+  test("a mix of gating and non-gating requirements: only the gating " +
+    "one's incomplete learning blocks Present", async () => {
+    await seedActivity(ORG_A, "activity-1", {siteId: "site-1"});
+    await seedSafetyLearning(ORG_A, "gating-learning");
+    await seedSafetyLearning(ORG_A, "non-gating-learning");
+    await seedSafetyRequirement(ORG_A, "r-gating", {
+      requiredLearningIds: ["gating-learning"],
+      activityId: "activity-1",
+      gatesAttendance: true,
+    });
+    await seedSafetyRequirement(ORG_A, "r-non-gating", {
+      requiredLearningIds: ["non-gating-learning"],
+      activityId: "activity-1",
+      gatesAttendance: false,
+    });
+    await seedWorkerLearningRecord(
+      ORG_A, "worker-a", "non-gating-learning", "completed"
+    );
+    await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+    await seedWorker("worker-a", "site-1");
+
+    await expect(
+      recordMeetingAttendance.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          workerId: "worker-a",
+          status: "present",
+        })
+      )
+    ).rejects.toThrow(/must complete the following safety learning/);
+  });
+
+  test("LEARNING-ID OVERLAP: a learning id required by both a gating and " +
+    "a non-gating requirement still blocks Present while incomplete",
+  async () => {
+    await seedActivity(ORG_A, "activity-1", {siteId: "site-1"});
+    await seedSafetyLearning(ORG_A, "L1");
+    await seedSafetyLearning(ORG_A, "L2");
+    await seedSafetyLearning(ORG_A, "L3");
+    await seedSafetyRequirement(ORG_A, "requirement-a", {
+      requiredLearningIds: ["L1", "L2"],
+      activityId: "activity-1",
+      gatesAttendance: true,
+    });
+    await seedSafetyRequirement(ORG_A, "requirement-b", {
+      requiredLearningIds: ["L2", "L3"],
+      activityId: "activity-1",
+      gatesAttendance: false,
+    });
+    await seedWorkerLearningRecord(ORG_A, "worker-a", "L1", "completed");
+    await seedWorkerLearningRecord(ORG_A, "worker-a", "L3", "completed");
+    await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+    await seedWorker("worker-a", "site-1");
+
+    await expect(
+      recordMeetingAttendance.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          workerId: "worker-a",
+          status: "present",
+        })
+      )
+    ).rejects.toThrow(/must complete the following safety learning/);
+  });
+
+  test("LEARNING-ID OVERLAP (reverse): a learning id required by a " +
+    "non-gating requirement FIRST and a gating requirement SECOND still " +
+    "blocks Present while incomplete", async () => {
+    await seedActivity(ORG_A, "activity-1", {siteId: "site-1"});
+    await seedSafetyLearning(ORG_A, "L1");
+    await seedSafetyRequirement(ORG_A, "requirement-a", {
+      requiredLearningIds: ["L1"],
+      activityId: "activity-1",
+      gatesAttendance: false,
+    });
+    await seedSafetyRequirement(ORG_A, "requirement-b", {
+      requiredLearningIds: ["L1"],
+      activityId: "activity-1",
+      gatesAttendance: true,
+    });
+    await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+    await seedWorker("worker-a", "site-1");
+
+    await expect(
+      recordMeetingAttendance.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          workerId: "worker-a",
+          status: "present",
+        })
+      )
+    ).rejects.toThrow(/must complete the following safety learning/);
+  });
+
+  test("COMPLETION RECHECK: Present is rejected while gating learning is " +
+    "incomplete, then allowed once it's completed, for the same worker " +
+    "and meeting", async () => {
+    await seedActivity(ORG_A, "activity-1", {siteId: "site-1"});
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      activityId: "activity-1",
+      gatesAttendance: true,
+    });
+    await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+    await seedWorker("worker-a", "site-1");
+
+    await expect(
+      recordMeetingAttendance.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          workerId: "worker-a",
+          status: "present",
+        })
+      )
+    ).rejects.toThrow(/must complete the following safety learning/);
+
+    await seedWorkerLearningRecord(ORG_A, "worker-a", "l1", "completed");
+
+    const result = await recordMeetingAttendance.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        workerId: "worker-a",
+        status: "present",
+      })
+    );
+
+    expect(result.status).toBe("present");
+  });
+
+  test("MULTI-ACTIVITY WORKER: gating requirements from every one of the " +
+    "meeting's activities contribute to the Present gate", async () => {
+    await seedActivity(ORG_A, "activity-1", {siteId: "site-1"});
+    await seedActivity(ORG_A, "activity-2", {siteId: "site-1"});
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyLearning(ORG_A, "l2");
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      activityId: "activity-1",
+      gatesAttendance: true,
+    });
+    await seedSafetyRequirement(ORG_A, "r2", {
+      requiredLearningIds: ["l2"],
+      activityId: "activity-2",
+      gatesAttendance: true,
+    });
+    // Meeting covers BOTH activities.
+    await seedMeeting(ORG_A, "meeting-1", {
+      activityIds: ["activity-1", "activity-2"],
+    });
+    await seedWorker("worker-a", "site-1");
+    // Only l1 completed — l2 (from activity-2's requirement) still blocks.
+    await seedWorkerLearningRecord(ORG_A, "worker-a", "l1", "completed");
+
+    await expect(
+      recordMeetingAttendance.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          workerId: "worker-a",
+          status: "present",
+        })
+      )
+    ).rejects.toThrow(/must complete the following safety learning/);
+  });
+
+  test("PROJECT SCOPE: a project-scoped gating requirement blocks " +
+    "Present, and gatesAttendance: false on it lifts the block",
+  async () => {
+    await seedSite(ORG_A, "site-1", {projectId: "project-1"});
+    await seedActivity(ORG_A, "activity-1", {siteId: "site-1"});
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      projectId: "project-1",
+      gatesAttendance: true,
+    });
+    await seedMeeting(ORG_A, "meeting-1", {
+      activityIds: ["activity-1"],
+      projectId: "project-1",
+    });
+    await seedWorker("worker-a", "site-1");
+
+    await expect(
+      recordMeetingAttendance.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          workerId: "worker-a",
+          status: "present",
+        })
+      )
+    ).rejects.toThrow(/must complete the following safety learning/);
+
+    await db
+      .doc(`organizations/${ORG_A}/safety_requirements/r1`)
+      .update({gatesAttendance: false});
+
+    const result = await recordMeetingAttendance.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        workerId: "worker-a",
+        status: "present",
+      })
+    );
+
+    expect(result.status).toBe("present");
+  });
+
+  test("SITE SCOPE: a site-scoped non-gating requirement does not block " +
+    "Present", async () => {
+    await seedActivity(ORG_A, "activity-1", {siteId: "site-1"});
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      siteId: "site-1",
+      gatesAttendance: false,
+    });
+    await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+    await seedWorker("worker-a", "site-1");
+
+    const result = await recordMeetingAttendance.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        workerId: "worker-a",
+        status: "present",
+      })
+    );
+
+    expect(result.status).toBe("present");
+  });
+});
+
+describe("getMeetingAttendeeLearningStatus", () => {
+  test("reports an assigned worker's outstanding required learning",
+    async () => {
+      await seedWorker("worker-a", "site-1");
+      await seedActivity(ORG_A, "activity-1", {siteId: "site-1"});
+      await seedAssignment(ORG_A, "activity-1", "worker-a", "site-1");
+      await seedSafetyLearning(ORG_A, "l1", {title: "Working at Height"});
+      await seedSafetyRequirement(ORG_A, "r1", {
+        requiredLearningIds: ["l1"],
+      });
+      await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+
+      const result = await getMeetingAttendeeLearningStatus.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+        })
+      );
+
+      expect(result.workers).toEqual([
+        {workerId: "worker-a", outstanding: ["Working at Height"]},
+      ]);
+    });
+
+  test("reports an empty outstanding list once the worker completes it",
+    async () => {
+      await seedActivity(ORG_A, "activity-1", {siteId: "site-1"});
+      await seedAssignment(ORG_A, "activity-1", "worker-a", "site-1");
+      await seedSafetyLearning(ORG_A, "l1");
+      await seedSafetyRequirement(ORG_A, "r1", {
+        requiredLearningIds: ["l1"],
+      });
+      await seedWorkerLearningRecord(ORG_A, "worker-a", "l1", "completed");
+      await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+
+      const result = await getMeetingAttendeeLearningStatus.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+        })
+      );
+
+      expect(result.workers).toEqual([
+        {workerId: "worker-a", outstanding: []},
+      ]);
+    });
+
+  test("lists the crew with nothing outstanding when nothing is needed " +
+    "today", async () => {
+    await seedWorker("worker-a", "site-1");
+    await seedActivity(ORG_A, "activity-1", {siteId: "site-1"});
+    await seedAssignment(ORG_A, "activity-1", "worker-a", "site-1");
+    await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+
+    const result = await getMeetingAttendeeLearningStatus.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+      })
+    );
+
+    expect(result.workers).toEqual([
+      {workerId: "worker-a", outstanding: []},
+    ]);
+  });
+
+  test("never includes a worker assigned to a DIFFERENT activity, not on " +
+    "this meeting", async () => {
+    await seedActivity(ORG_A, "activity-1", {siteId: "site-1"});
+    await seedActivity(ORG_A, "activity-2", {siteId: "site-1"});
+    await seedAssignment(ORG_A, "activity-1", "worker-a", "site-1");
+    await seedAssignment(ORG_A, "activity-2", "worker-b", "site-1");
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {requiredLearningIds: ["l1"]});
+    // The meeting only covers activity-1 — worker-b (activity-2) must not
+    // appear, even though they share the site.
+    await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+
+    const result = await getMeetingAttendeeLearningStatus.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+      })
+    );
+
+    expect(result.workers.map((w) => w.workerId)).toEqual(["worker-a"]);
+  });
+
+  test("excludes the foreman themself from the worker list even if " +
+    "self-assigned", async () => {
+    await seedActivity(ORG_A, "activity-1", {siteId: "site-1"});
+    await seedAssignment(ORG_A, "activity-1", "foreman-a", "site-1");
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {requiredLearningIds: ["l1"]});
+    await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+
+    const result = await getMeetingAttendeeLearningStatus.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+      })
+    );
+
+    expect(result.workers).toEqual([]);
+  });
+
+  test("a foreman cannot query a meeting they do not own", async () => {
+    await seedForeman("foreman-b");
+    await seedMeeting(ORG_A, "meeting-1");
+
+    await expect(
+      getMeetingAttendeeLearningStatus.run(
+        callRequest("foreman-b", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+        })
+      )
+    ).rejects.toThrow(/permission/);
+  });
+
+  test("a meeting id that only exists in another organization is refused",
+    async () => {
+      await seedSite(ORG_B, "site-b");
+      await seedMeeting(ORG_B, "meeting-1", {siteId: "site-b"});
+
+      await expect(
+        getMeetingAttendeeLearningStatus.run(
+          callRequest("foreman-a", {
+            organizationId: ORG_A,
+            meetingId: "meeting-1",
+          })
+        )
+      ).rejects.toThrow();
+    });
+
+  test("an unauthenticated caller is refused", async () => {
+    await seedMeeting(ORG_A, "meeting-1");
+
+    await expect(
+      getMeetingAttendeeLearningStatus.run(
+        callRequest(undefined, {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+        })
+      )
+    ).rejects.toThrow();
+  });
+});
+
+describe("requiredBeforeWork never changes attendance enforcement", () => {
+  test("pre-work-only (non-gating) learning does NOT block Present",
+    async () => {
+      await seedWorker("worker-a");
+      await seedActivity(ORG_A, "activity-1");
+      await seedSafetyLearning(ORG_A, "l1");
+      await seedSafetyRequirement(ORG_A, "r1", {
+        requiredLearningIds: ["l1"],
+        requiredBeforeWork: true,
+        gatesAttendance: false,
+      });
+      await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+
+      const result = await recordMeetingAttendance.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          workerId: "worker-a",
+          status: "present",
+        })
+      );
+
+      expect(result.status).toBe("present");
+    });
+
+  test("learning that is both pre-work and gating still blocks Present",
+    async () => {
+      await seedWorker("worker-a");
+      await seedActivity(ORG_A, "activity-1");
+      await seedSafetyLearning(ORG_A, "l1", {title: "Fall Protection"});
+      await seedSafetyRequirement(ORG_A, "r1", {
+        requiredLearningIds: ["l1"],
+        requiredBeforeWork: true,
+        gatesAttendance: true,
+      });
+      await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+
+      await expect(
+        recordMeetingAttendance.run(
+          callRequest("foreman-a", {
+            organizationId: ORG_A,
+            meetingId: "meeting-1",
+            workerId: "worker-a",
+            status: "present",
+          })
+        )
+      ).rejects.toThrow(/Fall Protection/);
+    });
+});
+
+describe("per-lesson learningSettings in meeting enforcement", () => {
+  const GATE = {gatesAttendance: true, requiredBeforeWork: false};
+  const PRE = {gatesAttendance: false, requiredBeforeWork: true};
+  const OFF = {gatesAttendance: false, requiredBeforeWork: false};
+
+  async function seedMixedRequirement() {
+    await seedActivity(ORG_A, "activity-1");
+    await seedSafetyLearning(ORG_A, "l1", {title: "Harness Inspection"});
+    await seedSafetyLearning(ORG_A, "l2", {title: "Ladder Safety"});
+    await seedSafetyLearning(ORG_A, "l3", {title: "Rescue Procedures"});
+    await seedSafetyRequirement(ORG_A, "height", {
+      requiredLearningIds: ["l1", "l2", "l3"],
+      // Would gate everything if used; the per-lesson settings must win.
+      gatesAttendance: true,
+      learningSettings: {l1: GATE, l2: PRE, l3: OFF},
+    });
+  }
+
+  test("Present is refused only for the gating lesson", async () => {
+    await seedWorker("worker-a");
+    await seedMixedRequirement();
+    await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+
+    await expect(
+      recordMeetingAttendance.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+          workerId: "worker-a",
+          status: "present",
+        })
+      )
+    ).rejects.toThrow(/: Harness Inspection\. If you have briefed them/);
+
+    await seedWorkerLearningRecord(ORG_A, "worker-a", "l1", "completed");
+    const result = await recordMeetingAttendance.run(
+      callRequest("foreman-a", {
+        organizationId: ORG_A,
+        meetingId: "meeting-1",
+        workerId: "worker-a",
+        status: "present",
+      })
+    );
+    // l2 (pre-work only) and l3 (neither) are still incomplete.
+    expect(result.status).toBe("present");
+  });
+
+  test("the Foreman's own start gate uses per-lesson settings too",
+    async () => {
+      await seedMixedRequirement();
+      await seedMeetingPoint(ORG_A, "point-1");
+
+      await expect(
+        createDailySafetyMeeting.run(
+          callRequest("foreman-a", {
+            organizationId: ORG_A,
+            projectId: "project-1",
+            siteId: "site-1",
+            activityIds: ["activity-1"],
+            meetingPointIds: ["point-1"],
+          })
+        )
+      ).rejects.toThrow(/: Harness Inspection$/);
+    });
+
+  test("crew readiness lists only the gating lesson as a blocker",
+    async () => {
+      await seedMixedRequirement();
+      await seedWorker("worker-a", "site-1");
+      await seedAssignment(ORG_A, "activity-1", "worker-a", "site-1");
+
+      const pre = await getSiteCrewReadiness.run(
+        callRequest("foreman-a", {organizationId: ORG_A, siteId: "site-1"})
+      );
+      expect(pre.workers).toEqual([
+        {workerId: "worker-a", outstanding: ["Harness Inspection"]},
+      ]);
+
+      await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+      const during = await getMeetingAttendeeLearningStatus.run(
+        callRequest("foreman-a", {
+          organizationId: ORG_A,
+          meetingId: "meeting-1",
+        })
+      );
+      expect(during.workers).toEqual([
+        {workerId: "worker-a", outstanding: ["Harness Inspection"]},
+      ]);
+    });
+});
+
+describe("getSiteCrewReadiness (pre-meeting)", () => {
+  test("reports every rostered worker, with only attendance-gating " +
+    "learning as outstanding", async () => {
+    await seedActivity(ORG_A, "activity-1");
+    await seedWorker("worker-a", "site-1");
+    await seedWorker("worker-b", "site-1");
+    await seedAssignment(ORG_A, "activity-1", "worker-a", "site-1");
+    await seedAssignment(ORG_A, "activity-1", "worker-b", "site-1");
+    await seedSafetyLearning(ORG_A, "gate", {title: "Site Induction"});
+    await seedSafetyLearning(ORG_A, "pre", {title: "Ladder Safety"});
+    await seedSafetyRequirement(ORG_A, "r-gate", {
+      requiredLearningIds: ["gate"],
+    });
+    await seedSafetyRequirement(ORG_A, "r-pre", {
+      requiredLearningIds: ["pre"],
+      requiredBeforeWork: true,
+      gatesAttendance: false,
+    });
+    await seedWorkerLearningRecord(ORG_A, "worker-b", "gate", "completed");
+
+    const result = await getSiteCrewReadiness.run(
+      callRequest("foreman-a", {organizationId: ORG_A, siteId: "site-1"})
+    );
+
+    expect(result.activities).toEqual([{id: "activity-1", name: "Roofing"}]);
+    expect(result.workers).toEqual([
+      {workerId: "worker-a", outstanding: ["Site Induction"]},
+      {workerId: "worker-b", outstanding: []},
+    ]);
+  });
+
+  test("returns every worker as ready when nothing gates attendance",
+    async () => {
+      await seedActivity(ORG_A, "activity-1");
+      await seedAssignment(ORG_A, "activity-1", "worker-a", "site-1");
+
+      const result = await getSiteCrewReadiness.run(
+        callRequest("foreman-a", {organizationId: ORG_A, siteId: "site-1"})
+      );
+
+      expect(result.workers).toEqual([{workerId: "worker-a", outstanding: []}]);
+    });
+
+  test("ignores inactive activities and activities at other sites",
+    async () => {
+      await seedSite(ORG_A, "site-2");
+      await seedActivity(ORG_A, "inactive", {status: "inactive"});
+      await seedActivity(ORG_A, "elsewhere", {siteId: "site-2"});
+      await seedAssignment(ORG_A, "inactive", "worker-a", "site-1");
+      await seedAssignment(ORG_A, "elsewhere", "worker-b", "site-2");
+
+      const result = await getSiteCrewReadiness.run(
+        callRequest("foreman-a", {organizationId: ORG_A, siteId: "site-1"})
+      );
+
+      expect(result.activities).toEqual([]);
+      expect(result.workers).toEqual([]);
+    });
+
+  test("excludes the foreman themself", async () => {
+    await seedActivity(ORG_A, "activity-1");
+    await seedAssignment(ORG_A, "activity-1", "foreman-a", "site-1");
+
+    const result = await getSiteCrewReadiness.run(
+      callRequest("foreman-a", {organizationId: ORG_A, siteId: "site-1"})
+    );
+
+    expect(result.workers).toEqual([]);
+  });
+
+  test("a foreman cannot query a site they are not assigned to",
+    async () => {
+      await seedSite(ORG_A, "site-2");
+
+      await expect(
+        getSiteCrewReadiness.run(
+          callRequest("foreman-a", {organizationId: ORG_A, siteId: "site-2"})
+        )
+      ).rejects.toThrow(/permission/);
+    });
+
+  test("a worker cannot call it", async () => {
+    await seedWorker("worker-a");
+
+    await expect(
+      getSiteCrewReadiness.run(
+        callRequest("worker-a", {organizationId: ORG_A, siteId: "site-1"})
+      )
+    ).rejects.toThrow(/permission/);
+  });
+
+  test("a foreman of another organization is refused", async () => {
+    await seedForeman("foreman-b", "site-1", {organizationId: ORG_B});
+
+    await expect(
+      getSiteCrewReadiness.run(
+        callRequest("foreman-b", {organizationId: ORG_A, siteId: "site-1"})
+      )
+    ).rejects.toThrow(/permission/);
+  });
+
+  test("does not change getMeetingAttendeeLearningStatus's existing " +
+    "empty-list result once a meeting exists", async () => {
+    await seedWorker("worker-a", "site-1");
+    await seedActivity(ORG_A, "activity-1");
+    await seedAssignment(ORG_A, "activity-1", "worker-a", "site-1");
+    await seedMeeting(ORG_A, "meeting-1", {activityIds: ["activity-1"]});
+
+    const result = await getMeetingAttendeeLearningStatus.run(
+      callRequest("foreman-a", {organizationId: ORG_A, meetingId: "meeting-1"})
+    );
+
+    // Every rostered worker is listed, ready or not.
+    expect(result.workers).toEqual([
+      {workerId: "worker-a", outstanding: []},
+    ]);
+  });
 });
 
 describe("addMeetingConcern", () => {
@@ -1078,5 +2287,154 @@ describe("removeMeetingEvidence", () => {
 
     const evidence = await getEvidence(ORG_A, "meeting-1", "evidence-1");
     expect(evidence).not.toBeNull();
+  });
+});
+
+describe("completeDailySafetyMeeting (safety learning gate)", () => {
+  async function readyMeeting(orgId, id, activityIds = ["activity-default"]) {
+    await seedMeetingPoint(orgId, "point-1");
+    await seedMeeting(orgId, id, {
+      activityIds,
+      meetingPointIds: ["point-1"],
+    });
+  }
+
+  test("completes normally when nothing is required of the foreman",
+    async () => {
+      await readyMeeting(ORG_A, "meeting-1");
+
+      const result = await completeDailySafetyMeeting.run(
+        callRequest("foreman-a", {organizationId: ORG_A, id: "meeting-1"})
+      );
+
+      expect(result.status).toBe("completed");
+    });
+
+  test("is refused when an organization-wide required item is not " +
+    "completed by the foreman", async () => {
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {requiredLearningIds: ["l1"]});
+    await readyMeeting(ORG_A, "meeting-1");
+
+    await expect(
+      completeDailySafetyMeeting.run(
+        callRequest("foreman-a", {organizationId: ORG_A, id: "meeting-1"})
+      )
+    ).rejects.toThrow(/must complete the following safety learning/);
+
+    const meeting = await getMeeting(ORG_A, "meeting-1");
+    expect(meeting.status).toBe("inProgress");
+  });
+
+  test("completes once the foreman has completed the organization-wide " +
+    "required item", async () => {
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {requiredLearningIds: ["l1"]});
+    await seedWorkerLearningRecord(ORG_A, "foreman-a", "l1", "completed");
+    await readyMeeting(ORG_A, "meeting-1");
+
+    const result = await completeDailySafetyMeeting.run(
+      callRequest("foreman-a", {organizationId: ORG_A, id: "meeting-1"})
+    );
+
+    expect(result.status).toBe("completed");
+  });
+
+  test("is refused when a site-scoped requirement for the meeting's own " +
+    "site is not completed", async () => {
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      siteId: "site-1",
+    });
+    await readyMeeting(ORG_A, "meeting-1");
+
+    await expect(
+      completeDailySafetyMeeting.run(
+        callRequest("foreman-a", {organizationId: ORG_A, id: "meeting-1"})
+      )
+    ).rejects.toThrow(/must complete the following safety learning/);
+  });
+
+  test("a site-scoped requirement for a DIFFERENT site does not block " +
+    "this meeting", async () => {
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      siteId: "site-2",
+    });
+    await readyMeeting(ORG_A, "meeting-1");
+
+    const result = await completeDailySafetyMeeting.run(
+      callRequest("foreman-a", {organizationId: ORG_A, id: "meeting-1"})
+    );
+
+    expect(result.status).toBe("completed");
+  });
+
+  test("is refused when an activity-scoped requirement for one of the " +
+    "meeting's own activities is not completed", async () => {
+    await seedActivity(ORG_A, "activity-1");
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      activityId: "activity-1",
+    });
+    await readyMeeting(ORG_A, "meeting-1", ["activity-1"]);
+
+    await expect(
+      completeDailySafetyMeeting.run(
+        callRequest("foreman-a", {organizationId: ORG_A, id: "meeting-1"})
+      )
+    ).rejects.toThrow(/must complete the following safety learning/);
+  });
+
+  test("an activity-scoped requirement for an activity NOT on this " +
+    "meeting does not block it", async () => {
+    await seedActivity(ORG_A, "activity-1");
+    await seedActivity(ORG_A, "activity-2");
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["l1"],
+      activityId: "activity-2",
+    });
+    // The meeting only covers activity-1 — activity-2's requirement must
+    // not leak into it.
+    await readyMeeting(ORG_A, "meeting-1", ["activity-1"]);
+
+    const result = await completeDailySafetyMeeting.run(
+      callRequest("foreman-a", {organizationId: ORG_A, id: "meeting-1"})
+    );
+
+    expect(result.status).toBe("completed");
+  });
+
+  test("an inProgress (not completed) worker_learning_record still blocks " +
+    "completion", async () => {
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {requiredLearningIds: ["l1"]});
+    await seedWorkerLearningRecord(ORG_A, "foreman-a", "l1", "inProgress");
+    await readyMeeting(ORG_A, "meeting-1");
+
+    await expect(
+      completeDailySafetyMeeting.run(
+        callRequest("foreman-a", {organizationId: ORG_A, id: "meeting-1"})
+      )
+    ).rejects.toThrow(/must complete the following safety learning/);
+  });
+
+  test("another foreman's own completion does not satisfy this foreman's " +
+    "requirement", async () => {
+    await seedForeman("foreman-b");
+    await seedSafetyLearning(ORG_A, "l1");
+    await seedSafetyRequirement(ORG_A, "r1", {requiredLearningIds: ["l1"]});
+    await seedWorkerLearningRecord(ORG_A, "foreman-b", "l1", "completed");
+    await readyMeeting(ORG_A, "meeting-1");
+
+    await expect(
+      completeDailySafetyMeeting.run(
+        callRequest("foreman-a", {organizationId: ORG_A, id: "meeting-1"})
+      )
+    ).rejects.toThrow(/must complete the following safety learning/);
   });
 });

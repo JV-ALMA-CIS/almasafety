@@ -1602,6 +1602,31 @@ describe("the Safety Requirement / Safety Learning foundation", () => {
     );
   });
 
+  // A foreman is deliberately NOT granted the siteManager carve-out above —
+  // this pins down the Safety Learning Compliance screen's own real
+  // authorization boundary (`SafetyComplianceRepository`, gated on
+  // `canManageOrgContent` client-side): even if a Foreman reached that
+  // screen's code path some other way, the server-side rule underneath it
+  // still refuses them, exactly like every other org member who isn't the
+  // record's own worker.
+  test("a foreman cannot read another worker's learning record within " +
+    "their own organization — the compliance screen's real boundary",
+  async () => {
+    await seed(async (db) => {
+      await db.doc(userPath("foreman-same-org")).set(
+        profile("foreman-same-org", "active")
+      );
+      await db
+        .doc(`users/foreman-same-org/memberships/${ORG_A}`)
+        .set(membership("foreman-same-org", ORG_A, {role: "foreman"}));
+    });
+    const db = actor("foreman-same-org", "foreman-same-org@example.com");
+
+    await assertFails(
+      db.doc(recordPath(ORG_A, "active-a_learning-1")).get()
+    );
+  });
+
   test("a site manager cannot read a worker's learning record in another " +
     "organization", async () => {
     const db = actor("approver-a", "approver-a@example.com");
@@ -1662,6 +1687,94 @@ describe("the Safety Requirement / Safety Learning foundation", () => {
       actor("active-a", "active-a@example.com")
         .doc(recordPath(ORG_A, "active-a_learning-1"))
         .delete()
+    );
+  });
+
+  // KNOWLEDGE CHECK QUESTIONS. Unlike the parent safety_learning document
+  // above (readable by any org member), this subcollection carries
+  // `correctOptionId` and is denied to EVERY client outright — the only
+  // path a worker ever sees question content through is
+  // `getKnowledgeCheckQuestions` (`worker_learning_callable.ts`), which
+  // strips `correctOptionId` server-side; the only path an admin sees the
+  // correct answer through is `listKnowledgeCheckQuestions`
+  // (`safety_learning_callable.ts`), also Admin-SDK-only. These tests pin
+  // down that a direct client read — by a worker, a siteManager, or even an
+  // Admin's own client SDK — never succeeds, regardless of who is asking.
+
+  function questionPath(organizationId, learningId, questionId) {
+    return `organizations/${organizationId}/safety_learning/${learningId}` +
+      `/knowledge_check_questions/${questionId}`;
+  }
+
+  test("no client can read a knowledge-check question directly, even an " +
+    "org member who can read the parent safety_learning document",
+  async () => {
+    await seed(async (db) => {
+      await db.doc(questionPath(ORG_A, "learning-1", "question-1")).set({
+        prompt: "What must you wear at height?",
+        options: [
+          {id: "a", text: "A harness"},
+          {id: "b", text: "Sunglasses"},
+        ],
+        correctOptionId: "a",
+        order: 0,
+      });
+    });
+
+    await assertFails(
+      actor("active-a", "active-a@example.com")
+        .doc(questionPath(ORG_A, "learning-1", "question-1"))
+        .get()
+    );
+  });
+
+  test("a siteManager (the worker_learning_records compliance carve-out " +
+    "role) still cannot read a question directly", async () => {
+    await seed(async (db) => {
+      await db.doc(questionPath(ORG_A, "learning-1", "question-1")).set({
+        prompt: "Q",
+        options: [{id: "a", text: "A"}, {id: "b", text: "B"}],
+        correctOptionId: "a",
+        order: 0,
+      });
+    });
+
+    await assertFails(
+      actor("approver-a", "approver-a@example.com")
+        .doc(questionPath(ORG_A, "learning-1", "question-1"))
+        .get()
+    );
+  });
+
+  test("even an Admin's own client SDK cannot read a question directly — " +
+    "the admin-facing view goes through listKnowledgeCheckQuestions, " +
+    "never a client Firestore read", async () => {
+    await seed(async (db) => {
+      await db.doc(questionPath(ORG_A, "learning-1", "question-1")).set({
+        prompt: "Q",
+        options: [{id: "a", text: "A"}, {id: "b", text: "B"}],
+        correctOptionId: "a",
+        order: 0,
+      });
+    });
+
+    await assertFails(
+      actor("sysadmin-a", "sysadmin-a@example.com")
+        .doc(questionPath(ORG_A, "learning-1", "question-1"))
+        .get()
+    );
+  });
+
+  test("no client can write a knowledge-check question directly", async () => {
+    await assertFails(
+      actor("sysadmin-a", "sysadmin-a@example.com")
+        .doc(questionPath(ORG_A, "learning-1", "question-1"))
+        .set({
+          prompt: "Forged",
+          options: [{id: "a", text: "A"}, {id: "b", text: "B"}],
+          correctOptionId: "a",
+          order: 0,
+        })
     );
   });
 });
@@ -1788,9 +1901,17 @@ describe("the Daily Safety Meeting foundation", () => {
   // PHASE 3 (authorization matrix): read is role-scoped, NOT a flat
   // any-org-member grant — Site Manager/Admin review every meeting
   // org-wide; a Foreman reviews only meetings THEY conducted
-  // (`foremanId == request.auth.uid`); a Worker has no read access to the
-  // meeting document itself (their own attendance record is a narrower,
-  // separate carve-out — see the `attendance` describe block below).
+  // (`foremanId == request.auth.uid`).
+  //
+  // DASHBOARD (Phase 2): a Worker may additionally read a meeting whose
+  // OWN `siteId` is in their own `siteIds` — see "a worker CAN read a
+  // meeting at their own site" below. Narrower than the Foreman/Site
+  // Manager grants (no write, and their own attendance record is still a
+  // separate, narrower carve-out — see the `attendance` describe block
+  // below); this only lets a Worker discover today's meeting at their own
+  // site, which was previously impossible (no read access to the parent
+  // document meant no way to learn the `meetingId` their own attendance
+  // record lives under).
 
   function meetingPath(organizationId, meetingId) {
     return `organizations/${organizationId}/daily_safety_meetings/` +
@@ -1871,7 +1992,7 @@ describe("the Daily Safety Meeting foundation", () => {
     await assertFails(db.doc(meetingPath(ORG_A, "meeting-1")).get());
   });
 
-  test("a worker cannot read the meeting document at all", async () => {
+  test("a worker CAN read a meeting at their own site", async () => {
     await seed(async (db) => {
       await db.doc(userPath("worker-a")).set(profile("worker-a", "active"));
       await db
@@ -1883,8 +2004,24 @@ describe("the Daily Safety Meeting foundation", () => {
     });
     const db = actor("worker-a", "worker-a@example.com");
 
-    await assertFails(db.doc(meetingPath(ORG_A, "meeting-1")).get());
+    await assertSucceeds(db.doc(meetingPath(ORG_A, "meeting-1")).get());
   });
+
+  test("a worker cannot read a meeting at a site they are not assigned to",
+    async () => {
+      await seed(async (db) => {
+        await db.doc(userPath("worker-b")).set(profile("worker-b", "active"));
+        await db
+          .doc(`users/worker-b/memberships/${ORG_A}`)
+          .set(membership("worker-b", ORG_A, {
+            role: "worker",
+            siteIds: ["site-2"],
+          }));
+      });
+      const db = actor("worker-b", "worker-b@example.com");
+
+      await assertFails(db.doc(meetingPath(ORG_A, "meeting-1")).get());
+    });
 
   test("a pending/suspended/rejected user reads no daily safety meeting",
     async () => {
@@ -2709,6 +2846,182 @@ describe("the Hazards foundation", () => {
   });
 });
 
+describe("the Incidents foundation", () => {
+  // DESIGN NOTE. Like `hazards`, every write is Admin-SDK-only via
+  // `incident_callable.ts`. UNLIKE hazards, reads are restricted: an
+  // incident can name an injured person, so only the reporter, a reviewer
+  // role (admin/siteManager/foreman) in the same organization, or the System
+  // Administrator may read one — not every org member.
+
+  function incidentPath(organizationId, incidentId) {
+    return `organizations/${organizationId}/incidents/${incidentId}`;
+  }
+
+  beforeEach(async () => {
+    await seed(async (db) => {
+      await db.doc(userPath("worker-a")).set(profile("worker-a", "active"));
+      await db
+        .doc(`users/worker-a/memberships/${ORG_A}`)
+        .set(membership("worker-a", ORG_A, {
+          role: "worker",
+          siteIds: ["site-1"],
+        }));
+      await db.doc(userPath("worker-b")).set(profile("worker-b", "active"));
+      await db
+        .doc(`users/worker-b/memberships/${ORG_A}`)
+        .set(membership("worker-b", ORG_A, {
+          role: "worker",
+          siteIds: ["site-1"],
+        }));
+      await db.doc(userPath("foreman-a")).set(profile("foreman-a", "active"));
+      await db
+        .doc(`users/foreman-a/memberships/${ORG_A}`)
+        .set(membership("foreman-a", ORG_A, {
+          role: "foreman",
+          siteIds: ["site-1"],
+        }));
+      await db.doc(incidentPath(ORG_A, "incident-1")).set({
+        organizationId: ORG_A,
+        projectId: "project-1",
+        siteId: "site-1",
+        reportedByUid: "worker-a",
+        type: "injury",
+        description: "Cut hand on sheet metal",
+        injuredPersonName: "John",
+        status: "reported",
+        createdAt: new Date(),
+      });
+    });
+  });
+
+  test("the reporter can read their own incident", async () => {
+    await assertSucceeds(
+      actor("worker-a", "worker-a@example.com")
+        .doc(incidentPath(ORG_A, "incident-1"))
+        .get()
+    );
+  });
+
+  test("the reporter's own-incidents query is admitted", async () => {
+    await assertSucceeds(
+      actor("worker-a", "worker-a@example.com")
+        .collection(`organizations/${ORG_A}/incidents`)
+        .where("reportedByUid", "==", "worker-a")
+        .get()
+    );
+  });
+
+  test("another worker in the same organization cannot read it",
+    async () => {
+      await assertFails(
+        actor("worker-b", "worker-b@example.com")
+          .doc(incidentPath(ORG_A, "incident-1"))
+          .get()
+      );
+      await assertFails(
+        actor("worker-b", "worker-b@example.com")
+          .collection(`organizations/${ORG_A}/incidents`)
+          .get()
+      );
+    });
+
+  test("a Foreman and a Site Manager can read every incident in their " +
+    "organization", async () => {
+    await assertSucceeds(
+      actor("foreman-a", "foreman-a@example.com")
+        .collection(`organizations/${ORG_A}/incidents`)
+        .get()
+    );
+    await assertSucceeds(
+      actor("approver-a", "approver-a@example.com")
+        .collection(`organizations/${ORG_A}/incidents`)
+        .get()
+    );
+  });
+
+  test("a reviewer cannot read another organization's incidents",
+    async () => {
+      await assertFails(
+        actor("approver-a", "approver-a@example.com")
+          .collection(`organizations/${ORG_B}/incidents`)
+          .get()
+      );
+    });
+
+  test("the System Administrator can read it", async () => {
+    await assertSucceeds(
+      actor("sysadmin-a", "sysadmin-a@example.com")
+        .doc(incidentPath(ORG_A, "incident-1"))
+        .get()
+    );
+  });
+
+  test("no client can create, update or delete an incident directly",
+    async () => {
+      await assertFails(
+        actor("worker-a", "worker-a@example.com")
+          .doc(incidentPath(ORG_A, "incident-2"))
+          .set({organizationId: ORG_A, reportedByUid: "worker-a"})
+      );
+      await assertFails(
+        actor("approver-a", "approver-a@example.com")
+          .doc(incidentPath(ORG_A, "incident-1"))
+          .update({status: "closed"})
+      );
+      await assertFails(
+        actor("sysadmin-a", "sysadmin-a@example.com")
+          .doc(incidentPath(ORG_A, "incident-1"))
+          .delete()
+      );
+    });
+});
+
+describe("the Inspections foundation", () => {
+  beforeEach(async () => {
+    await seed(async (db) => {
+      for (const [uid, role] of [["worker-a", "worker"],
+        ["foreman-a", "foreman"]]) {
+        await db.doc(userPath(uid)).set(profile(uid, "active"));
+        await db.doc(`users/${uid}/memberships/${ORG_A}`)
+          .set(membership(uid, ORG_A, {role, siteIds: ["site-1"]}));
+      }
+      await db.doc(`organizations/${ORG_A}/inspections/i1`).set({
+        organizationId: ORG_A, siteId: "site-1", status: "submitted",
+      });
+      await db.doc(`organizations/${ORG_A}/inspection_templates/t1`).set({
+        organizationId: ORG_A, name: "Daily", status: "active",
+      });
+    });
+  });
+
+  test("Foremen and Site Managers read inspections and templates",
+    async () => {
+      for (const [uid, email] of [["foreman-a", "foreman-a@example.com"],
+        ["approver-a", "approver-a@example.com"]]) {
+        await assertSucceeds(actor(uid, email)
+          .collection(`organizations/${ORG_A}/inspections`).get());
+        await assertSucceeds(actor(uid, email)
+          .collection(`organizations/${ORG_A}/inspection_templates`).get());
+      }
+    });
+
+  test("a Worker reads neither", async () => {
+    const db = actor("worker-a", "worker-a@example.com");
+    await assertFails(db.doc(`organizations/${ORG_A}/inspections/i1`).get());
+    await assertFails(
+      db.doc(`organizations/${ORG_A}/inspection_templates/t1`).get()
+    );
+  });
+
+  test("no client writes either collection directly", async () => {
+    const db = actor("approver-a", "approver-a@example.com");
+    await assertFails(db.doc(`organizations/${ORG_A}/inspections/i1`)
+      .update({status: "signedOff"}));
+    await assertFails(db.doc(`organizations/${ORG_A}/inspection_templates/t2`)
+      .set({organizationId: ORG_A, name: "Forged"}));
+  });
+});
+
 describe("the Corrective Actions foundation", () => {
   // DESIGN NOTE. Flat under the organization (a sibling of
   // `daily_safety_meetings`, not a subcollection of one) — see
@@ -3438,4 +3751,74 @@ describe("the multi-organization membership model", () => {
       expect(snapshot.exists).toBe(false);
     });
   });
+});
+
+describe("the Daily Pre-Start Check foundation", () => {
+  // A pre-start check is a worker's own daily safety record: readable by
+  // that worker, by a Foreman whose own sites include the check's site, by
+  // any Site Manager of the organization and by an Admin — never by other
+  // workers or by a Foreman of another site. Every write is Admin-SDK-only
+  // via `submitPreStartCheck`.
+
+  const CHECK = `organizations/${ORG_A}/pre_start_checks/active-a_2026-10-06`;
+
+  beforeEach(async () => {
+    await seed(async (db) => {
+      await db.doc(CHECK).set({
+        organizationId: ORG_A,
+        workerUid: "active-a",
+        siteId: "site-1",
+        date: "2026-10-06",
+        outcome: "stop",
+        answers: [],
+      });
+      await db.doc(userPath("worker-other")).set(
+        profile("worker-other", "active")
+      );
+      await db.doc(`users/worker-other/memberships/${ORG_A}`)
+        .set(membership("worker-other", ORG_A, {siteIds: ["site-1"]}));
+      await db.doc(userPath("foreman-site-1")).set(
+        profile("foreman-site-1", "active")
+      );
+      await db.doc(`users/foreman-site-1/memberships/${ORG_A}`).set(
+        membership("foreman-site-1", ORG_A,
+          {role: "foreman", siteIds: ["site-1"]})
+      );
+      await db.doc(userPath("foreman-site-2")).set(
+        profile("foreman-site-2", "active")
+      );
+      await db.doc(`users/foreman-site-2/memberships/${ORG_A}`).set(
+        membership("foreman-site-2", ORG_A,
+          {role: "foreman", siteIds: ["site-2"]})
+      );
+    });
+  });
+
+  test("the worker, their site's Foreman, a Site Manager and an Admin can " +
+    "read it", async () => {
+    for (const uid of [
+      "active-a", "foreman-site-1", "approver-a", "sysadmin-a",
+    ]) {
+      await assertSucceeds(actor(uid, `${uid}@example.com`).doc(CHECK).get());
+    }
+  });
+
+  test("another worker, another site's Foreman and another organization " +
+    "cannot read it", async () => {
+    for (const uid of ["worker-other", "foreman-site-2", "active-b"]) {
+      await assertFails(actor(uid, `${uid}@example.com`).doc(CHECK).get());
+    }
+  });
+
+  test("no client can write one — not even the worker it belongs to",
+    async () => {
+      const own = actor("active-a", "active-a@example.com");
+      await assertFails(own.doc(CHECK).update({outcome: "go"}));
+      await assertFails(own.doc(CHECK).delete());
+      await assertFails(own
+        .doc(`organizations/${ORG_A}/pre_start_checks/active-a_2026-10-07`)
+        .set({workerUid: "active-a", siteId: "site-1", outcome: "go"}));
+      await assertFails(actor("sysadmin-a", "sysadmin-a@example.com")
+        .doc(CHECK).update({outcome: "go"}));
+    });
 });

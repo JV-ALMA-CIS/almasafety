@@ -93,7 +93,7 @@ function requireString(request: CallableRequest, field: string): string {
 async function requireActivityInOrganization(
   organizationId: string,
   activityId: string
-): Promise<{ siteId: string }> {
+): Promise<{ siteId: string; projectId: string }> {
   const snapshot = await getFirestore()
     .doc(`organizations/${organizationId}/activities/${activityId}`)
     .get();
@@ -114,7 +114,14 @@ async function requireActivityInOrganization(
       "That activity has no site."
     );
   }
-  return {siteId};
+  const projectId = activity.projectId;
+  if (typeof projectId !== "string" || !projectId) {
+    throw new HttpsError(
+      "failed-precondition",
+      "That activity has no project."
+    );
+  }
+  return {siteId, projectId};
 }
 
 /**
@@ -233,7 +240,7 @@ export const assignWorkerToActivity = onCall(async (request) => {
     );
   }
 
-  const {siteId} = await requireActivityInOrganization(
+  const {siteId, projectId} = await requireActivityInOrganization(
     organizationId,
     activityId
   );
@@ -252,12 +259,13 @@ export const assignWorkerToActivity = onCall(async (request) => {
     uid,
     organizationId,
     siteId,
+    projectId,
     activityId,
     assignedAt: FieldValue.serverTimestamp(),
     assignedBy: actor.uid,
   });
 
-  return {uid, organizationId, activityId, siteId};
+  return {uid, organizationId, activityId, siteId, projectId};
 });
 
 /**

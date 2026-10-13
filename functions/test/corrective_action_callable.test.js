@@ -28,6 +28,7 @@ const ORG_B = "org-beta";
 let app;
 let db;
 let updateCorrectiveActionStatus;
+let submitCorrectiveActionForReview;
 
 beforeAll(() => {
   process.env.GCLOUD_PROJECT = PROJECT_ID;
@@ -40,7 +41,7 @@ beforeAll(() => {
 
   // Imported after the emulator env vars are set, so the Admin SDK the
   // callable module resolves via getFirestore() talks to the emulator.
-  ({updateCorrectiveActionStatus} =
+  ({updateCorrectiveActionStatus, submitCorrectiveActionForReview} =
     require("../lib/corrective_action_callable"));
 });
 
@@ -129,10 +130,46 @@ async function callUpdateStatus(uid, actionId, status) {
   );
 }
 
+async function callSubmitForReview(uid, actionId) {
+  return submitCorrectiveActionForReview.run(
+    callRequest(uid, {organizationId: ORG_A, actionId})
+  );
+}
+
 async function getAction(id) {
   const snapshot = await db.doc(
     `organizations/${ORG_A}/corrective_actions/${id}`
   ).get();
+  return snapshot.data();
+}
+
+async function seedHazard(id, overrides = {}) {
+  const now = Timestamp.now();
+  await db.doc(`organizations/${ORG_A}/hazards/${id}`).set({
+    organizationId: ORG_A,
+    projectId: "project-1",
+    siteId: "site-1",
+    reportedByUid: "worker-1",
+    category: "electrical",
+    description: "Exposed wiring",
+    location: null,
+    photoUrl: null,
+    status: "correctiveActionCreated",
+    correctiveActionId: null,
+    acknowledgedBy: null,
+    acknowledgedAt: null,
+    closedBy: null,
+    closedAt: null,
+    createdAt: now,
+    updatedAt: now,
+    createdBy: "worker-1",
+    updatedBy: "worker-1",
+    ...overrides,
+  });
+}
+
+async function getHazard(id) {
+  const snapshot = await db.doc(`organizations/${ORG_A}/hazards/${id}`).get();
   return snapshot.data();
 }
 
@@ -154,28 +191,56 @@ describe("updateCorrectiveActionStatus", () => {
     expect(action.completedAt).toBeNull();
   });
 
-  test("2. open -> completed succeeds and sets completedAt", async () => {
-    await seedAction("action-2", {status: "open"});
+  test("2. submittedForReview -> completed succeeds and sets completedAt",
+    async () => {
+      await seedAction("action-2", {status: "submittedForReview"});
 
-    const result =
-      await callUpdateStatus("reviewer-a", "action-2", "completed");
+      const result =
+        await callUpdateStatus("reviewer-a", "action-2", "completed");
 
-    expect(result.status).toBe("completed");
-    const action = await getAction("action-2");
-    expect(action.status).toBe("completed");
-    expect(action.completedAt).not.toBeNull();
+      expect(result.status).toBe("completed");
+      const action = await getAction("action-2");
+      expect(action.status).toBe("completed");
+      expect(action.completedAt).not.toBeNull();
+    });
+
+  test("3. open -> completed is rejected: completion must go through " +
+    "submittedForReview first", async () => {
+    await seedAction("action-3", {status: "open"});
+
+    await expect(
+      callUpdateStatus("reviewer-a", "action-3", "completed")
+    ).rejects.toThrow(/submitted for review/);
+
+    const action = await getAction("action-3");
+    expect(action.status).toBe("open");
+    expect(action.completedAt).toBeNull();
   });
 
-  test("3. inProgress -> completed succeeds and sets completedAt", async () => {
-    await seedAction("action-3", {status: "inProgress"});
+  test("3b. inProgress -> completed is rejected for the same reason",
+    async () => {
+      await seedAction("action-3b", {status: "inProgress"});
+
+      await expect(
+        callUpdateStatus("reviewer-a", "action-3b", "completed")
+      ).rejects.toThrow(/submitted for review/);
+
+      const action = await getAction("action-3b");
+      expect(action.status).toBe("inProgress");
+    });
+
+  test("3c. a reviewer may send a submittedForReview action back to " +
+    "inProgress instead of completing it — this IS the rejection path",
+  async () => {
+    await seedAction("action-3c", {status: "submittedForReview"});
 
     const result =
-      await callUpdateStatus("reviewer-a", "action-3", "completed");
+      await callUpdateStatus("reviewer-a", "action-3c", "inProgress");
 
-    expect(result.status).toBe("completed");
-    const action = await getAction("action-3");
-    expect(action.status).toBe("completed");
-    expect(action.completedAt).not.toBeNull();
+    expect(result.status).toBe("inProgress");
+    const action = await getAction("action-3c");
+    expect(action.status).toBe("inProgress");
+    expect(action.completedAt).toBeNull();
   });
 
   test("4. completed -> open is rejected", async () => {
@@ -275,5 +340,259 @@ describe("updateCorrectiveActionStatus", () => {
 
     const action = await getAction("action-9");
     expect(action.status).toBe("open");
+  });
+
+  describe("completing a hazard-originated action closes the linked hazard",
+    () => {
+      test("completing the action atomically closes its hazard", async () => {
+        await seedHazard("hazard-1", {correctiveActionId: "action-10"});
+        await seedAction("action-10", {
+          status: "submittedForReview",
+          hazardId: "hazard-1",
+          meetingId: null,
+        });
+
+        await callUpdateStatus("reviewer-a", "action-10", "completed");
+
+        const action = await getAction("action-10");
+        expect(action.status).toBe("completed");
+        const hazard = await getHazard("hazard-1");
+        expect(hazard.status).toBe("closed");
+        expect(hazard.closedAt).not.toBeNull();
+        expect(hazard.closedBy).toBe("reviewer-a");
+      });
+
+      test("completing a meeting-originated action never touches a hazard " +
+        "(hazardId is null)", async () => {
+        await seedAction("action-11", {status: "submittedForReview"});
+
+        await callUpdateStatus("reviewer-a", "action-11", "completed");
+
+        const action = await getAction("action-11");
+        expect(action.status).toBe("completed");
+      });
+
+      test("does not fail the action's own completion if the hazard is " +
+        "already closed for some other reason", async () => {
+        await seedHazard("hazard-2", {
+          status: "closed",
+          correctiveActionId: "action-12",
+        });
+        await seedAction("action-12", {
+          status: "submittedForReview",
+          hazardId: "hazard-2",
+          meetingId: null,
+        });
+
+        const result =
+          await callUpdateStatus("reviewer-a", "action-12", "completed");
+
+        expect(result.status).toBe("completed");
+        const action = await getAction("action-12");
+        expect(action.status).toBe("completed");
+      });
+    });
+});
+
+describe("submitCorrectiveActionForReview", () => {
+  const folder = `organizations/${ORG_A}/corrective_actions/`;
+  const photo = (actionId) => ({
+    storagePath: `${folder}${actionId}/after.jpg`,
+    downloadUrl: "https://example.com/after.jpg",
+  });
+
+  function submitWith(actionId, data) {
+    return submitCorrectiveActionForReview.run(
+      callRequest("worker-1", {organizationId: ORG_A, actionId, ...data})
+    );
+  }
+
+  test("photo evidence is required when the action asks for a photo",
+    async () => {
+      await seedAction("ev-1", {
+        evidenceRequired: true,
+        evidenceKinds: ["photo"],
+      });
+
+      await expect(submitWith("ev-1", {completionNote: "Done"}))
+        .rejects.toThrow(/at least one photo/);
+
+      await submitWith("ev-1", {evidencePhotos: [photo("ev-1")]});
+      const action = await getAction("ev-1");
+      expect(action.status).toBe("submittedForReview");
+      expect(action.evidencePhotos).toEqual([photo("ev-1")]);
+      expect(action.submittedBy).toBe("worker-1");
+      expect(action.submittedAt).not.toBeNull();
+    });
+
+  test("a written confirmation is required when the action asks for one",
+    async () => {
+      await seedAction("ev-2", {
+        evidenceRequired: true,
+        evidenceKinds: ["confirmation"],
+      });
+
+      await expect(submitWith("ev-2", {completionNote: "   "}))
+        .rejects.toThrow(/written confirmation/);
+
+      await submitWith("ev-2", {
+        completionNote: "Guard rail fitted and inspected",
+      });
+      expect((await getAction("ev-2")).completionNote)
+        .toBe("Guard rail fitted and inspected");
+    });
+
+  test("an older action with only evidenceRequired: true needs a photo",
+    async () => {
+      await seedAction("ev-3", {evidenceRequired: true});
+      await expect(submitWith("ev-3", {}))
+        .rejects.toThrow(/at least one photo/);
+    });
+
+  test("a photo outside this action's own folder is refused", async () => {
+    await seedAction("ev-4", {evidenceKinds: ["photo"]});
+    await expect(
+      submitWith("ev-4", {evidencePhotos: [photo("someone-elses-action")]})
+    ).rejects.toThrow(/own folder/);
+  });
+
+  test("no evidence is needed when none was required", async () => {
+    await seedAction("ev-5");
+    await submitWith("ev-5", {});
+    expect((await getAction("ev-5")).status).toBe("submittedForReview");
+  });
+
+  test("sending submitted work back records the reason, and resubmitting " +
+    "clears it", async () => {
+    await seedAction("ev-6", {status: "submittedForReview"});
+    await seedReviewer("reviewer-a");
+
+    await updateCorrectiveActionStatus.run(
+      callRequest("reviewer-a", {
+        organizationId: ORG_A,
+        actionId: "ev-6",
+        status: "inProgress",
+        reviewFeedback: "Photo is blurry — please retake",
+      })
+    );
+    let action = await getAction("ev-6");
+    expect(action.status).toBe("inProgress");
+    expect(action.reviewFeedback).toBe("Photo is blurry — please retake");
+
+    await submitWith("ev-6", {});
+    action = await getAction("ev-6");
+    expect(action.reviewFeedback).toBeNull();
+  });
+
+  test("a reviewer cannot approve work assigned to themselves", async () => {
+    await seedAction("ev-8", {
+      status: "submittedForReview",
+      assignedTo: "reviewer-a",
+    });
+    await seedReviewer("reviewer-a");
+    await expect(callUpdateStatus("reviewer-a", "ev-8", "completed"))
+      .rejects.toThrow(/another reviewer/);
+    expect((await getAction("ev-8")).status).toBe("submittedForReview");
+  });
+
+  test("completing records who verified it", async () => {
+    await seedAction("ev-7", {status: "submittedForReview"});
+    await seedReviewer("reviewer-a");
+    await callUpdateStatus("reviewer-a", "ev-7", "completed");
+    const action = await getAction("ev-7");
+    expect(action.completedBy).toBe("reviewer-a");
+    expect(action.completedByName).toBe("Test User");
+  });
+
+  test("the assignee may submit their own open work for review",
+    async () => {
+      await seedAction("action-20", {
+        status: "open",
+        assignedTo: "worker-1",
+      });
+
+      const result =
+        await callSubmitForReview("worker-1", "action-20");
+
+      expect(result.status).toBe("submittedForReview");
+      const action = await getAction("action-20");
+      expect(action.status).toBe("submittedForReview");
+    });
+
+  test("the assignee may submit their own inProgress work for review",
+    async () => {
+      await seedAction("action-21", {
+        status: "inProgress",
+        assignedTo: "worker-1",
+      });
+
+      await callSubmitForReview("worker-1", "action-21");
+
+      const action = await getAction("action-21");
+      expect(action.status).toBe("submittedForReview");
+    });
+
+  test("a reviewer role (not the assignee) is refused — this is an " +
+    "assignee-only callable", async () => {
+    await seedAction("action-22", {
+      status: "open",
+      assignedTo: "worker-1",
+    });
+
+    await expect(
+      callSubmitForReview("reviewer-a", "action-22")
+    ).rejects.toThrow();
+
+    const action = await getAction("action-22");
+    expect(action.status).toBe("open");
+  });
+
+  test("someone other than the assignee is refused", async () => {
+    await seedAction("action-23", {
+      status: "open",
+      assignedTo: "worker-1",
+    });
+
+    await expect(
+      callSubmitForReview("worker-2", "action-23")
+    ).rejects.toThrow();
+
+    const action = await getAction("action-23");
+    expect(action.status).toBe("open");
+  });
+
+  test("cannot resubmit work already submittedForReview", async () => {
+    await seedAction("action-24", {
+      status: "submittedForReview",
+      assignedTo: "worker-1",
+    });
+
+    await expect(
+      callSubmitForReview("worker-1", "action-24")
+    ).rejects.toThrow(/open or in progress/);
+  });
+
+  test("cannot submit already-completed work", async () => {
+    await seedAction("action-25", {
+      status: "completed",
+      assignedTo: "worker-1",
+      completedAt: Timestamp.now(),
+    });
+
+    await expect(
+      callSubmitForReview("worker-1", "action-25")
+    ).rejects.toThrow(/open or in progress/);
+  });
+
+  test("cannot submit out of overdue directly — a reviewer must move it " +
+    "back to open/inProgress first", async () => {
+    await seedAction("action-26", {
+      status: "overdue",
+      assignedTo: "worker-1",
+    });
+
+    await expect(
+      callSubmitForReview("worker-1", "action-26")
+    ).rejects.toThrow(/open or in progress/);
   });
 });

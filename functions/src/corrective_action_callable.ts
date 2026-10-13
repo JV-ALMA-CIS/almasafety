@@ -20,14 +20,21 @@
  * A corrective action is created by the meeting's own foreman, FROM an
  * in-progress meeting (optionally naming one of that meeting's own
  * concerns), naming who it is assigned to and when it is due. Status then
- * moves through `open` -> `inProgress` -> `completed` (or `overdue`,
- * settable in place of `open`/`inProgress` by an authorized updater — there
- * is no scheduled function that flips it automatically; see
- * `CorrectiveActionStatus`'s doc comment in the Flutter source) exclusively
- * through `updateCorrectiveActionStatus`, restricted to the same reviewer
- * roles that already review pending accounts. `completed` is TERMINAL: once
- * reached, no further status update of any kind is accepted — see that
- * callable's own doc comment.
+ * moves through `open` -> `inProgress` -> `submittedForReview` ->
+ * `completed` (or `overdue`, settable in place of `open`/`inProgress` by an
+ * authorized updater — there is no scheduled function that flips it
+ * automatically; see `CorrectiveActionStatus`'s doc comment in the Flutter
+ * source). The assignee moves `open`/`inProgress` to `submittedForReview`
+ * themselves, through `submitCorrectiveActionForReview` — "I've done the
+ * work." Every OTHER transition, including `submittedForReview` ->
+ * `completed` — "a reviewer verified that claim" — goes exclusively through
+ * `updateCorrectiveActionStatus`, restricted to the same reviewer roles that
+ * already review pending accounts; `completed` is only reachable FROM
+ * `submittedForReview`, never directly from `open`/`inProgress`. `completed`
+ * is TERMINAL: once reached, no further status update of any kind is
+ * accepted — see that callable's own doc comment. Completing a
+ * hazard-originated action also atomically closes its linked hazard — see
+ * `updateCorrectiveActionStatus`'s own doc comment.
  *
  * WHAT AUTHORIZES CREATION
  *
@@ -222,6 +229,91 @@ async function requireActiveOrganizationMember(
 }
 
 /**
+ * What kinds of evidence completing a corrective action can require: a
+ * photo of the finished work, and/or a written confirmation (e.g. "guard
+ * rail fitted and inspected"). Chosen by whoever creates the action.
+ */
+const EVIDENCE_KINDS = ["photo", "confirmation"] as const;
+type EvidenceKind = (typeof EVIDENCE_KINDS)[number];
+
+/** The most photos one submission may carry. */
+const MAX_EVIDENCE_PHOTOS = 5;
+
+/**
+ * Reads what evidence a new corrective action requires: `evidenceKinds`
+ * (a subset of [EVIDENCE_KINDS]) and optional `evidenceInstructions`.
+ * An older client that sends only `evidenceRequired: true` gets
+ * `["photo"]`, matching what that flag always meant on screen.
+ *
+ * @param {CallableRequest} request the incoming callable request.
+ * @return {{evidenceRequired: boolean, evidenceKinds: EvidenceKind[],
+ * evidenceInstructions: (string|null)}} the fields to store.
+ */
+function readEvidenceSpec(request: CallableRequest): {
+  evidenceRequired: boolean;
+  evidenceKinds: EvidenceKind[];
+  evidenceInstructions: string | null;
+} {
+  const data = request.data ?? {};
+  let kinds: EvidenceKind[] = [];
+  const raw: unknown = data.evidenceKinds;
+  if (raw !== undefined && raw !== null) {
+    if (
+      !Array.isArray(raw) ||
+      raw.some((k) => !(EVIDENCE_KINDS as readonly unknown[]).includes(k))
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "evidenceKinds must be a list of: " + EVIDENCE_KINDS.join(", ")
+      );
+    }
+    kinds = [...new Set(raw as EvidenceKind[])];
+  }
+  if (kinds.length === 0 && data.evidenceRequired === true) kinds = ["photo"];
+  const rawInstructions: unknown = data.evidenceInstructions;
+  const instructions =
+    typeof rawInstructions === "string" && rawInstructions.trim() ?
+      rawInstructions.trim().slice(0, 500) :
+      null;
+  return {
+    evidenceRequired: kinds.length > 0,
+    evidenceKinds: kinds,
+    evidenceInstructions: kinds.length > 0 ? instructions : null,
+  };
+}
+
+/**
+ * The evidence kinds a STORED action requires — its `evidenceKinds`, or
+ * `["photo"]` for an action created before kinds existed with only
+ * `evidenceRequired: true`.
+ *
+ * @param {FirebaseFirestore.DocumentData} action the stored action.
+ * @return {string[]} the required kinds.
+ */
+function requiredEvidenceKinds(
+  action: FirebaseFirestore.DocumentData
+): string[] {
+  if (Array.isArray(action.evidenceKinds) && action.evidenceKinds.length) {
+    return action.evidenceKinds as string[];
+  }
+  return action.evidenceRequired === true ? ["photo"] : [];
+}
+
+/**
+ * A person's display name from their own profile, or null when it has
+ * none — stored on the action so every screen (including a worker's, who
+ * cannot list the organization's people) can show a name, never a uid.
+ *
+ * @param {string} uid the person's uid.
+ * @return {Promise<string|null>} their name, or null.
+ */
+async function displayNameOf(uid: string): Promise<string | null> {
+  const snapshot = await getFirestore().doc(`users/${uid}`).get();
+  const name: unknown = snapshot.data()?.name;
+  return typeof name === "string" && name.trim() ? name.trim() : null;
+}
+
+/**
  * Authorizes the caller as an active reviewer-role user
  * (`canReviewPendingAccounts`) scoped to [organizationId] — the same
  * "authorized supervisors/management" role set `approval_callable.ts`'s
@@ -277,6 +369,7 @@ export async function requireOrganizationScopedReviewer(
 const CORRECTIVE_ACTION_STATUSES = [
   "open",
   "inProgress",
+  "submittedForReview",
   "completed",
   "overdue",
 ] as const;
@@ -374,8 +467,7 @@ export async function createCorrectiveActionForHazard(
   const description = requireString(request, "description");
   const assignedTo = requireString(request, "assignedTo");
   const dueDate = requireDate(request, "dueDate");
-  const evidenceRequiredValue = (request.data ?? {}).evidenceRequired;
-  const evidenceRequired = evidenceRequiredValue === true;
+  const evidence = readEvidenceSpec(request);
 
   const callerId = request.auth?.uid;
   if (!callerId) throw denied();
@@ -420,13 +512,20 @@ export async function createCorrectiveActionForHazard(
     meetingId: null,
     concernId: null,
     hazardId,
+    incidentId: null,
     title,
     description,
     assignedTo,
     assignedBy: callerId,
+    assignedToName: await displayNameOf(assignedTo),
+    assignedByName: await displayNameOf(callerId),
     dueDate,
     status: "open",
-    evidenceRequired,
+    ...evidence,
+    completionNote: null,
+    evidencePhotos: [],
+    submittedAt: null,
+    reviewFeedback: null,
     createdAt: now,
     updatedAt: now,
     completedAt: null,
@@ -443,11 +542,149 @@ export async function createCorrectiveActionForHazard(
 }
 
 /**
+ * Authorizes the caller to INVESTIGATE an incident — start the
+ * investigation, raise its corrective actions, close it: the System
+ * Administrator, or an `admin`/`siteManager` of [organizationId]. A Foreman
+ * is deliberately not included: on site the Site Manager investigates and
+ * the Foreman implements the fixes (they submit evidence on the corrective
+ * actions assigned to them). Exported for `incident_callable.ts`.
+ *
+ * @param {CallableRequest} request the incoming callable request.
+ * @param {string} organizationId the incident's organization.
+ * @return {Promise<string>} the caller's uid.
+ */
+export async function requireIncidentInvestigator(
+  request: CallableRequest,
+  organizationId: string
+): Promise<string> {
+  const uid = await requireOrganizationScopedReviewer(request, organizationId);
+  const profile = (await getFirestore().doc(`users/${uid}`).get()).data();
+  if (profile?.platformRole === "admin") return uid;
+  const membership = (
+    await getFirestore().doc(`users/${uid}/memberships/${organizationId}`).get()
+  ).data();
+  if (membership?.role === "admin" || membership?.role === "siteManager") {
+    return uid;
+  }
+  throw denied();
+}
+
+/**
+ * Creates a corrective action from an incident under investigation — the
+ * incident counterpart of [createCorrectiveActionForHazard], exported so
+ * `incident_callable.ts`'s `linkIncidentCorrectiveAction` and
+ * `createCorrectiveAction`'s incident branch share exactly one
+ * implementation.
+ *
+ * Same reviewer authorization and assignee rules as the hazard path. Unlike
+ * a hazard, an incident may produce SEVERAL corrective actions (an
+ * investigation often finds more than one fix), so the incident's
+ * `correctiveActionIds` array is appended to rather than a single id being
+ * set once. The incident must be `underInvestigation` — a reviewer first
+ * classifies its severity via `startIncidentInvestigation`, and a `closed`
+ * incident takes no new actions. Completing one of these actions does NOT
+ * close the incident (contrast the hazard path): closure is a separate,
+ * deliberate sign-off with a recorded root cause — see `closeIncident`.
+ *
+ * @param {CallableRequest} request the incoming callable request.
+ * @return {Promise<{id: string, organizationId: string, incidentId: string}>}
+ * the new action's id.
+ */
+export async function createCorrectiveActionForIncident(
+  request: CallableRequest
+): Promise<{id: string; organizationId: string; incidentId: string}> {
+  const organizationId = requireString(request, "organizationId");
+  const incidentId = requireString(request, "incidentId");
+  const title = requireString(request, "title");
+  const description = requireString(request, "description");
+  const assignedTo = requireString(request, "assignedTo");
+  const dueDate = requireDate(request, "dueDate");
+  const evidence = readEvidenceSpec(request);
+
+  const callerId = request.auth?.uid;
+  if (!callerId) throw denied();
+
+  if (assignedTo === callerId) {
+    throw new HttpsError(
+      "failed-precondition",
+      "You cannot assign a corrective action to yourself."
+    );
+  }
+
+  await requireIncidentInvestigator(request, organizationId);
+  await requireActiveOrganizationMember(organizationId, assignedTo);
+
+  const db = getFirestore();
+  const incidentRef = db.doc(
+    `organizations/${organizationId}/incidents/${incidentId}`
+  );
+  const incidentSnapshot = await incidentRef.get();
+  const incident = incidentSnapshot.data();
+  if (!incidentSnapshot.exists || !incident) {
+    throw new HttpsError("not-found", "That incident no longer exists.");
+  }
+  if (incident.organizationId !== organizationId) {
+    throw new HttpsError(
+      "failed-precondition",
+      "That incident does not belong to the given organization."
+    );
+  }
+  if (incident.status !== "underInvestigation") {
+    throw new HttpsError(
+      "failed-precondition",
+      "Corrective actions can only be raised while an incident is under " +
+        "investigation."
+    );
+  }
+
+  const now = FieldValue.serverTimestamp();
+  const ref = db
+    .collection(`organizations/${organizationId}/corrective_actions`)
+    .doc();
+
+  const batch = db.batch();
+  batch.set(ref, {
+    organizationId,
+    projectId: incident.projectId,
+    siteId: incident.siteId,
+    meetingId: null,
+    concernId: null,
+    hazardId: null,
+    incidentId,
+    title,
+    description,
+    assignedTo,
+    assignedBy: callerId,
+    assignedToName: await displayNameOf(assignedTo),
+    assignedByName: await displayNameOf(callerId),
+    dueDate,
+    status: "open",
+    ...evidence,
+    completionNote: null,
+    evidencePhotos: [],
+    submittedAt: null,
+    reviewFeedback: null,
+    createdAt: now,
+    updatedAt: now,
+    completedAt: null,
+  });
+  batch.update(incidentRef, {
+    correctiveActionIds: FieldValue.arrayUnion(ref.id),
+    updatedAt: now,
+    updatedBy: callerId,
+  });
+  await batch.commit();
+
+  return {id: ref.id, organizationId, incidentId};
+}
+
+/**
  * Creates a corrective action either from an in-progress meeting (optionally
  * naming one of that meeting's own concerns) OR from a hazard, at
  * `organizations/{orgId}/corrective_actions/{id}`. Exactly one of
- * `meetingId` or `hazardId` must be given — a corrective action names at
- * most one origin, never both (see FIRESTORE_DATA_MODEL.md §7).
+ * `meetingId`, `hazardId` or `incidentId` must be given — a corrective
+ * action names exactly one origin (see FIRESTORE_DATA_MODEL.md §7). The
+ * incident branch delegates to `createCorrectiveActionForIncident`.
  *
  * MEETING-ORIGINATED (`meetingId` given): only the meeting's own foreman may
  * call this (see `requireInProgressOwnMeeting`). `organizationId`,
@@ -472,12 +709,26 @@ export const createCorrectiveAction = onCall(async (request) => {
   const hazardIdValue = data.hazardId;
   const hasHazardId =
     typeof hazardIdValue === "string" && hazardIdValue.trim() !== "";
+  const incidentIdValue = data.incidentId;
+  const hasIncidentId =
+    typeof incidentIdValue === "string" && incidentIdValue.trim() !== "";
 
-  if (hasMeetingId === hasHazardId) {
+  if ([hasMeetingId, hasHazardId, hasIncidentId].filter(Boolean).length !== 1) {
     throw new HttpsError(
       "invalid-argument",
-      "Exactly one of meetingId or hazardId is required."
+      "Exactly one of meetingId, hazardId or incidentId is required."
     );
+  }
+
+  if (hasIncidentId) {
+    const concernIdValue = data.concernId;
+    if (typeof concernIdValue === "string" && concernIdValue.trim() !== "") {
+      throw new HttpsError(
+        "invalid-argument",
+        "concernId cannot be given together with incidentId."
+      );
+    }
+    return createCorrectiveActionForIncident(request);
   }
 
   if (hasHazardId) {
@@ -503,8 +754,7 @@ export const createCorrectiveAction = onCall(async (request) => {
   const hasConcernId =
     typeof concernIdValue === "string" && concernIdValue.trim() !== "";
   const concernId = hasConcernId ? (concernIdValue as string).trim() : null;
-  const evidenceRequiredValue = data.evidenceRequired;
-  const evidenceRequired = evidenceRequiredValue === true;
+  const evidence = readEvidenceSpec(request);
 
   const foremanId = request.auth?.uid;
   if (!foremanId) throw denied();
@@ -538,13 +788,20 @@ export const createCorrectiveAction = onCall(async (request) => {
     meetingId,
     concernId,
     hazardId: null,
+    incidentId: null,
     title,
     description,
     assignedTo,
     assignedBy: foremanId,
+    assignedToName: await displayNameOf(assignedTo),
+    assignedByName: await displayNameOf(foremanId),
     dueDate,
     status: "open",
-    evidenceRequired,
+    ...evidence,
+    completionNote: null,
+    evidencePhotos: [],
+    submittedAt: null,
+    reviewFeedback: null,
     createdAt: now,
     updatedAt: now,
     completedAt: null,
@@ -557,11 +814,22 @@ export const createCorrectiveAction = onCall(async (request) => {
  * Transitions an existing corrective action's `status`. Only an authorized
  * supervisor/manager role (see `requireOrganizationScopedReviewer`) within
  * the action's own organization may call this — never the meeting's own
- * foreman by virtue of having created it, and never the assignee by virtue
- * of being assigned it. There is no delete callable and no path back to
- * removing a corrective action once created — see this file's header note
- * on why completed meetings and their corrective actions stay historically
- * auditable.
+ * foreman by virtue of having created it, and never the assignee, who
+ * reports their own work done through `submitCorrectiveActionForReview`
+ * instead (see that callable). There is no delete callable and no path back
+ * to removing a corrective action once created — see this file's header
+ * note on why completed meetings and their corrective actions stay
+ * historically auditable.
+ *
+ * `completed` is only reachable FROM `submittedForReview` — a reviewer
+ * cannot skip straight from `open`/`inProgress` to `completed` without the
+ * assignee having reported the work done first. This is the
+ * "assignee-reports, reviewer-verifies" split: `submittedForReview` is the
+ * assignee's claim, `completed` is the reviewer's verification of that
+ * claim. A reviewer who disagrees moves a `submittedForReview` action back
+ * to `open`/`inProgress` (an ordinary, allowed transition) rather than
+ * completing it — there is no separate "reject" status; sending it back to
+ * an earlier status IS the rejection.
  *
  * `completed` is a TERMINAL state, mirroring `resolveSafetyAlert` in
  * `safety_alert_callable.ts`: once an action's stored `status` is
@@ -572,15 +840,28 @@ export const createCorrectiveAction = onCall(async (request) => {
  * let an authorized reviewer move a completed action back to `open`/
  * `inProgress` and silently erase its original completion timestamp — this
  * callable no longer allows that under any argument.
+ *
+ * HAZARD-ORIGINATED COMPLETION: when the action being completed carries a
+ * `hazardId`, the linked hazard is atomically closed in the SAME batched
+ * write as the action's own `completed` update — `status: "closed"`,
+ * `closedAt`/`closedBy` set to this reviewer. This is the promised
+ * counterpart to `closeHazard`'s own refusal message ("close it by
+ * completing the corrective action instead"): before this, nothing actually
+ * performed that closure, leaving such a hazard permanently stuck at
+ * `correctiveActionCreated`. The hazard is only touched when it is not
+ * already `closed` (defensive; should be unreachable in practice, since a
+ * hazard's `correctiveActionId` is set exactly once and `closeHazard`
+ * itself refuses a hazard with a linked action).
  */
 export const updateCorrectiveActionStatus = onCall(async (request) => {
   const organizationId = requireString(request, "organizationId");
   const actionId = requireString(request, "actionId");
   const status = requireCorrectiveActionStatus(request);
 
-  await requireOrganizationScopedReviewer(request, organizationId);
+  const uid = await requireOrganizationScopedReviewer(request, organizationId);
 
-  const ref = getFirestore().doc(
+  const db = getFirestore();
+  const ref = db.doc(
     `organizations/${organizationId}/corrective_actions/${actionId}`
   );
   const snapshot = await ref.get();
@@ -603,14 +884,191 @@ export const updateCorrectiveActionStatus = onCall(async (request) => {
       "That corrective action has already been completed."
     );
   }
+  if (status === "completed" && action.assignedTo === uid) {
+    throw new HttpsError(
+      "failed-precondition",
+      "You can't approve work assigned to you — another reviewer must " +
+        "check it."
+    );
+  }
+  if (status === "completed" && action.status !== "submittedForReview") {
+    throw new HttpsError(
+      "failed-precondition",
+      "That corrective action must be submitted for review before it can " +
+        "be marked completed."
+    );
+  }
+
+  const now = FieldValue.serverTimestamp();
+
+  // Sending submitted work back (to open/inProgress) is how a reviewer
+  // rejects it; the optional reason is shown to the assignee, and cleared
+  // again when they resubmit.
+  const rawFeedback: unknown = (request.data ?? {}).reviewFeedback;
+  const sendingBack =
+    action.status === "submittedForReview" &&
+    (status === "open" || status === "inProgress");
+  const feedbackFields = sendingBack ?
+    {
+      reviewFeedback:
+          typeof rawFeedback === "string" && rawFeedback.trim() ?
+            rawFeedback.trim().slice(0, 1000) :
+            null,
+    } :
+    {};
+  const completionFields =
+    status === "completed" ?
+      {
+        completedAt: now,
+        completedBy: uid,
+        completedByName: await displayNameOf(uid),
+      } :
+      {};
+
+  if (status === "completed" && action.hazardId) {
+    const hazardRef = db.doc(
+      `organizations/${organizationId}/hazards/${action.hazardId}`
+    );
+    const hazardSnapshot = await hazardRef.get();
+    const hazard = hazardSnapshot.data();
+
+    const batch = db.batch();
+    batch.update(ref, {
+      status,
+      updatedAt: now,
+      ...completionFields,
+    });
+    if (hazardSnapshot.exists && hazard && hazard.status !== "closed") {
+      batch.update(hazardRef, {
+        status: "closed",
+        closedAt: now,
+        closedBy: uid,
+        updatedAt: now,
+        updatedBy: uid,
+      });
+    }
+    await batch.commit();
+    return {id: actionId, organizationId, status};
+  }
 
   await ref.update({
     status,
-    updatedAt: FieldValue.serverTimestamp(),
-    ...(status === "completed" ?
-      {completedAt: FieldValue.serverTimestamp()} :
-      {}),
+    updatedAt: now,
+    ...completionFields,
+    ...feedbackFields,
   });
 
   return {id: actionId, organizationId, status};
+});
+
+/**
+ * Lets the corrective action's own `assignedTo` submit their work for
+ * review, moving `open`/`inProgress` -> `submittedForReview`. This is the
+ * "assignee reports done" half of the completion split (see
+ * `updateCorrectiveActionStatus`'s own doc comment for the reviewer half):
+ * a reviewer can only complete an action once the assignee has claimed it
+ * here first, distinguishing "the person who did the work says it's done"
+ * from "an authorized reviewer verified that claim."
+ *
+ * Only the caller named in `assignedTo` may call this — NOT a reviewer
+ * (reviewers act through `updateCorrectiveActionStatus`), and not anyone
+ * else. Refuses from `submittedForReview` or `completed` (already
+ * submitted/verified; resubmitting is a no-op refusal, not silently
+ * accepted) and from `overdue` (a reviewer must first move it back to
+ * `open`/`inProgress` — `overdue` is a reviewer-set status, not one the
+ * assignee can submit out of directly, mirroring how `overdue` itself is
+ * never assignee-settable).
+ */
+export const submitCorrectiveActionForReview = onCall(async (request) => {
+  const organizationId = requireString(request, "organizationId");
+  const actionId = requireString(request, "actionId");
+
+  const uid = request.auth?.uid;
+  if (!uid) throw denied();
+
+  const ref = getFirestore().doc(
+    `organizations/${organizationId}/corrective_actions/${actionId}`
+  );
+  const snapshot = await ref.get();
+  const action = snapshot.data();
+  if (!snapshot.exists || !action) {
+    throw new HttpsError(
+      "not-found",
+      "That corrective action no longer exists."
+    );
+  }
+  if (action.organizationId !== organizationId) {
+    throw new HttpsError(
+      "failed-precondition",
+      "That corrective action does not belong to the given organization."
+    );
+  }
+  if (action.assignedTo !== uid) throw denied();
+  if (action.status !== "open" && action.status !== "inProgress") {
+    throw new HttpsError(
+      "failed-precondition",
+      "Only work that is open or in progress can be submitted for review."
+    );
+  }
+
+  // The assignee's evidence: what they did (always allowed), and photos
+  // already uploaded under this action's own Storage folder.
+  const data = request.data ?? {};
+  const rawNote: unknown = data.completionNote;
+  const completionNote =
+    typeof rawNote === "string" && rawNote.trim() ?
+      rawNote.trim().slice(0, 2000) :
+      null;
+  const rawPhotos: unknown = data.evidencePhotos ?? [];
+  if (!Array.isArray(rawPhotos) || rawPhotos.length > MAX_EVIDENCE_PHOTOS) {
+    throw new HttpsError(
+      "invalid-argument",
+      `evidencePhotos must be a list of at most ${MAX_EVIDENCE_PHOTOS}.`
+    );
+  }
+  const folder = `organizations/${organizationId}/corrective_actions/` +
+    `${actionId}/`;
+  const evidencePhotos = rawPhotos.map((photo) => {
+    const storagePath: unknown = photo?.storagePath;
+    const downloadUrl: unknown = photo?.downloadUrl;
+    if (
+      typeof storagePath !== "string" ||
+      !storagePath.startsWith(folder) ||
+      typeof downloadUrl !== "string" ||
+      !downloadUrl.trim()
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Each evidence photo must be uploaded to this action's own folder."
+      );
+    }
+    return {storagePath, downloadUrl};
+  });
+
+  const required = requiredEvidenceKinds(action);
+  if (required.includes("photo") && evidencePhotos.length === 0) {
+    throw new HttpsError(
+      "failed-precondition",
+      "This action needs at least one photo as evidence."
+    );
+  }
+  if (required.includes("confirmation") && !completionNote) {
+    throw new HttpsError(
+      "failed-precondition",
+      "This action needs a written confirmation of what was done."
+    );
+  }
+
+  const now = FieldValue.serverTimestamp();
+  await ref.update({
+    status: "submittedForReview",
+    completionNote,
+    evidencePhotos,
+    submittedAt: now,
+    submittedBy: uid,
+    reviewFeedback: null,
+    updatedAt: now,
+  });
+
+  return {id: actionId, organizationId, status: "submittedForReview"};
 });

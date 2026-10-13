@@ -24,11 +24,15 @@
  * `requireOrganizationScopedReviewer`, IMPORTED from
  * `corrective_action_callable.ts` rather than duplicated: the caller's own
  * stored profile must be `active` and hold a role for which
- * `canReviewPendingAccounts` is true (`admin`/`siteManager` — see
+ * `canReviewPendingAccounts` is true (`admin`/`siteManager`/`foreman` — see
  * `account_approval.ts`), scoped to the target organization for every role
- * except `admin`. A `foreman` or `worker` can create, acknowledge or
- * resolve NOTHING here, matching the task's "authorized users" boundary
- * exactly.
+ * except `admin`.
+ *
+ * A `foreman` is on the ground with the crew, so they may raise, acknowledge
+ * and resolve alerts — but ONLY at a site in their own membership `siteIds`
+ * (`requireForemanSiteScope`). A Site Manager acts across the whole
+ * organization, an Admin across every organization. A `worker` can create,
+ * acknowledge or resolve nothing here.
  *
  * A worker/foreman still READS every alert for their own organization/site
  * — see `firestore.rules`'s org-member-or-Admin read grant on this
@@ -172,6 +176,47 @@ async function requireOrganizationAlert(
 }
 
 /**
+ * The opaque permission-denied error every authorization failure in this
+ * file returns — duplicated per-file per this codebase's convention.
+ *
+ * @return {HttpsError} the permission-denied error.
+ */
+function denied(): HttpsError {
+  return new HttpsError(
+    "permission-denied",
+    "You do not have permission to do that."
+  );
+}
+
+/**
+ * Refuses a FOREMAN acting on an alert at [siteId] unless that site is one
+ * of their own membership sites. Every other authorized role passes
+ * unchanged: a Site Manager is organization-wide and an Admin (who holds no
+ * membership) is platform-wide.
+ *
+ * @param {string} uid the already-authorized caller.
+ * @param {string} organizationId the organization the action targets.
+ * @param {string} siteId the alert's site.
+ * @return {Promise<void>} resolves when the caller may act at [siteId].
+ */
+async function requireForemanSiteScope(
+  uid: string,
+  organizationId: string,
+  siteId: string
+): Promise<void> {
+  const membership = (
+    await getFirestore()
+      .doc(`users/${uid}/memberships/${organizationId}`)
+      .get()
+  ).data();
+  if (membership?.role !== "foreman") return;
+  const siteIds: unknown = membership.siteIds;
+  if (!Array.isArray(siteIds) || !siteIds.includes(siteId)) {
+    throw denied();
+  }
+}
+
+/**
  * Creates a safety alert at `organizations/{orgId}/safety_alerts/{id}`.
  *
  * Only an authorized reviewer role may call this (see
@@ -192,6 +237,7 @@ export const createSafetyAlert = onCall(async (request) => {
 
   const uid = await requireOrganizationScopedReviewer(request, organizationId);
   await requireSiteMatches(organizationId, projectId, siteId);
+  await requireForemanSiteScope(uid, organizationId, siteId);
 
   const ref = getFirestore()
     .collection(`organizations/${organizationId}/safety_alerts`)
@@ -229,6 +275,7 @@ export const acknowledgeSafetyAlert = onCall(async (request) => {
 
   const uid = await requireOrganizationScopedReviewer(request, organizationId);
   const {ref, data} = await requireOrganizationAlert(organizationId, alertId);
+  await requireForemanSiteScope(uid, organizationId, data.siteId as string);
 
   if (data.status !== "active") {
     throw new HttpsError(
@@ -258,6 +305,7 @@ export const resolveSafetyAlert = onCall(async (request) => {
 
   const uid = await requireOrganizationScopedReviewer(request, organizationId);
   const {ref, data} = await requireOrganizationAlert(organizationId, alertId);
+  await requireForemanSiteScope(uid, organizationId, data.siteId as string);
 
   if (data.status === "resolved") {
     throw new HttpsError(

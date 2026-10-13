@@ -35,6 +35,19 @@ import {
 import type {CallableRequest} from "firebase-functions/v2/https";
 
 /**
+ * The single refusal returned for every authorization failure in this
+ * file. Mirrors `denied()` in `worker_learning_callable.ts`.
+ *
+ * @return {HttpsError} the opaque permission-denied error.
+ */
+function denied(): HttpsError {
+  return new HttpsError(
+    "permission-denied",
+    "You do not have permission to do that."
+  );
+}
+
+/**
  * Reads and validates a required non-empty string argument. Mirrors
  * `requireString` in `organization_callable.ts`.
  *
@@ -183,4 +196,113 @@ export const updateActivity = onCall(async (request) => {
   });
 
   return {id, organizationId};
+});
+
+/** One activity row, as returned by `getSiteActivities`. */
+interface SiteActivityRow {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  siteId: string;
+  name: string;
+  code: string;
+  description: string | null;
+  status: string;
+}
+
+/**
+ * Returns every activity at [siteId] within [organizationId] — the
+ * `ActivityRepository.watchBySite` equivalent for a caller whose
+ * `firestore.rules` grant does not cover LIST queries on `activities` at
+ * all: `allow list` there only ever grants `admin`/`siteManager`, since
+ * "rules are not filters" means a rule branch that depends on
+ * `resource.data` (the Foreman/Worker site-scope check) can never be
+ * proven safe for a collection query and would otherwise poison that list
+ * query for EVERY caller, including one who'd trivially satisfy
+ * `isAdmin()` — see `firestore.rules`'s own `activities/{activityId}`
+ * comment for the full explanation. `allow get` (a single document read)
+ * has no such limitation and still grants a Foreman/Worker their own
+ * site-scoped activities — this callable is simply the Admin-SDK
+ * equivalent of "run that same site-scoped query," re-deriving and
+ * enforcing the caller's own site scope server-side (never trusting a
+ * client-supplied claim) instead of asking Firestore's rules engine to
+ * prove something it structurally cannot prove for a query shape.
+ *
+ * `admin`/`siteManager` may request any site in the organization — both
+ * already see every site elsewhere in this codebase. A `foreman`/`worker`
+ * may request ONLY a site that is in their own membership `siteIds`,
+ * checked fresh here; anyone else's site is refused outright (this
+ * endpoint answers "the activities at one site," not "activities across
+ * many," so there is no batch-and-silently-omit shape to mirror
+ * `getCrewLearningRecords`'s — a caller asking about a site outside their
+ * own scope has nothing valid to receive at all).
+ */
+export const getSiteActivities = onCall(async (request) => {
+  const organizationId = requireString(request, "organizationId");
+  const siteId = requireString(request, "siteId");
+
+  const uid = request.auth?.uid;
+  if (!uid) throw denied();
+
+  const db = getFirestore();
+  const profileSnapshot = await db.doc(`users/${uid}`).get();
+  const profile = profileSnapshot.data();
+  if (!profileSnapshot.exists || !profile) throw denied();
+  if (profile.accountStatus !== "active") throw denied();
+
+  if (profile.platformRole !== "admin") {
+    const membershipSnapshot = await db
+      .doc(`users/${uid}/memberships/${organizationId}`)
+      .get();
+    const membership = membershipSnapshot.data();
+    if (!membershipSnapshot.exists || !membership) throw denied();
+    if (membership.status !== "active") throw denied();
+
+    if (membership.role !== "siteManager") {
+      if (membership.role !== "foreman" && membership.role !== "worker") {
+        throw denied();
+      }
+      const siteIds: unknown = membership.siteIds;
+      const ownSiteIds = Array.isArray(siteIds) ?
+        siteIds.filter((id): id is string => typeof id === "string") :
+        [];
+      if (!ownSiteIds.includes(siteId)) throw denied();
+    }
+  }
+
+  const snapshot = await db
+    .collection(`organizations/${organizationId}/activities`)
+    .where("siteId", "==", siteId)
+    .get();
+
+  const activities: SiteActivityRow[] = [];
+  for (const doc of snapshot.docs) {
+    const data = doc.data();
+    const projectId = data.projectId;
+    const name = data.name;
+    const code = data.code;
+    const status = data.status;
+    if (
+      typeof projectId !== "string" ||
+      typeof name !== "string" ||
+      typeof code !== "string" ||
+      typeof status !== "string"
+    ) {
+      continue;
+    }
+    activities.push({
+      id: doc.id,
+      organizationId,
+      projectId,
+      siteId,
+      name,
+      code,
+      description: typeof data.description === "string" ?
+        data.description :
+        null,
+      status,
+    });
+  }
+
+  return {organizationId, siteId, activities};
 });

@@ -26,21 +26,14 @@
  *
  * WHAT AUTHORIZES CREATION
  *
- * `requireWorkerAtSite`, IMPORTED from `daily_safety_meeting_callable.ts`
- * rather than duplicated: the caller's own stored profile must be `active`,
- * belong to the named `organizationId`, and have the named `siteId` in their
- * own `siteIds` (granted only through `assignWorkerToSite`). This is
- * deliberately UNRESTRICTED by role — a worker, foreman, supervisor or any
- * other active member with site access can report a hazard, matching
- * PROJECT_CONTEXT.md §24's "workers should have a simple REPORT A HAZARD"
- * requirement and the "appropriate for contractors/external workers"
- * requirement: a contracted worker's site access is granted through the same
- * `assignWorkerToSite` mechanism as everyone else, carrying no special
- * privilege of its own. `organizationId` and `siteId` are validated against
- * the CALLER'S OWN profile, never accepted as someone else's; `projectId` is
- * always looked up server-side from the site document, never accepted from
- * the request. `reportedByUid` is always the caller's own uid, never a
- * request argument.
+ * `requireReporterAtSite` (below, also used by `createIncident`): a Site
+ * Manager/Admin may report at any site of their own organization (they
+ * oversee every site and are rarely "assigned" to one); a Foreman/Worker —
+ * including a contracted worker, whose site access is granted through the
+ * same `assignWorkerToSite` mechanism — only at a site in their own
+ * `siteIds`; the System Administrator anywhere. `projectId` is always looked
+ * up server-side from the site document, never accepted from the request.
+ * `reportedByUid` is always the caller's own uid, never a request argument.
  *
  * WHAT AUTHORIZES ACKNOWLEDGE / CLOSE
  *
@@ -77,9 +70,10 @@
  *   `closed` is terminal.
  * - Link a second corrective action to a hazard that already has one, or to
  *   one that is already closed.
- * - Edit the original report content (`category`/`description`/`location`/
- *   `photoUrl`) after creation — there is no update callable for those
- *   fields; only status-transition fields are ever written after creation.
+ * - Edit the original report content (`kind`/`category`/`description`/
+ *   `location`/`photoUrl`) after creation — there is no update callable
+ *   for those fields; only status-transition fields are ever written after
+ *   creation.
  * - Delete a hazard — there is no delete callable, and `firestore.rules`
  *   denies every client write including delete. A hazard, like a corrective
  *   action, is a permanent part of the safety record once created.
@@ -93,7 +87,6 @@ import {
   createCorrectiveActionForHazard,
   requireOrganizationScopedReviewer,
 } from "./corrective_action_callable";
-import {requireWorkerAtSite} from "./daily_safety_meeting_callable";
 
 /**
  * The single refusal returned for every authorization failure. Mirrors
@@ -172,6 +165,31 @@ function requireCategory(request: CallableRequest): HazardCategoryValue {
   return value as HazardCategoryValue;
 }
 
+const HAZARD_KINDS = ["hazard", "nearMiss"] as const;
+type HazardKindValue = (typeof HAZARD_KINDS)[number];
+
+/**
+ * Validates and returns the optional `kind` argument: whether this report is
+ * a hazard (something COULD happen) or a near-miss (something NEARLY
+ * happened). Defaults to `hazard` when absent, so an older app build that
+ * never sends `kind` keeps working unchanged. A near-miss is a kind of
+ * report, not a category — a near-miss at height is still `workingAtHeight`.
+ *
+ * @param {CallableRequest} request the incoming callable request.
+ * @return {HazardKindValue} the validated kind.
+ */
+function requireKind(request: CallableRequest): HazardKindValue {
+  const value = optionalString(request, "kind");
+  if (value === null) return "hazard";
+  if (!(HAZARD_KINDS as readonly string[]).includes(value)) {
+    throw new HttpsError(
+      "invalid-argument",
+      "kind must be one of: " + HAZARD_KINDS.join(", ")
+    );
+  }
+  return value as HazardKindValue;
+}
+
 /**
  * Loads the target hazard and confirms it belongs to [organizationId] —
  * re-fetched fresh, never trusted from the request payload. Mirrors
@@ -209,18 +227,31 @@ async function requireOrganizationHazard(
 }
 
 /**
- * Loads the caller's own active profile, confirming it belongs to
- * [organizationId]. Mirrors `requireActiveForeman`'s profile checks in
- * `daily_safety_meeting_callable.ts`, without the foreman-role restriction —
- * any active org member may report a hazard.
+ * Confirms the caller may file a report (hazard, near-miss or incident) at
+ * [siteId] within [organizationId], returning their uid. Shared by
+ * `createHazard` and `incident_callable.ts`'s `createIncident`.
+ *
+ * - The System Administrator (`platformRole == "admin"`) may report at any
+ *   site of any organization.
+ * - An org-wide role (`admin`/`siteManager` membership) may report at any
+ *   site of their organization — they oversee every site, and are rarely
+ *   "assigned" to one.
+ * - Everyone else (`foreman`/`worker`) only at a site in their own
+ *   `siteIds`.
+ *
+ * The site's existence within the organization is checked separately by
+ * `requireSiteProjectId`. Every refusal is the same opaque
+ * `permission-denied`.
  *
  * @param {CallableRequest} request the incoming callable request.
- * @param {string} organizationId the organization the caller must belong to.
+ * @param {string} organizationId the organization the report belongs to.
+ * @param {string} siteId the site the report is filed against.
  * @return {Promise<string>} the caller's own uid.
  */
-async function requireActiveOrganizationCaller(
+export async function requireReporterAtSite(
   request: CallableRequest,
-  organizationId: string
+  organizationId: string,
+  siteId: string
 ): Promise<string> {
   const uid = request.auth?.uid;
   if (!uid) throw denied();
@@ -229,10 +260,8 @@ async function requireActiveOrganizationCaller(
   const profile = snapshot.data();
   if (!snapshot.exists || !profile) throw denied();
   if (profile.accountStatus !== "active") throw denied();
+  if (profile.platformRole === "admin") return uid;
 
-  // Organization membership lives on the caller's own membership document
-  // for this organization, not a scalar profile field — a caller may hold
-  // more than one membership.
   const membershipSnapshot = await getFirestore()
     .doc(`users/${uid}/memberships/${organizationId}`)
     .get();
@@ -240,6 +269,11 @@ async function requireActiveOrganizationCaller(
   if (!membershipSnapshot.exists || !membership) throw denied();
   if (membership.status !== "active") throw denied();
 
+  if (membership.role === "admin" || membership.role === "siteManager") {
+    return uid;
+  }
+  const siteIds: unknown = membership.siteIds;
+  if (!Array.isArray(siteIds) || !siteIds.includes(siteId)) throw denied();
   return uid;
 }
 
@@ -276,10 +310,9 @@ async function requireSiteProjectId(
 /**
  * Reports a hazard at `organizations/{orgId}/hazards/{id}`.
  *
- * Any active member of `organizationId` with `siteId` in their own
- * `siteIds` may call this (see `requireWorkerAtSite`) — deliberately
- * unrestricted by role, so a worker, foreman, supervisor or contracted
- * worker can all report. `reportedByUid` is always the caller's own uid.
+ * Authorized by `requireReporterAtSite`: a Site Manager/Admin at any site
+ * of their organization, anyone else at a site in their own `siteIds`.
+ * `reportedByUid` is always the caller's own uid.
  * `projectId` is always looked up server-side from the site document.
  *
  * `hazardId` is accepted as an argument (unlike most create callables in
@@ -294,15 +327,16 @@ export const createHazard = onCall(async (request) => {
   const siteId = requireString(request, "siteId");
   const hazardId = requireString(request, "hazardId");
   const category = requireCategory(request);
+  const kind = requireKind(request);
   const description = requireString(request, "description");
   const location = optionalString(request, "location");
   const photoUrl = optionalString(request, "photoUrl");
 
-  const reporterId = await requireActiveOrganizationCaller(
+  const reporterId = await requireReporterAtSite(
     request,
-    organizationId
+    organizationId,
+    siteId
   );
-  await requireWorkerAtSite(organizationId, siteId, reporterId);
   const projectId = await requireSiteProjectId(organizationId, siteId);
 
   const ref = getFirestore().doc(
@@ -322,6 +356,7 @@ export const createHazard = onCall(async (request) => {
     projectId,
     siteId,
     reportedByUid: reporterId,
+    kind,
     category,
     description,
     location,
