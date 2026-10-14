@@ -5,6 +5,7 @@ import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
+import 'package:jva_safety/core/widgets/accent_card.dart';
 import 'package:jva_safety/core/services/firestore_service.dart';
 import 'package:jva_safety/core/services/session_controller.dart';
 import 'package:jva_safety/features/authentication/domain/account_status.dart';
@@ -114,6 +115,7 @@ void main() {
     String status = 'reported',
     String? severity,
     String description = 'Cut hand on sheet metal',
+    bool reportingDone = false,
   }) async {
     await firestore.doc('organizations/alpha/incidents/$id').set({
       'organizationId': 'alpha',
@@ -127,6 +129,17 @@ void main() {
       'severity': severity,
       'correctiveActionIds': <String>[],
       'createdAt': Timestamp.now(),
+      if (reportingDone) ...{
+        'reportingLevel': 'firstAid',
+        'reportingSteps': [
+          {
+            'id': 'notifyCor',
+            'label': 'Tell the COR',
+            'dueAt': Timestamp.fromDate(DateTime(2026, 10, 9, 8, 30)),
+            'doneAt': Timestamp.fromDate(DateTime(2026, 10, 9, 9)),
+          },
+        ],
+      },
     });
   }
 
@@ -222,7 +235,12 @@ void main() {
   ) async {
     useTallSurface(tester);
     final service = _FakeIncidentService();
-    await seedIncident('a', status: 'underInvestigation', severity: 'minor');
+    await seedIncident(
+      'a',
+      status: 'underInvestigation',
+      severity: 'minor',
+      reportingDone: true,
+    );
 
     await tester.pumpWidget(
       wrap(role: AppRole.siteManager, uid: 'mgr', service: service),
@@ -367,6 +385,11 @@ void main() {
         find.widgetWithText(TextFormField, 'What happened?'),
         'Excavator hit the boundary wall',
       );
+      await tester.scrollUntilVisible(
+        find.text('Submit Incident'),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
       await tester.tap(find.text('Submit Incident'));
       await tester.pumpAndSettle();
 
@@ -391,6 +414,11 @@ void main() {
       await tester.enterText(
         find.widgetWithText(TextFormField, 'Name'),
         'John',
+      );
+      await tester.scrollUntilVisible(
+        find.text('Submit Incident'),
+        300,
+        scrollable: find.byType(Scrollable).first,
       );
       await tester.tap(find.text('Submit Incident'));
       await tester.pumpAndSettle();
@@ -430,6 +458,11 @@ void main() {
         find.widgetWithText(TextFormField, 'What happened?'),
         'Generator overheated and shut down',
       );
+      await tester.scrollUntilVisible(
+        find.text('Submit Incident'),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
       await tester.tap(find.text('Submit Incident'));
       await tester.pumpAndSettle();
 
@@ -441,11 +474,38 @@ void main() {
       final service = _FakeIncidentService();
       await tester.pumpWidget(reportApp(service));
 
+      await tester.scrollUntilVisible(
+        find.text('Submit Incident'),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
       await tester.tap(find.text('Submit Incident'));
       await tester.pump();
 
       expect(service.reports, isEmpty);
       expect(find.text('Please fill in the required fields.'), findsOneWidget);
     });
+  });
+
+  testWidgets('an incident cannot be closed until its reporting is done', (
+    tester,
+  ) async {
+    useTallSurface(tester);
+    await seedIncident('a', status: 'underInvestigation', severity: 'minor');
+    await tester.pumpWidget(wrap(role: AppRole.siteManager, uid: 'mgr'));
+    await tester.pumpAndSettle();
+    expect(find.text('Reporting not set'), findsOneWidget);
+    await tester.tap(find.text('Cut hand on sheet metal'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Reporting level not set'), findsOneWidget);
+    final close = tester.widget<AccentButton>(
+      find.widgetWithText(AccentButton, 'Close Incident'),
+    );
+    expect(close.onPressed, isNull);
+    expect(
+      find.textContaining('Every reporting deadline must be done'),
+      findsOneWidget,
+    );
   });
 }

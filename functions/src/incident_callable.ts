@@ -47,7 +47,9 @@
  * - Edit the original report content after creation — there is no update
  *   callable for it.
  * - Close an incident that is not under investigation, without a root
- *   cause, or while any of its corrective actions is still incomplete.
+ *   cause, while any of its corrective actions is still incomplete, or
+ *   before its reporting is done (level set, every reporting step ticked —
+ *   see `incident_reporting.ts`).
  * - Delete an incident — it is a permanent part of the safety record.
  */
 
@@ -58,6 +60,7 @@ import {
   requireIncidentInvestigator,
 } from "./corrective_action_callable";
 import {requireReporterAtSite} from "./hazard_callable";
+import {requireReportingComplete} from "./incident_reporting";
 
 /**
  * Reads and validates a required non-empty string argument.
@@ -363,6 +366,8 @@ export const closeIncident = onCall(async (request) => {
       "An incident must be investigated before it can be closed."
     );
   }
+
+  requireReportingComplete(data);
 
   const actions = await getFirestore()
     .collection(`organizations/${organizationId}/corrective_actions`)

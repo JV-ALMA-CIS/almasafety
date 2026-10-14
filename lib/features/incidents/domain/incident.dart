@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/errors/app_exception.dart';
 import 'incident_enums.dart';
+import 'incident_reporting.dart';
 
 /// Something that ACTUALLY happened on site — someone hurt, something
 /// damaged, a spill, a dangerous event — stored flat at
@@ -40,6 +41,8 @@ class Incident {
     this.closedBy,
     this.closedAt,
     this.createdAt,
+    this.reportingLevel,
+    this.reportingSteps = const [],
   });
 
   final String id;
@@ -73,6 +76,20 @@ class Incident {
   final String? closedBy;
   final DateTime? closedAt;
   final DateTime? createdAt;
+
+  /// How serious it is for reporting (Safety Plan Section 8) — set by a
+  /// Site Manager/Admin; null until then.
+  final IncidentReportingLevel? reportingLevel;
+
+  /// The reporting steps [reportingLevel] requires, with their deadlines.
+  final List<ReportingStep> reportingSteps;
+
+  /// Reporting is finished: the level is set and every step done.
+  bool get isReportingComplete =>
+      reportingLevel != null && reportingSteps.every((s) => s.isDone);
+
+  List<ReportingStep> overdueSteps(DateTime now) =>
+      reportingSteps.where((s) => s.isOverdue(now)).toList();
 
   bool get isClosed => status.isTerminal;
 
@@ -137,6 +154,13 @@ class Incident {
       closedBy: data['closedBy'] as String?,
       closedAt: (data['closedAt'] as Timestamp?)?.toDate(),
       createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
+      reportingLevel: IncidentReportingLevel.tryFromId(
+        data['reportingLevel'] as String?,
+      ),
+      reportingSteps: [
+        for (final raw in (data['reportingSteps'] as List?) ?? const [])
+          ?ReportingStep.fromMap(raw),
+      ],
     );
   }
 }

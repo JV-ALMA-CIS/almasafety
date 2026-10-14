@@ -78,7 +78,10 @@ export const STANDARD_QUESTIONS: PreStartQuestion[] = [
   },
   {
     id: "std-tools",
-    prompt: "My tools and equipment are checked and in good condition.",
+    // Safety Plan Section 7: every worker checks their own electrical
+    // cords, hand and power tools, and machinery each day before use.
+    prompt: "I checked my electrical cords, hand and power tools, and any " +
+      "machinery I will use today — undamaged, guards fitted.",
     kind: "standard",
     risk: null,
   },
@@ -90,7 +93,8 @@ export const STANDARD_QUESTIONS: PreStartQuestion[] = [
   },
   {
     id: "std-emergency",
-    prompt: "I know the emergency exit and assembly point.",
+    prompt: "I know the assembly point and who to call in an emergency " +
+      "(shown on my dashboard).",
     kind: "standard",
     risk: null,
   },

@@ -30,6 +30,8 @@ import '../data/incident_repository.dart';
 import '../data/incident_service.dart';
 import '../domain/incident.dart';
 import '../domain/incident_enums.dart';
+import '../domain/incident_reporting.dart';
+import 'incident_reporting_section.dart';
 import 'incident_style.dart';
 
 /// The "Incidents" nav destination ([AppRoutes.incidents]).
@@ -298,6 +300,7 @@ class _IncidentsScreenState extends State<IncidentsScreen> {
                           IncidentCard(
                             incident: incident,
                             actions: byIncident[incident.id] ?? const [],
+                            showReporting: canManage,
                             onTap: () => _openDetail(
                               organizationId,
                               incident,
@@ -334,9 +337,14 @@ class IncidentCard extends StatelessWidget {
     required this.incident,
     this.actions = const [],
     this.onTap,
+    this.showReporting = false,
   });
 
   final Incident incident;
+
+  /// Shows the reporting-deadline badges — for Foremen, Site Managers and
+  /// Admins, not for a worker looking at their own report.
+  final bool showReporting;
 
   /// Its corrective actions — they decide the progress tag.
   final List<CorrectiveAction> actions;
@@ -357,6 +365,12 @@ class IncidentCard extends StatelessWidget {
         AccentBadge(label: progress.label, color: progress.color),
         if (severity != null)
           AccentBadge(label: severity.label, color: severity.color),
+        if (!showReporting || incident.isClosed)
+          ...const <AccentBadge>[]
+        else if (incident.reportingLevel == null)
+          const AccentBadge(label: 'Reporting not set', color: AppColors.stop)
+        else if (incident.overdueSteps(DateTime.now()).isNotEmpty)
+          const AccentBadge(label: 'Report overdue', color: AppColors.stop),
       ],
       body: incident.description,
       details: [
@@ -553,6 +567,42 @@ class _IncidentDetailScreenState extends State<IncidentDetailScreen> {
     );
   }
 
+  Future<void> _chooseReportingLevel(Incident incident) async {
+    final level = await pickReportingLevel(
+      context,
+      current: incident.reportingLevel,
+    );
+    if (level == null || level == incident.reportingLevel) return;
+    await _run(
+      () => _service.setReportingLevel(
+        organizationId: widget.organizationId,
+        incidentId: widget.incidentId,
+        level: level.id,
+      ),
+    );
+  }
+
+  Future<void> _recordStep(ReportingStep step, bool done) async {
+    String? note;
+    if (done) {
+      final result = await showDialog<String>(
+        context: context,
+        builder: (_) => _StepDoneDialog(label: step.label),
+      );
+      if (result == null) return;
+      note = result.isEmpty ? null : result;
+    }
+    await _run(
+      () => _service.recordReportingStep(
+        organizationId: widget.organizationId,
+        incidentId: widget.incidentId,
+        stepId: step.id,
+        done: done,
+        note: note,
+      ),
+    );
+  }
+
   Future<void> _raiseCorrectiveAction(Incident incident) async {
     final approvalService = widget.approvalService ?? AccountApprovalService();
     final List<OrganizationUser> people;
@@ -712,6 +762,16 @@ class _IncidentDetailScreenState extends State<IncidentDetailScreen> {
         if (incident.closedAt != null)
           _DetailRow('Closed', _formatDateTime(incident.closedAt!)),
         const SizedBox(height: AppSpacing.md),
+        if (widget.canManage || incident.reportingLevel != null) ...[
+          IncidentReportingSection(
+            incident: incident,
+            canEdit: widget.canInvestigate,
+            busy: _isSaving,
+            onChooseLevel: () => _chooseReportingLevel(incident),
+            onStep: _recordStep,
+          ),
+          const SizedBox(height: AppSpacing.md),
+        ],
         if (actions.isNotEmpty) ...[
           const FeatureSectionTitle(
             title: 'Corrective Actions',
@@ -811,7 +871,12 @@ class _IncidentDetailScreenState extends State<IncidentDetailScreen> {
                   label: 'Close Incident',
                   icon: Icons.check_circle,
                   color: AppColors.success,
-                  onPressed: _isSaving || incomplete > 0 ? null : _close,
+                  onPressed:
+                      _isSaving ||
+                          incomplete > 0 ||
+                          !incident.isReportingComplete
+                      ? null
+                      : _close,
                 ),
             ],
           ),
@@ -821,6 +886,17 @@ class _IncidentDetailScreenState extends State<IncidentDetailScreen> {
             child: Text(
               '$incomplete corrective action(s) must be completed before '
               'this incident can be closed.',
+              style: AppTextStyles.bodyMedium,
+            ),
+          ),
+        if (widget.canInvestigate &&
+            investigating &&
+            !incident.isReportingComplete)
+          const Padding(
+            padding: EdgeInsets.only(top: AppSpacing.sm),
+            child: Text(
+              'Every reporting deadline must be done before this incident '
+              'can be closed.',
               style: AppTextStyles.bodyMedium,
             ),
           ),
@@ -948,4 +1024,58 @@ String _formatDateTime(DateTime date) {
   String two(int v) => v.toString().padLeft(2, '0');
   return '${date.year}-${two(date.month)}-${two(date.day)} '
       '${two(date.hour)}:${two(date.minute)}';
+}
+
+/// Confirms a reporting step is done, with an optional note (e.g. who was
+/// told, a reference number). Pops the note ('' for none), or null.
+class _StepDoneDialog extends StatefulWidget {
+  const _StepDoneDialog({required this.label});
+
+  final String label;
+
+  @override
+  State<_StepDoneDialog> createState() => _StepDoneDialogState();
+}
+
+class _StepDoneDialogState extends State<_StepDoneDialog> {
+  final _note = TextEditingController();
+
+  @override
+  void dispose() {
+    _note.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Mark as done?'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(widget.label),
+          const SizedBox(height: AppSpacing.md),
+          TextField(
+            controller: _note,
+            maxLength: 500,
+            decoration: const InputDecoration(
+              labelText: 'Note (optional)',
+              hintText: 'e.g. who was told, reference number',
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(_note.text.trim()),
+          child: const Text('Mark done'),
+        ),
+      ],
+    );
+  }
 }

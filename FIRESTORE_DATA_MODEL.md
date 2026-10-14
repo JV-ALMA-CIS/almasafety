@@ -771,6 +771,70 @@ incident carries `incidentId` (exactly one of `meetingId`/`hazardId`/
 `closeIncident` refuses while any of its actions is incomplete, and requires
 a root cause. Never deletable.
 
+### In-app notifications (what is sent, and when)
+
+`notification_triggers.ts` writes `notifications` (via `createNotification`)
+by watching the records, so no callable changed and a notification failure
+never blocks an action. Nobody is notified about their own action.
+
+- `corrective_actions` created → assignee; → `submittedForReview` → assigner;
+  → `completed` or sent back → assignee.
+- `hazards` created → active Site Managers/Admins + the site's Foremen.
+- `incidents` created → active Site Managers/Admins + the site's Foremen.
+- `inspections` → `submitted` → Site Managers/Admins except the inspector.
+- `risk_assessments` created as a draft → other Site Managers/Admins.
+- `sendDailyReminders` (06:00 Africa/Nairobi): corrective actions due within
+  ~2 days or overdue → assignee; incidents with no reporting level or an
+  overdue reporting step → Site Managers/Admins. Fixed notification ids
+  (`due-…-{date}-{uid}`, `report-…-{date}-{uid}`) send each at most once a day.
+
+Types now also include `hazard`, `incident`, `inspection`, `riskAssessment`;
+`relatedEntityType` decides which page tapping the notification opens.
+**Push to devices.** Each device that allows notifications registers its
+FCM token with `registerPushToken` at `users/{uid}/push_tokens/{sha256(token)}`
+(`{token, platform, lastSeenAt}`; no client rule — callables only), and
+removes it on sign-out (`unregisterPushToken`). `createNotification` then
+calls `sendPush`, which pushes the same title/message to all of the
+recipient's tokens with a link to the related page, and deletes tokens
+reported as no longer valid. Web uses `web/firebase-messaging-sw.js` and the
+project's public Web Push (VAPID) key; iPhones need the app added to the Home
+Screen.
+
+### Site emergency contacts (Safety Plan Section 9)
+
+`sites/{siteId}.emergency`, written only by `updateSiteEmergencyInfo`
+(`site_emergency_callable.ts`, Site Manager/Admin):
+
+```
+emergency: {
+  clinicName, clinicAddress: string?, clinicPhones: string[],
+  ambulancePhone: string?, otherNumbers: [{ label, number }],
+  assemblyPoint, firstAidKitLocation: string?, firstAiders: string[],
+  notes: string?, updatedAt, updatedBy, updatedByName
+}
+```
+
+Shown with tap-to-call numbers on Worker and Foreman dashboards, in the daily
+safety meeting and on the incident report form; edited from Projects → Sites.
+
+### Incident reporting deadlines (Safety Plan Section 8)
+
+On `incidents/{id}`, set by `setIncidentReportingLevel` /
+`recordIncidentReportingStep` (`incident_reporting.ts`, Site Manager/Admin):
+
+```
+reportingLevel: string?        // immediate | lostTime | medical | minorDamage | firstAid
+reportingSteps: [{ id, label, dueAt, doneAt?, doneByUid?, doneByName?, note? }]
+reportingLevelSetBy, reportingLevelSetAt
+```
+
+Steps per level (deadline counted from `occurredAt`): every level — tell the
+COR (immediately); immediate — phone the Safety Office and seal off the site
+(immediately), ENG Form 3394 (5 days); lostTime — 24-hour notification, Form
+3394 (5 days); medical — 24-hour notification, email record (24 h);
+minorDamage — email record (24 h). `closeIncident` refuses until the level is
+set and every step is done. Changing the level keeps steps already done.
+
 ## 7B. Site inspections (daily inspection, weekly HSE walk-down)
 
 Safety Plan Section 7: daily inspections (Safety Manager, SSHO, Foremen) and

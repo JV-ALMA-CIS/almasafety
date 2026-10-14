@@ -1,6 +1,8 @@
+import '../../../core/widgets/push_opt_in_card.dart';
 import 'package:flutter/material.dart';
 import '../../incidents/domain/incident_enums.dart';
 import 'safety_reports_card.dart';
+import 'whats_due_card.dart';
 import '../../incidents/domain/incident.dart';
 import '../../incidents/data/incident_repository.dart';
 import 'package:go_router/go_router.dart';
@@ -178,6 +180,21 @@ class _SiteManagerDashboardScreenState
             icon: Icons.engineering,
           ),
           const SizedBox(height: AppSpacing.lg),
+          const PushOptInCard(),
+          const SizedBox(height: AppSpacing.md),
+          if (sessionController.profile?.uid != null) ...[
+            DashboardSection(
+              title: "What's Due",
+              color: AppColors.warning,
+              icon: Icons.event_available,
+              child: WhatsDueCard(
+                organizationId: organizationId,
+                uid: sessionController.profile!.uid,
+                isManager: true,
+              ),
+            ),
+            const SizedBox(height: AppSpacing.lg),
+          ],
           if (_errorMessage != null) ...[
             Text(
               _errorMessage!,

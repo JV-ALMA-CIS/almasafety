@@ -81,6 +81,7 @@ class DashboardRouterScreen extends StatelessWidget {
     if (isPlatformAdministrator) {
       return AdminDashboardScreen(
         userName: profile?.name,
+        userUid: profile?.uid,
         analyticsRepository: analyticsRepository,
         hazardRepository: hazardRepository,
         incidentRepository: incidentRepository,

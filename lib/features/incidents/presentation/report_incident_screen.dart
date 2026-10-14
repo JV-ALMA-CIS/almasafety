@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import '../../organizations/presentation/site_emergency_contacts.dart';
 import '../../../core/widgets/photo_capture.dart';
 import '../../hazards/presentation/report_hazard_screen.dart';
 import '../../hazards/domain/hazard_kind.dart';
@@ -258,6 +259,14 @@ class _ReportIncidentScreenState extends State<ReportIncidentScreen> {
                 ),
               ),
               const SizedBox(height: AppSpacing.md),
+              if (_siteId != null) ...[
+                SiteEmergencyContacts(
+                  organizationId: organizationId,
+                  siteId: _siteId!,
+                  siteRepository: widget.siteRepository,
+                ),
+                const SizedBox(height: AppSpacing.md),
+              ],
               FormSection(
                 title: 'What happened?',
                 icon: Icons.category,

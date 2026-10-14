@@ -1,3 +1,4 @@
+import 'push_notification_service.dart';
 import 'dart:async' show StreamSubscription, unawaited;
 import 'package:flutter/foundation.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -354,6 +355,9 @@ class SessionController extends ChangeNotifier {
   }
 
   Future<void> signOut() async {
+    // While still signed in: stop this device getting this person's
+    // notifications (best effort — never blocks signing out).
+    await PushNotificationService().unregister();
     try {
       await _authService.signOut();
     } on Object catch (e) {

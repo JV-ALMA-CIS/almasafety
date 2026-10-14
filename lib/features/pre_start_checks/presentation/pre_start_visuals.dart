@@ -48,9 +48,9 @@ const Map<String, List<PreStartVisual>> _standard = {
     (emoji: '🥽', label: 'Eye protection'),
   ],
   'std-tools': [
-    (emoji: '🔧', label: 'Tools checked'),
-    (emoji: '🔌', label: 'Cables & plugs'),
-    (emoji: '🪜', label: 'Ladders'),
+    (emoji: '🔌', label: 'Cords & plugs'),
+    (emoji: '🔧', label: 'Hand & power tools'),
+    (emoji: '🚜', label: 'Machinery'),
   ],
   'std-area': [
     (emoji: '🚧', label: 'Barriers'),

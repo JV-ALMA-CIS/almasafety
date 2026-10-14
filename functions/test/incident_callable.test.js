@@ -119,6 +119,12 @@ async function seedIncident(id, overrides = {}) {
     createdBy: "worker-1",
     updatedAt: now,
     updatedBy: "worker-1",
+    // Reporting already finished, so closing tests are about closing.
+    reportingLevel: "firstAid",
+    reportingSteps: [{
+      id: "notifyCor", label: "Tell the COR", dueAt: now,
+      doneAt: now, doneByUid: "manager-1", doneByName: "M", note: null,
+    }],
     ...overrides,
   });
 }

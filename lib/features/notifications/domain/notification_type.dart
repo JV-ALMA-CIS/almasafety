@@ -13,6 +13,10 @@ enum AppNotificationType {
   correctiveAction,
   safetyMeeting,
   safetyLearning,
+  hazard,
+  incident,
+  inspection,
+  riskAssessment,
   system;
 
   /// The value stored in Firestore.
@@ -23,6 +27,10 @@ enum AppNotificationType {
     AppNotificationType.correctiveAction => 'Corrective Action',
     AppNotificationType.safetyMeeting => 'Safety Meeting',
     AppNotificationType.safetyLearning => 'Safety Learning',
+    AppNotificationType.hazard => 'Hazard',
+    AppNotificationType.incident => 'Incident',
+    AppNotificationType.inspection => 'Inspection',
+    AppNotificationType.riskAssessment => 'Risk Assessment',
     AppNotificationType.system => 'System',
   };
 

@@ -1583,6 +1583,36 @@ Many sites, many kinds of work (October 2026): AHAs cover chosen activities
   starting drafts (scaffolding, electrical, excavation, lifting, hot work,
   demolition) besides the roofing ones, and copying any AHA, drafts too.
 
+What's Due (October 2026): a live list at the top of the Site Manager,
+  Admin and Foreman dashboards — inspections awaiting sign-off, own
+  inspections in progress, today's daily inspection per site, this week's
+  employee meeting per site, this month's supervisory meeting, AHAs to
+  accept, open deficiencies. Each line opens the page where it is done.
+
+Incident reporting deadlines (October 2026): a Site Manager/Admin sets each
+  incident's reporting level (Safety Plan Section 8); its steps (tell the
+  COR, immediate phone + seal site, 24-hour notice, email record, ENG Form
+  3394 in 5 days) get deadlines from when it happened, are ticked off with
+  who/when/note, show overdue in red, appear in What's Due, and must all be
+  done before the incident can be closed.
+
+Site emergency contacts (October 2026): each site's ambulance, clinic,
+  emergency numbers, assembly point, first-aid kit and first-aiders, set by
+  a Site Manager/Admin (Projects → Sites → Emergency) and shown with
+  tap-to-call numbers on Worker/Foreman dashboards, in the daily meeting and
+  on the incident form.
+
+Pre-Start Check content (October 2026): the tools question now names the
+  Safety Plan's daily worker checks — electrical cords, hand and power tools,
+  and machinery; the emergency question points to the site's contacts.
+
+In-app notifications (October 2026): corrective actions assigned / submitted
+  / approved / sent back, hazards and incidents reported, inspections to sign
+  off, AHAs to accept — plus a 06:00 daily reminder of actions due or overdue
+  and overdue incident reporting. Tapping one opens its page. They are also
+  PUSHED to each person's phones/browsers once they tap "Turn on
+  notifications" (on iPhone: add the app to the Home Screen first).
+
 NOT YET IMPLEMENTED
 Gemini integration (recommendations, summaries, hazard classification,
   trend analysis, content assistance — see §30-32)

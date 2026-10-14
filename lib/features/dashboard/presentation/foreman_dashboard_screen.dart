@@ -1,7 +1,11 @@
+import '../../../core/widgets/push_opt_in_card.dart';
 import 'package:flutter/material.dart';
 import '../../../core/widgets/dashboard_grid.dart';
 import '../../corrective_actions/domain/corrective_action_status.dart';
 import 'safety_reports_card.dart';
+import 'whats_due_card.dart';
+import '../../organizations/presentation/site_emergency_contacts.dart';
+
 import '../../incidents/domain/incident.dart';
 import '../../incidents/data/incident_repository.dart';
 import '../../safety_reporting/presentation/report_safety_issue_screen.dart';
@@ -225,7 +229,29 @@ class _ForemanDashboardScreenState extends State<ForemanDashboardScreen> {
         ),
         const SizedBox(height: AppSpacing.md),
         const ReportSafetyIssueButton(),
+        const SizedBox(height: AppSpacing.md),
+        const PushOptInCard(),
         const SizedBox(height: AppSpacing.lg),
+        DashboardSection(
+          title: "What's Due",
+          color: AppColors.warning,
+          icon: Icons.event_available,
+          child: WhatsDueCard(
+            organizationId: organizationId,
+            uid: foremanUid,
+            isManager: false,
+            siteIds: siteIds,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.lg),
+        for (final siteId in siteIds) ...[
+          SiteEmergencyContacts(
+            organizationId: organizationId,
+            siteId: siteId,
+            siteRepository: widget.siteRepository,
+          ),
+          const SizedBox(height: AppSpacing.md),
+        ],
         DashboardSection(
           title: "Today's Meeting",
           color: AppColors.meetings,

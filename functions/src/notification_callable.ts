@@ -56,12 +56,17 @@
 
 import {FieldValue, getFirestore} from "firebase-admin/firestore";
 import {CallableRequest, HttpsError, onCall} from "firebase-functions/v2/https";
+import {sendPush} from "./push_callable";
 
 const NOTIFICATION_TYPES = [
   "safetyAlert",
   "correctiveAction",
   "safetyMeeting",
   "safetyLearning",
+  "hazard",
+  "incident",
+  "inspection",
+  "riskAssessment",
   "system",
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
@@ -113,7 +118,10 @@ function requireString(request: CallableRequest, field: string): string {
  * @param {string} [params.relatedEntityType] an optional loose pointer to
  * the entity this notification relates to (e.g. `"safetyAlert"`).
  * @param {string} [params.relatedEntityId] the id of that entity.
- * @return {Promise<string>} the new notification's id.
+ * @param {string} [params.id] a fixed id: a notification with this id that
+ * already exists is NOT sent again (the daily reminders use this so a
+ * reminder is sent at most once per day).
+ * @return {Promise<string>} the notification's id.
  */
 export async function createNotification(params: {
   organizationId: string;
@@ -123,10 +131,12 @@ export async function createNotification(params: {
   message: string;
   relatedEntityType?: string;
   relatedEntityId?: string;
+  id?: string;
 }): Promise<string> {
-  const ref = getFirestore()
-    .collection(`organizations/${params.organizationId}/notifications`)
-    .doc();
+  const collection = getFirestore()
+    .collection(`organizations/${params.organizationId}/notifications`);
+  const ref = params.id ? collection.doc(params.id) : collection.doc();
+  if (params.id && (await ref.get()).exists) return ref.id;
   await ref.set({
     organizationId: params.organizationId,
     recipientUid: params.recipientUid,
@@ -138,6 +148,13 @@ export async function createNotification(params: {
     isRead: false,
     createdAt: FieldValue.serverTimestamp(),
     readAt: null,
+  });
+  // Also to the recipient's phones/browsers — best effort, never throws.
+  await sendPush({
+    recipientUid: params.recipientUid,
+    title: params.title,
+    message: params.message,
+    relatedEntityType: params.relatedEntityType,
   });
   return ref.id;
 }

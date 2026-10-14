@@ -313,3 +313,71 @@ describe("updateProject: finishing a project", () => {
     expect(await siteStatus("rosslyn-1")).toBe("active");
   });
 });
+
+describe("updateSiteEmergencyInfo", () => {
+  const ORG = "org-alpha";
+  let updateSiteEmergencyInfo;
+
+  beforeAll(() => {
+    ({updateSiteEmergencyInfo} = require("../lib/site_emergency_callable"));
+  });
+
+  beforeEach(async () => {
+    await seedProfile("sm-1", {platformRole: "siteManager", name: "Eston"});
+    await seedMembership("sm-1", ORG, "siteManager");
+    await seedProfile("fm-1");
+    await seedMembership("fm-1", ORG, "foreman", ["site-1"]);
+    await db.doc(`organizations/${ORG}`).set({name: "JV ALMA"});
+    await db.doc(`organizations/${ORG}/sites/site-1`).set({
+      organizationId: ORG, projectId: "p", name: "Embassy", code: "EMB",
+      status: "active",
+    });
+  });
+
+  function save(uid, emergency) {
+    return updateSiteEmergencyInfo.run(callRequest(uid, {
+      organizationId: ORG, siteId: "site-1", emergency,
+    }));
+  }
+
+  test("a Site Manager saves the site's emergency contacts", async () => {
+    await save("sm-1", {
+      clinicName: " Nairobi Hospital ",
+      clinicPhones: ["+254 700 000000", " "],
+      ambulancePhone: "999",
+      otherNumbers: [
+        {label: "Fire", number: "999"},
+        {label: "", number: "+254 711 111111"},
+        {label: "Empty", number: ""},
+      ],
+      assemblyPoint: "Main gate",
+      firstAiders: ["Eston K Gikonyo"],
+    });
+    const site = (await db.doc(`organizations/${ORG}/sites/site-1`).get())
+      .data();
+    expect(site.emergency).toMatchObject({
+      clinicName: "Nairobi Hospital",
+      clinicPhones: ["+254 700 000000"],
+      ambulancePhone: "999",
+      otherNumbers: [
+        {label: "Fire", number: "999"},
+        {label: "Emergency", number: "+254 711 111111"},
+      ],
+      assemblyPoint: "Main gate",
+      firstAiders: ["Eston K Gikonyo"],
+      clinicAddress: null,
+      updatedBy: "sm-1",
+      updatedByName: "Eston",
+    });
+  });
+
+  test("a Foreman cannot change them", async () => {
+    await expect(save("fm-1", {ambulancePhone: "999"})).rejects.toThrow();
+  });
+
+  test("an unknown site is refused", async () => {
+    await expect(updateSiteEmergencyInfo.run(callRequest("sm-1", {
+      organizationId: ORG, siteId: "nope", emergency: {},
+    }))).rejects.toThrow(/no longer exists/);
+  });
+});

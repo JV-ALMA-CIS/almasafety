@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'site_emergency_contacts.dart';
 import '../../../core/widgets/live_stream_builder.dart';
 import '../../../core/widgets/choice_list.dart';
 import 'package:go_router/go_router.dart';
@@ -229,6 +230,13 @@ class _SitesScreenState extends State<SitesScreen> {
               _SiteCard(
                 site: site,
                 onEdit: canManage ? () => _openEditDialog(site) : null,
+                onEmergency: canManage
+                    ? () => openSiteEmergencyEditor(
+                        context,
+                        organizationId: widget.organization.id,
+                        site: site,
+                      )
+                    : null,
                 onViewActivities: () => context.go(
                   AppRoutes.manageActivities,
                   extra: (
@@ -258,12 +266,16 @@ class _SitesScreenState extends State<SitesScreen> {
 class _SiteCard extends StatelessWidget {
   const _SiteCard({
     required this.site,
+    this.onEmergency,
     required this.onEdit,
     required this.onViewActivities,
     required this.onViewWorkers,
   });
 
   final Site site;
+
+  /// Opens the site's emergency contacts editor; null hides it.
+  final VoidCallback? onEmergency;
 
   /// Null hides the Edit action — matches [OrganizationsScreen]'s own
   /// `_OrganizationCard.onEdit`.
@@ -296,6 +308,12 @@ class _SiteCard extends StatelessWidget {
           AccentDetail(icon: Icons.place, text: site.location!),
         if (site.description != null)
           AccentDetail(icon: Icons.description, text: site.description!),
+        AccentDetail(
+          icon: Icons.emergency,
+          text: site.emergency == null
+              ? 'No emergency contacts yet'
+              : 'Emergency contacts set',
+        ),
       ],
       actions: [
         if (onEdit != null)
@@ -305,6 +323,14 @@ class _SiteCard extends StatelessWidget {
             color: AppColors.analytics,
             outlined: true,
             onPressed: onEdit,
+          ),
+        if (onEmergency != null)
+          AccentButton(
+            label: site.emergency == null ? 'Add emergency' : 'Emergency',
+            icon: Icons.emergency,
+            color: AppColors.stop,
+            outlined: true,
+            onPressed: onEmergency,
           ),
         AccentButton(
           label: 'Activities',

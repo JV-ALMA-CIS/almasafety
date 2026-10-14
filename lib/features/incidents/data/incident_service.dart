@@ -130,6 +130,33 @@ class IncidentService {
     return result['id'] as String? ?? '';
   }
 
+  /// Sets (or changes) the incident's reporting level — Site
+  /// Manager/Admin only.
+  Future<void> setReportingLevel({
+    required String organizationId,
+    required String incidentId,
+    required String level,
+  }) => _call<Object?>('setIncidentReportingLevel', {
+    'organizationId': organizationId,
+    'incidentId': incidentId,
+    'level': level,
+  });
+
+  /// Ticks a reporting step done (with an optional [note]) or un-ticks it.
+  Future<void> recordReportingStep({
+    required String organizationId,
+    required String incidentId,
+    required String stepId,
+    required bool done,
+    String? note,
+  }) => _call<Object?>('recordIncidentReportingStep', {
+    'organizationId': organizationId,
+    'incidentId': incidentId,
+    'stepId': stepId,
+    'done': done,
+    'note': ?note,
+  });
+
   /// Closes an incident with its [rootCause]. The server refuses while any
   /// of its corrective actions is incomplete.
   Future<void> closeIncident({

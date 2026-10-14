@@ -1,5 +1,7 @@
+import '../../../core/widgets/push_opt_in_card.dart';
 import 'package:flutter/material.dart';
 import 'safety_reports_card.dart';
+import 'whats_due_card.dart';
 import '../../incidents/domain/incident.dart';
 import '../../incidents/data/incident_repository.dart';
 import 'package:go_router/go_router.dart';
@@ -72,6 +74,7 @@ import '../../safety_learning_compliance/data/safety_compliance_repository.dart'
 class AdminDashboardScreen extends StatefulWidget {
   const AdminDashboardScreen({
     super.key,
+    this.userUid,
     this.analyticsRepository,
     this.incidentRepository,
     this.hazardRepository,
@@ -89,6 +92,9 @@ class AdminDashboardScreen extends StatefulWidget {
   /// by [DashboardRouterScreen] rather than read from [SessionController]
   /// here, so this screen keeps working without one (as in its tests).
   final String? userName;
+
+  /// The signed-in Admin, for "What's Due" (what awaits THEIR sign-off).
+  final String? userUid;
 
   final AnalyticsRepository? analyticsRepository;
   final IncidentRepository? incidentRepository;
@@ -253,6 +259,21 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             icon: Icons.admin_panel_settings,
           ),
           const SizedBox(height: AppSpacing.lg),
+          const PushOptInCard(),
+          const SizedBox(height: AppSpacing.md),
+          if (widget.userUid != null) ...[
+            DashboardSection(
+              title: "What's Due",
+              color: AppColors.warning,
+              icon: Icons.event_available,
+              child: WhatsDueCard(
+                organizationId: organizationId,
+                uid: widget.userUid!,
+                isManager: true,
+              ),
+            ),
+            const SizedBox(height: AppSpacing.lg),
+          ],
           if (_errorMessage != null) ...[
             Text(
               _errorMessage!,

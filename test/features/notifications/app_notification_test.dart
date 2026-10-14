@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:jva_safety/routing/app_routes.dart';
+import 'package:jva_safety/features/notifications/presentation/notifications_screen.dart';
 import 'package:jva_safety/core/errors/app_exception.dart';
 import 'package:jva_safety/features/notifications/domain/app_notification.dart';
 import 'package:jva_safety/features/notifications/domain/notification_type.dart';
@@ -175,13 +177,36 @@ void main() {
     expect(AppNotificationType.tryFromId(null), isNull);
   });
 
-  test('the five expected types exist', () {
+  test('the expected types exist — matching the server', () {
     expect(AppNotificationType.values.map((t) => t.id).toSet(), {
       'safetyAlert',
       'correctiveAction',
       'safetyMeeting',
       'safetyLearning',
+      'hazard',
+      'incident',
+      'inspection',
+      'riskAssessment',
       'system',
     });
+  });
+
+  test('a notification opens the page it is about', () {
+    AppNotification about(String? type) => AppNotification.fromMap('n', {
+      'organizationId': 'org',
+      'recipientUid': 'u',
+      'type': 'incident',
+      'title': 't',
+      'message': 'm',
+      'isRead': false,
+      'relatedEntityType': type,
+    });
+    expect(routeForNotification(about('incident')), AppRoutes.incidents);
+    expect(
+      routeForNotification(about('correctiveAction')),
+      AppRoutes.correctiveActions,
+    );
+    expect(routeForNotification(about('inspection')), AppRoutes.inspections);
+    expect(routeForNotification(about(null)), isNull);
   });
 }

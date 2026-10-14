@@ -1,5 +1,8 @@
+import '../../../core/widgets/push_opt_in_card.dart';
 import 'package:flutter/material.dart';
 import 'safety_reports_card.dart';
+import '../../organizations/presentation/site_emergency_contacts.dart';
+
 import '../../incidents/domain/incident.dart';
 import '../../incidents/data/incident_repository.dart';
 import '../../safety_reporting/presentation/report_safety_issue_screen.dart';
@@ -154,7 +157,14 @@ class WorkerDashboardScreen extends StatelessWidget {
         // Always within reach: one button for anything wrong on site — the
         // chooser behind it files a hazard, near-miss or incident.
         const ReportSafetyIssueButton(),
-        const SizedBox(height: AppSpacing.lg),
+        const SizedBox(height: AppSpacing.md),
+        const PushOptInCard(),
+        const SizedBox(height: AppSpacing.md),
+        for (final siteId in siteIds) ...[
+          SiteEmergencyContacts(organizationId: organizationId, siteId: siteId),
+          const SizedBox(height: AppSpacing.md),
+        ],
+        const SizedBox(height: AppSpacing.sm),
         // First on the page: the one thing every worker does every day
         // before starting work.
         DashboardSection(

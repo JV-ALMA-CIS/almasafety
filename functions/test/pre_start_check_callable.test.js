@@ -484,3 +484,17 @@ describe("completeDailySafetyMeeting (crew result)", () => {
     }))).rejects.toThrow(/crewOutcome must be/);
   });
 });
+
+describe("the Safety Plan's daily worker checks", () => {
+  test("the tools question covers cords, hand/power tools and machinery",
+    () => {
+      const tools = STANDARD_QUESTIONS.find((q) => q.id === "std-tools");
+      expect(tools.prompt).toMatch(/electrical cords/);
+      expect(tools.prompt).toMatch(/hand and power tools/);
+      expect(tools.prompt).toMatch(/machinery/);
+    });
+
+  test("still only five standard questions", () => {
+    expect(STANDARD_QUESTIONS).toHaveLength(5);
+  });
+});

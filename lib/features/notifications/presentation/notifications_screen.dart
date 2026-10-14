@@ -1,4 +1,7 @@
+import '../../../core/widgets/push_opt_in_card.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import '../../../routing/app_routes.dart';
 import '../../../core/widgets/live_stream_builder.dart';
 import 'package:provider/provider.dart';
 import '../../../core/errors/app_exception.dart';
@@ -61,6 +64,17 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         );
     _repository = created;
     return created;
+  }
+
+  /// Marks [notification] read (if it isn't) and opens the page it is
+  /// about, when there is one.
+  Future<void> _open(
+    String organizationId,
+    AppNotification notification,
+  ) async {
+    await _markRead(organizationId, notification);
+    final route = routeForNotification(notification);
+    if (route != null && mounted) context.go(route);
   }
 
   Future<void> _markRead(
@@ -159,6 +173,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                       ),
               ),
               const SizedBox(height: AppSpacing.md),
+              const PushOptInCard(),
+              const SizedBox(height: AppSpacing.md),
               if (_errorMessage != null) ...[
                 AuthErrorBanner(message: _errorMessage!),
                 const SizedBox(height: AppSpacing.md),
@@ -191,7 +207,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                 _NotificationCard(
                   notification: notification,
                   isSaving: _isSaving,
-                  onTap: () => _markRead(organizationId, notification),
+                  onTap: () => _open(organizationId, notification),
                 ),
                 const SizedBox(height: AppSpacing.sm),
               ],
@@ -219,6 +235,10 @@ class _NotificationCard extends StatelessWidget {
     AppNotificationType.correctiveAction => Icons.build_circle,
     AppNotificationType.safetyMeeting => Icons.groups,
     AppNotificationType.safetyLearning => Icons.school,
+    AppNotificationType.hazard => Icons.warning_amber,
+    AppNotificationType.incident => Icons.personal_injury,
+    AppNotificationType.inspection => Icons.fact_check,
+    AppNotificationType.riskAssessment => Icons.assignment_late,
     AppNotificationType.system => Icons.info,
   };
 
@@ -228,6 +248,10 @@ class _NotificationCard extends StatelessWidget {
     AppNotificationType.correctiveAction => AppColors.correctiveActions,
     AppNotificationType.safetyMeeting => AppColors.meetings,
     AppNotificationType.safetyLearning => AppColors.learning,
+    AppNotificationType.hazard => AppColors.hazards,
+    AppNotificationType.incident => AppColors.stop,
+    AppNotificationType.inspection => AppColors.inspections,
+    AppNotificationType.riskAssessment => AppColors.riskAssessments,
     AppNotificationType.system => AppColors.primaryBright,
   };
 
@@ -250,7 +274,11 @@ class _NotificationCard extends StatelessWidget {
         ),
       ),
       child: InkWell(
-        onTap: isUnread && !isSaving ? onTap : null,
+        onTap:
+            isSaving ||
+                (!isUnread && routeForNotification(notification) == null)
+            ? null
+            : onTap,
         borderRadius: BorderRadius.circular(14),
         child: ConstrainedBox(
           constraints: const BoxConstraints(
@@ -325,3 +353,17 @@ String _formatDate(DateTime? date) {
   final day = date.day.toString().padLeft(2, '0');
   return '${date.year}-$month-$day';
 }
+
+/// The page a notification is about, from what it relates to; null when
+/// it relates to nothing that has a page.
+String? routeForNotification(AppNotification notification) =>
+    switch (notification.relatedEntityType) {
+      'correctiveAction' => AppRoutes.correctiveActions,
+      'hazard' => AppRoutes.hazards,
+      'incident' => AppRoutes.incidents,
+      'inspection' => AppRoutes.inspections,
+      'riskAssessment' => AppRoutes.riskAssessments,
+      'dailySafetyMeeting' => AppRoutes.dailySafetyMeetings,
+      'safetyAlert' => AppRoutes.safetyAlerts,
+      _ => null,
+    };

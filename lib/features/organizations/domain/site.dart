@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/errors/app_exception.dart';
 import 'organization_record_status.dart';
+import 'site_emergency_info.dart';
 
 /// A site within a project, stored at
 /// `organizations/{organizationId}/sites/{id}` (FIRESTORE_DATA_MODEL.md §3)
@@ -28,6 +29,7 @@ class Site {
     this.updatedAt,
     this.createdBy,
     this.updatedBy,
+    this.emergency,
   });
 
   final String id;
@@ -42,6 +44,9 @@ class Site {
   final DateTime? updatedAt;
   final String? createdBy;
   final String? updatedBy;
+
+  /// The site's emergency contacts, or null when none are set.
+  final SiteEmergencyInfo? emergency;
 
   /// Parses a site document. Throws [DataException] on a missing or
   /// malformed document — see [Organization.fromFirestore] for why.
@@ -81,6 +86,7 @@ class Site {
       updatedAt: (data['updatedAt'] as Timestamp?)?.toDate(),
       createdBy: data['createdBy'] as String?,
       updatedBy: data['updatedBy'] as String?,
+      emergency: SiteEmergencyInfo.fromMap(data['emergency']),
     );
   }
 }

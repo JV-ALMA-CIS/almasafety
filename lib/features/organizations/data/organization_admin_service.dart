@@ -1,3 +1,4 @@
+import '../domain/site_emergency_info.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_core/firebase_core.dart';
 import '../../../core/errors/app_exception.dart';
@@ -160,6 +161,17 @@ class OrganizationAdminService {
     'location': ?location,
     'description': ?description,
     if (status != null) 'status': status.id,
+  });
+
+  /// Saves a site's emergency contacts (Site Manager/Admin).
+  Future<void> updateSiteEmergencyInfo(
+    String organizationId,
+    String siteId,
+    SiteEmergencyInfo emergency,
+  ) => _call<Object?>('updateSiteEmergencyInfo', {
+    'organizationId': organizationId,
+    'siteId': siteId,
+    'emergency': emergency.toJson(),
   });
 
   Future<T> _call<T>(String name, [Map<String, Object?>? data]) async {

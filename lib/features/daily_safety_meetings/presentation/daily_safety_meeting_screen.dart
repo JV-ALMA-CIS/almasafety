@@ -59,6 +59,7 @@ import '../../pre_start_checks/presentation/pre_start_visuals.dart';
 import '../../risk_assessments/data/risk_assessment_repository.dart';
 import '../../risk_assessments/domain/risk_assessment.dart';
 import '../../risk_assessments/presentation/risk_assessments_screen.dart';
+import '../../organizations/presentation/site_emergency_contacts.dart';
 import 'daily_safety_meeting_history_screen.dart';
 import 'worker_todays_meeting_card.dart';
 import '../../../core/widgets/color_choice_chips.dart';
@@ -1471,6 +1472,13 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
                       AuthErrorBanner(message: widget.errorMessage!),
                       const SizedBox(height: AppSpacing.md),
                     ],
+                    // Part of every toolbox talk: who to call and where to
+                    // go if something happens today.
+                    SiteEmergencyContacts(
+                      organizationId: widget.organizationId,
+                      siteId: widget.siteId,
+                    ),
+                    const SizedBox(height: AppSpacing.md),
                     const FeatureSectionTitle(
                       title: 'Activities Discussed',
                       icon: Icons.handyman,
