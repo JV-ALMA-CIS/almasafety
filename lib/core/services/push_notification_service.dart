@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -69,28 +71,43 @@ class PushNotificationService {
     }
   }
 
-  /// Asks permission (the browser/phone shows its own prompt) and, if
-  /// allowed, registers this device. Returns where it ends up.
+  /// Asks permission — the browser/phone shows its own Allow prompt
+  /// straight away, with nothing awaited before it — and returns the answer
+  /// as soon as it is given. If allowed, this device is registered in the
+  /// background; the caller never waits for that.
   Future<PushPermission> enable() async {
     final messaging = _instance;
     if (messaging == null) return PushPermission.unsupported;
+    final PushPermission result;
     try {
-      await messaging.requestPermission();
+      final settings = await messaging.requestPermission();
+      result = switch (settings.authorizationStatus) {
+        AuthorizationStatus.authorized ||
+        AuthorizationStatus.provisional => PushPermission.allowed,
+        AuthorizationStatus.denied => PushPermission.blocked,
+        AuthorizationStatus.notDetermined => PushPermission.notAsked,
+      };
     } on Object {
       return PushPermission.unsupported;
     }
-    final result = await permission();
-    if (result == PushPermission.allowed) await registerIfAllowed();
+    if (result == PushPermission.allowed) {
+      unawaited(registerIfAllowed(alreadyAllowed: true));
+    }
     return result;
   }
 
   /// Registers this device if notifications are already allowed — called
   /// on opening the app, so a refreshed token is never missed.
-  Future<void> registerIfAllowed() async {
+  ///
+  /// [alreadyAllowed] skips checking permission again when the caller has
+  /// just been told it is allowed.
+  Future<void> registerIfAllowed({bool alreadyAllowed = false}) async {
     final messaging = _instance;
     final functions = _callables;
     if (messaging == null || functions == null) return;
-    if (await permission() != PushPermission.allowed) return;
+    if (!alreadyAllowed && await permission() != PushPermission.allowed) {
+      return;
+    }
     try {
       final token = await messaging.getToken(
         vapidKey: kIsWeb ? vapidKey : null,

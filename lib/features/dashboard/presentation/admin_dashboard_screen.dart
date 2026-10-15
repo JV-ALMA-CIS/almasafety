@@ -1,4 +1,3 @@
-import '../../../core/widgets/push_opt_in_card.dart';
 import 'package:flutter/material.dart';
 import 'safety_reports_card.dart';
 import 'whats_due_card.dart';
@@ -259,8 +258,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             icon: Icons.admin_panel_settings,
           ),
           const SizedBox(height: AppSpacing.lg),
-          const PushOptInCard(),
-          const SizedBox(height: AppSpacing.md),
           if (widget.userUid != null) ...[
             DashboardSection(
               title: "What's Due",

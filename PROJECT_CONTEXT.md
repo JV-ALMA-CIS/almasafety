@@ -1610,8 +1610,15 @@ In-app notifications (October 2026): corrective actions assigned / submitted
   / approved / sent back, hazards and incidents reported, inspections to sign
   off, AHAs to accept — plus a 06:00 daily reminder of actions due or overdue
   and overdue incident reporting. Tapping one opens its page. They are also
-  PUSHED to each person's phones/browsers once they tap "Turn on
-  notifications" (on iPhone: add the app to the Home Screen first).
+  PUSHED to each person's phones/browsers: a floating card at the top of the
+  dashboard asks to turn them on until that device allows them (✕ hides it
+  for the session; on iPhone: add the app to the Home Screen first).
+
+Printable reports (October 2026): "Print / PDF" on each AHA (the Safety
+  Plan's form layout: details, steps / hazards / controls, equipment /
+  inspection / training, prepared / accepted / COR sign-off; drafts marked
+  DRAFT) and on the Deficiency Log (Section 7c columns, as filtered). Built
+  in the app with the `pdf`/`printing` packages (lib/core/reports).
 
 NOT YET IMPLEMENTED
 Gemini integration (recommendations, summaries, hazard classification,

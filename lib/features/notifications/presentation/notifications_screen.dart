@@ -1,4 +1,3 @@
-import '../../../core/widgets/push_opt_in_card.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../../routing/app_routes.dart';
@@ -51,6 +50,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   String? _errorMessage;
   bool _isSaving = false;
 
+  /// Marked read here but not yet confirmed by the server — shown as read
+  /// straight away so tapping a notification never waits on the network.
+  final Set<String> _readLocally = {};
+
   NotificationRepository _repositoryFor(String organizationId) {
     final existing = _repository;
     if (existing != null && existing.organizationId == organizationId) {
@@ -68,22 +71,23 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
   /// Marks [notification] read (if it isn't) and opens the page it is
   /// about, when there is one.
-  Future<void> _open(
-    String organizationId,
-    AppNotification notification,
-  ) async {
-    await _markRead(organizationId, notification);
+  /// Opens the page [notification] is about at once, and marks it read in
+  /// the background — the server call never holds up the tap.
+  void _open(String organizationId, AppNotification notification) {
+    _markRead(organizationId, notification);
     final route = routeForNotification(notification);
-    if (route != null && mounted) context.go(route);
+    if (route != null) context.go(route);
   }
 
+  /// Shows [notification] as read immediately and tells the server in the
+  /// background; if that fails it shows as unread again, with the error.
   Future<void> _markRead(
     String organizationId,
     AppNotification notification,
   ) async {
-    if (notification.isRead) return;
+    if (notification.isRead || _readLocally.contains(notification.id)) return;
     setState(() {
-      _isSaving = true;
+      _readLocally.add(notification.id);
       _errorMessage = null;
     });
     try {
@@ -93,9 +97,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       );
     } on AppException catch (e) {
       if (!mounted) return;
-      setState(() => _errorMessage = e.message);
-    } finally {
-      if (mounted) setState(() => _isSaving = false);
+      setState(() {
+        _readLocally.remove(notification.id);
+        _errorMessage = e.message;
+      });
     }
   }
 
@@ -141,7 +146,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       builder: (context, snapshot) {
         final notifications = snapshot.data ?? const <AppNotification>[];
         final isLoading = snapshot.connectionState == ConnectionState.waiting;
-        final unreadCount = notifications.where((n) => !n.isRead).length;
+        bool isRead(AppNotification n) =>
+            n.isRead || _readLocally.contains(n.id);
+        final unreadCount = notifications.where((n) => !isRead(n)).length;
 
         return Scaffold(
           body: ListView(
@@ -172,8 +179,6 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                         label: const Text('Mark all read'),
                       ),
               ),
-              const SizedBox(height: AppSpacing.md),
-              const PushOptInCard(),
               const SizedBox(height: AppSpacing.md),
               if (_errorMessage != null) ...[
                 AuthErrorBanner(message: _errorMessage!),
@@ -206,6 +211,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
               for (final notification in notifications) ...[
                 _NotificationCard(
                   notification: notification,
+                  isRead: isRead(notification),
                   isSaving: _isSaving,
                   onTap: () => _open(organizationId, notification),
                 ),
@@ -222,11 +228,13 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 class _NotificationCard extends StatelessWidget {
   const _NotificationCard({
     required this.notification,
+    required this.isRead,
     required this.isSaving,
     required this.onTap,
   });
 
   final AppNotification notification;
+  final bool isRead;
   final bool isSaving;
   final VoidCallback onTap;
 
@@ -257,7 +265,7 @@ class _NotificationCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isUnread = !notification.isRead;
+    final isUnread = !isRead;
     final color = _typeColor;
     final surface = Theme.of(context).colorScheme.surface;
 

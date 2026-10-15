@@ -1,4 +1,3 @@
-import '../../../core/widgets/push_opt_in_card.dart';
 import 'package:flutter/material.dart';
 import '../../../core/widgets/dashboard_grid.dart';
 import '../../corrective_actions/domain/corrective_action_status.dart';
@@ -229,8 +228,6 @@ class _ForemanDashboardScreenState extends State<ForemanDashboardScreen> {
         ),
         const SizedBox(height: AppSpacing.md),
         const ReportSafetyIssueButton(),
-        const SizedBox(height: AppSpacing.md),
-        const PushOptInCard(),
         const SizedBox(height: AppSpacing.lg),
         DashboardSection(
           title: "What's Due",

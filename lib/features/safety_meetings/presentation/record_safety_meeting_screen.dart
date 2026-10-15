@@ -567,6 +567,12 @@ class _EntryListState extends State<_EntryList> {
             SizedBox(
               height: AppSpacing.minTouchTarget,
               child: OutlinedButton.icon(
+                // The app theme makes outlined buttons full width; beside a
+                // text box in a Row that has no width to fill, so this one
+                // takes just the width it needs.
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size(0, AppSpacing.minTouchTarget),
+                ),
                 onPressed: _add,
                 icon: const Icon(Icons.add),
                 label: Text(widget.addLabel),

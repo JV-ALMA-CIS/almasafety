@@ -1,4 +1,3 @@
-import '../../../core/widgets/push_opt_in_card.dart';
 import 'package:flutter/material.dart';
 import 'safety_reports_card.dart';
 import '../../organizations/presentation/site_emergency_contacts.dart';
@@ -157,8 +156,6 @@ class WorkerDashboardScreen extends StatelessWidget {
         // Always within reach: one button for anything wrong on site — the
         // chooser behind it files a hazard, near-miss or incident.
         const ReportSafetyIssueButton(),
-        const SizedBox(height: AppSpacing.md),
-        const PushOptInCard(),
         const SizedBox(height: AppSpacing.md),
         for (final siteId in siteIds) ...[
           SiteEmergencyContacts(organizationId: organizationId, siteId: siteId),

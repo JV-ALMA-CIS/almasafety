@@ -1,3 +1,8 @@
+import 'deficiency_log_pdf.dart';
+import '../../organizations/domain/site.dart';
+import '../../organizations/data/site_repository.dart';
+import '../../../core/reports/report_context.dart';
+import '../../../core/reports/pdf_report.dart';
 import 'package:flutter/material.dart';
 import '../../../core/services/firestore_service.dart';
 import '../../../core/theme/app_colors.dart';
@@ -31,9 +36,17 @@ class DeficiencyLogScreen extends StatefulWidget {
     this.hazardRepository,
     this.correctiveActionRepository,
     this.peopleDirectory,
+    this.siteRepository,
+    this.printReport,
   });
 
   final String organizationId;
+
+  /// Injected in tests.
+  final SiteRepository? siteRepository;
+
+  /// Injected in tests; defaults to the device's print window.
+  final ReportPrinter? printReport;
 
   /// Injected in tests.
   final HazardRepository? hazardRepository;
@@ -62,6 +75,71 @@ class _DeficiencyLogScreenState extends State<DeficiencyLogScreen> {
         widget.organizationId,
       );
   bool _openOnly = true;
+  bool _isPrinting = false;
+
+  /// Prints the log as shown (open only, or all) — or saves it as PDF.
+  Future<void> _print(
+    List<Hazard> shown,
+    Map<String, CorrectiveAction> actionsById,
+    Map<String, String> names,
+  ) async {
+    setState(() => _isPrinting = true);
+    try {
+      final organizationName = await organizationNameFor(widget.organizationId);
+      final sites =
+          await (widget.siteRepository ??
+                  SiteRepository(
+                    firestoreService: FirestoreService(),
+                    organizationId: widget.organizationId,
+                  ))
+              .watchAll()
+              .first
+              .catchError((Object _) => const <Site>[]);
+      final siteNames = {for (final s in sites) s.id: s.name};
+      final lines = [
+        for (final hazard in shown)
+          _lineFor(
+            hazard,
+            actionsById[hazard.correctiveActionId],
+            names,
+            siteNames,
+          ),
+      ];
+      await (widget.printReport ?? PdfReport.printDocument)(
+        name: 'Deficiency Log - ${PdfReport.date(DateTime.now())}',
+        build: (format) => buildDeficiencyLogPdf(
+          lines: lines,
+          organizationName: organizationName,
+          scope: _openOnly ? 'Open deficiencies' : 'All deficiencies',
+          format: format,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isPrinting = false);
+    }
+  }
+
+  DeficiencyLogLine _lineFor(
+    Hazard hazard,
+    CorrectiveAction? action,
+    Map<String, String> names,
+    Map<String, String> siteNames,
+  ) {
+    final progress = ReportProgress.forHazard(hazard, action);
+    return DeficiencyLogLine(
+      identified: hazard.createdAt,
+      site: siteNames[hazard.siteId] ?? '-',
+      description: hazard.description,
+      foundIn: hazard.inspectionName,
+      responsible: action == null
+          ? 'Not assigned yet'
+          : nameOf(action.assignedTo, names, stored: action.assignedToName),
+      targetDate: action?.dueDate,
+      resolved: hazard.closedAt ?? action?.completedAt,
+      status: progress.label,
+      isOpen: hazard.status != HazardStatus.closed,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -113,6 +191,23 @@ class _DeficiencyLogScreenState extends State<DeficiencyLogScreen> {
                             label: '${deficiencies.length - open} corrected',
                           ),
                         ],
+                      ),
+                      const SizedBox(height: AppSpacing.sm),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            minimumSize: const Size(
+                              0,
+                              AppSpacing.minTouchTarget,
+                            ),
+                          ),
+                          onPressed: _isPrinting
+                              ? null
+                              : () => _print(shown, actionsById, names),
+                          icon: const Icon(Icons.print),
+                          label: const Text('Print / PDF'),
+                        ),
                       ),
                       const SizedBox(height: AppSpacing.md),
                       ColorChoiceChips<bool>(

@@ -1,3 +1,6 @@
+import 'aha_pdf.dart';
+import '../../../core/reports/report_context.dart';
+import '../../../core/reports/pdf_report.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/errors/app_exception.dart';
@@ -448,6 +451,7 @@ class RiskAssessmentDetailScreen extends StatefulWidget {
     this.service,
     this.siteRepository,
     this.loadActivities,
+    this.printReport,
   });
 
   final String organizationId;
@@ -456,6 +460,9 @@ class RiskAssessmentDetailScreen extends StatefulWidget {
   final RiskAssessmentService? service;
   final SiteRepository? siteRepository;
   final SiteActivitiesLoader? loadActivities;
+
+  /// Injected in tests; defaults to the device's print window.
+  final ReportPrinter? printReport;
 
   @override
   State<RiskAssessmentDetailScreen> createState() =>
@@ -468,6 +475,7 @@ class _RiskAssessmentDetailScreenState
       widget.service ?? RiskAssessmentService();
   late String _id = widget.id;
   bool _isBusy = false;
+  bool _isPrinting = false;
   String? _activitiesSiteId;
   Future<List<Activity>>? _activities;
 
@@ -557,6 +565,35 @@ class _RiskAssessmentDetailScreenState
     });
   }
 
+  /// Prints the AHA (or saves it as PDF) in the Safety Plan's form layout.
+  Future<void> _print(RiskAssessment aha) async {
+    setState(() => _isPrinting = true);
+    try {
+      final organizationName = await organizationNameFor(widget.organizationId);
+      final activities = aha.activityIds.isEmpty
+          ? const <Activity>[]
+          : await _activitiesFor(aha.siteId);
+      final names = {for (final a in activities) a.id: a.name};
+      await (widget.printReport ?? PdfReport.printDocument)(
+        name:
+            'AHA - ${aha.featureOfWork} - ${aha.siteName ?? 'site'} - '
+            'rev ${aha.revision}',
+        build: (format) => buildAhaPdf(
+          aha: aha,
+          organizationName: organizationName,
+          activityNames: [for (final id in aha.activityIds) ?names[id]],
+          format: format,
+        ),
+      );
+    } on Object {
+      if (mounted) {
+        setState(() => _errorMessage = 'Could not prepare the PDF. Try again.');
+      }
+    } finally {
+      if (mounted) setState(() => _isPrinting = false);
+    }
+  }
+
   Future<void> _revise(RiskAssessment aha) async {
     await _run(() async {
       final id = await _service.revise(
@@ -616,7 +653,24 @@ class _RiskAssessmentDetailScreenState
                   ),
                 ],
               ),
-              const SizedBox(height: AppSpacing.md),
+              const SizedBox(height: AppSpacing.sm),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(0, AppSpacing.minTouchTarget),
+                  ),
+                  onPressed: _isPrinting ? null : () => _print(aha),
+                  icon: _isPrinting
+                      ? const SizedBox.square(
+                          dimension: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.print),
+                  label: const Text('Print / PDF'),
+                ),
+              ),
+              const SizedBox(height: AppSpacing.sm),
               AccentCard(
                 color: AppColors.projects,
                 icon: Icons.info_outline,

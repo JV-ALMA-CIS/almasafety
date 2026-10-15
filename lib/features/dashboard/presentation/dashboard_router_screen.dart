@@ -1,3 +1,4 @@
+import '../../../core/widgets/notification_prompt.dart';
 import 'package:flutter/material.dart';
 import '../../incidents/data/incident_repository.dart';
 import 'package:provider/provider.dart';
@@ -79,20 +80,27 @@ class DashboardRouterScreen extends StatelessWidget {
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
 
     if (isPlatformAdministrator) {
-      return AdminDashboardScreen(
-        userName: profile?.name,
-        userUid: profile?.uid,
-        analyticsRepository: analyticsRepository,
-        hazardRepository: hazardRepository,
-        incidentRepository: incidentRepository,
-        correctiveActionRepository: correctiveActionRepository,
-        siteRepository: siteRepository,
-        projectRepository: projectRepository,
-        organizationRepository: organizationRepository,
-        safetyComplianceRepository: safetyComplianceRepository,
-      );
+      return NotificationPrompt(child: _admin(profile?.name, profile?.uid));
     }
+    return NotificationPrompt(child: _forRole(sessionController));
+  }
 
+  Widget _admin(String? userName, String? userUid) {
+    return AdminDashboardScreen(
+      userName: userName,
+      userUid: userUid,
+      analyticsRepository: analyticsRepository,
+      hazardRepository: hazardRepository,
+      incidentRepository: incidentRepository,
+      correctiveActionRepository: correctiveActionRepository,
+      siteRepository: siteRepository,
+      projectRepository: projectRepository,
+      organizationRepository: organizationRepository,
+      safetyComplianceRepository: safetyComplianceRepository,
+    );
+  }
+
+  Widget _forRole(SessionController sessionController) {
     // The profile and membership streams resolve independently — a
     // Foreman/Worker/Site Manager can reach AuthStatus.authenticated (profile
     // loaded) before their OWN membership subscription has reported even

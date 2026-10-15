@@ -1,4 +1,3 @@
-import '../../../core/widgets/push_opt_in_card.dart';
 import 'package:flutter/material.dart';
 import '../../incidents/domain/incident_enums.dart';
 import 'safety_reports_card.dart';
@@ -180,8 +179,6 @@ class _SiteManagerDashboardScreenState
             icon: Icons.engineering,
           ),
           const SizedBox(height: AppSpacing.lg),
-          const PushOptInCard(),
-          const SizedBox(height: AppSpacing.md),
           if (sessionController.profile?.uid != null) ...[
             DashboardSection(
               title: "What's Due",

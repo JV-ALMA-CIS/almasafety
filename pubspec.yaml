@@ -80,6 +80,8 @@ dependencies:
   # SafetyLearningLibraryScreen's upload flow).
   mime: ^2.0.0
   camera: ^0.12.1
+  pdf: ^3.13.1
+  printing: ^5.15.1
 
 dev_dependencies:
   flutter_test:
