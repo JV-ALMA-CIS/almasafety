@@ -21,6 +21,7 @@ Future<Uint8List> buildAhaPdf({
   bool compress = true,
 }) async {
   final now = generatedAt ?? DateTime.now();
+  final logo = await PdfReport.logo();
   final isDraft = aha.status == RiskAssessmentStatus.draft;
   final status = switch (aha.status) {
     RiskAssessmentStatus.draft => 'DRAFT - not yet accepted',
@@ -42,6 +43,7 @@ Future<Uint8List> buildAhaPdf({
         children: [
           PdfReport.header(
             organizationName: organizationName,
+            logo: logo,
             title: 'ACTIVITY HAZARD ANALYSIS (AHA)',
             subtitle:
                 '${aha.featureOfWork} - ${aha.siteName ?? 'Site'} - '

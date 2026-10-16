@@ -362,6 +362,26 @@ describe("submitPreStartCheck", () => {
       expect(again.submission.outcome).toBe("go");
       expect(again.questions).toEqual([]);
     });
+
+  test("a check saved offline is accepted on its own day, but not counted " +
+    "for a later day", async () => {
+    const {date, questions} = await getMyPreStartCheck.run(
+      callRequest("worker-1", {organizationId: ORG_A})
+    );
+    await expect(submitPreStartCheck.run(callRequest("worker-1", {
+      organizationId: ORG_A,
+      forDate: "2020-01-01",
+      answers: answersFor(questions),
+    }))).rejects.toThrow(/was for 2020-01-01/);
+    expect(await check("worker-1")).toBeNull();
+
+    const result = await submitPreStartCheck.run(callRequest("worker-1", {
+      organizationId: ORG_A,
+      forDate: date,
+      answers: answersFor(questions),
+    }));
+    expect(result.outcome).toBe("go");
+  });
 });
 
 describe("getSiteCrewPreStartChecks", () => {

@@ -1617,8 +1617,36 @@ In-app notifications (October 2026): corrective actions assigned / submitted
 Printable reports (October 2026): "Print / PDF" on each AHA (the Safety
   Plan's form layout: details, steps / hazards / controls, equipment /
   inspection / training, prepared / accepted / COR sign-off; drafts marked
-  DRAFT) and on the Deficiency Log (Section 7c columns, as filtered). Built
-  in the app with the `pdf`/`printing` packages (lib/core/reports).
+  DRAFT), the Deficiency Log (Section 7c columns, as filtered), weekly /
+  monthly meeting records (attendance with a signature column), incident
+  reports (everything for ENG Form 3394, with the Section 8 reporting steps),
+  inspection reports (deficiencies + checklist by section + sign-off) and
+  daily safety meeting records (from the Site Manager's meeting review).
+  Every report carries the company logo (assets/images/almacis_logo.jpg).
+  Built in the app with the `pdf`/`printing` packages (lib/core/reports).
+
+Monthly man-hours (October 2026, Safety Plan 8a): last month's man-hours and
+  workers per site, due by the 25th — entered by Foremen (own sites) and Site
+  Managers, with a suggested figure from daily meeting attendance
+  (worker-days x hours/day); lost-time and recordable incidents counted from
+  incidents; printed report for the Safety Office and "Mark as reported";
+  What's Due lists missing sites and the unreported month (overdue after the
+  25th). Collections `man_hours/{siteId}_{yyyy-MM}`, `man_hours_reports/{yyyy-MM}`.
+
+Working with poor signal (October 2026): the app opens without signal
+  (web/offline_sw.js keeps the app files; Flutter's own worker is turned off
+  in web/flutter_bootstrap.js), Firestore keeps what was loaded on the device
+  (persistence on in main.dart), and field entries made with no signal are
+  saved on the phone and sent automatically, in order, once the signal is
+  back (lib/core/offline/outbox.dart). Covered: hazard / near-miss and
+  incident reports (with photo), the Pre-Start check (today's questions are
+  remembered on the phone; `forDate` stops a late send counting for the next
+  day), meeting attendance, inspection answers and submission, man-hours.
+  Only entries that are safe to receive twice go through the outbox. A strip
+  above every page shows "No signal" / "N saved on this phone" / "could not
+  be sent", with Send now, Try again and Remove. Completing a daily meeting
+  waits until its attendance has been sent. Needs signal: starting meetings
+  or inspections, photos on inspection items, approvals and admin work.
 
 NOT YET IMPLEMENTED
 Gemini integration (recommendations, summaries, hazard classification,

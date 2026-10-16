@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
@@ -116,11 +117,27 @@ class PdfReport {
     );
   }
 
-  /// The heading on every page: company, report title, and a subtitle line.
+  static pw.MemoryImage? _logo;
+
+  /// The company logo (assets/images/almacis_logo.jpg), loaded once; null if
+  /// it cannot be loaded, in which case the header shows the name instead.
+  static Future<pw.MemoryImage?> logo() async {
+    if (_logo != null) return _logo;
+    try {
+      final data = await rootBundle.load('assets/images/almacis_logo.jpg');
+      return _logo = pw.MemoryImage(data.buffer.asUint8List());
+    } on Object {
+      return null;
+    }
+  }
+
+  /// The heading on every page: the company logo (or its name), the report
+  /// title, and a subtitle line.
   static pw.Widget header({
     required String organizationName,
     required String title,
     String? subtitle,
+    pw.ImageProvider? logo,
   }) {
     return pw.Container(
       padding: const pw.EdgeInsets.only(bottom: 6),
@@ -131,11 +148,16 @@ class PdfReport {
       child: pw.Row(
         crossAxisAlignment: pw.CrossAxisAlignment.end,
         children: [
+          if (logo != null) ...[
+            pw.Image(logo, height: 30),
+            pw.SizedBox(width: 12),
+          ],
           pw.Expanded(
             child: pw.Column(
               crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: [
-                text(organizationName, size: 9, bold: true, color: brand),
+                if (logo == null)
+                  text(organizationName, size: 9, bold: true, color: brand),
                 text(title, size: 15, bold: true),
                 if (subtitle != null) text(subtitle, size: 9, color: muted),
               ],
@@ -182,6 +204,34 @@ class PdfReport {
           text(value == null || value.isEmpty ? '-' : value, size: 9),
         ],
       ),
+    );
+  }
+
+  /// "Role: Name ____ Signature ____ Date ____" for signing on paper.
+  static pw.Widget signatureLine(String role, String? name, {DateTime? on}) {
+    pw.Widget blank(double width) => pw.Container(
+      width: width,
+      height: 0.6,
+      color: rule,
+      margin: const pw.EdgeInsets.only(left: 4, right: 12),
+    );
+    return pw.Row(
+      crossAxisAlignment: pw.CrossAxisAlignment.end,
+      children: [
+        text('$role: ', size: 8, color: muted),
+        text(name ?? '', size: 9, bold: true),
+        pw.SizedBox(width: 16),
+        text('Signature', size: 8, color: muted),
+        blank(140),
+        text('Date', size: 8, color: muted),
+        if (on != null)
+          pw.Padding(
+            padding: const pw.EdgeInsets.only(left: 4),
+            child: text(date(on), size: 9),
+          )
+        else
+          blank(70),
+      ],
     );
   }
 

@@ -1,3 +1,4 @@
+import '../../../core/offline/saved_on_phone_note.dart';
 import 'dart:typed_data';
 import '../../../core/widgets/photo_capture.dart';
 
@@ -93,6 +94,9 @@ class _ReportHazardScreenState extends State<ReportHazardScreen> {
   String? _errorMessage;
   bool _submitted = false;
 
+  /// No signal: the report is saved on this phone and sent later.
+  bool _savedOffline = false;
+
   @override
   void dispose() {
     _descriptionController.dispose();
@@ -162,6 +166,12 @@ class _ReportHazardScreenState extends State<ReportHazardScreen> {
       );
       if (!mounted) return;
       setState(() => _submitted = true);
+    } on SavedOfflineException {
+      if (!mounted) return;
+      setState(() {
+        _submitted = true;
+        _savedOffline = true;
+      });
     } on AppException catch (e) {
       if (!mounted) return;
       setState(() => _errorMessage = e.message);
@@ -180,6 +190,7 @@ class _ReportHazardScreenState extends State<ReportHazardScreen> {
       _photo = null;
       _photoBytes = null;
       _submitted = false;
+      _savedOffline = false;
       _errorMessage = null;
     });
   }
@@ -216,7 +227,29 @@ class _ReportHazardScreenState extends State<ReportHazardScreen> {
     if (_submitted) {
       return Scaffold(
         appBar: AppBar(title: const Text('Report a Hazard')),
-        body: _SuccessView(kind: _kind, onReportAnother: _reportAnother),
+        body: Column(
+          children: [
+            if (_savedOffline)
+              const Padding(
+                padding: EdgeInsets.fromLTRB(
+                  AppSpacing.md,
+                  AppSpacing.md,
+                  AppSpacing.md,
+                  0,
+                ),
+                child: SavedOnPhoneNote(
+                  text:
+                      'No signal - your report is saved on this phone and '
+                      'will be sent automatically when the signal comes '
+                      'back. If it is dangerous right now, tell your Foreman '
+                      'in person.',
+                ),
+              ),
+            Expanded(
+              child: _SuccessView(kind: _kind, onReportAnother: _reportAnother),
+            ),
+          ],
+        ),
       );
     }
 

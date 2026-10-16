@@ -179,6 +179,12 @@ export {recordSafetyMeeting} from "./safety_meeting_callable";
 
 export {updateSiteEmergencyInfo} from "./site_emergency_callable";
 
+export {
+  saveManHours,
+  markManHoursReported,
+  getManHoursSuggestion,
+} from "./man_hours_callable";
+
 export {registerPushToken, unregisterPushToken} from "./push_callable";
 
 export {

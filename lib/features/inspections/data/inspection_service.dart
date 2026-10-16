@@ -1,3 +1,4 @@
+import '../../../core/offline/outbox.dart';
 import 'dart:typed_data';
 
 import 'package:cloud_functions/cloud_functions.dart';
@@ -14,10 +15,12 @@ class InspectionService {
   InspectionService({
     FirebaseFunctions? functions,
     StorageService? storageService,
+    this._outbox,
   }) : _injected = functions,
        _storageService = storageService ?? StorageService();
 
   final FirebaseFunctions? _injected;
+  final Outbox? _outbox;
   final StorageService _storageService;
 
   FirebaseFunctions _require() {
@@ -102,7 +105,8 @@ class InspectionService {
     return result['id'] as String? ?? '';
   }
 
-  /// Saves the answer to one item (null clears it).
+  /// Saves the answer to one item (null clears it). With no signal it is
+  /// kept on this phone ([SavedOfflineException]) and sent later.
   Future<void> recordItem({
     required String organizationId,
     required String inspectionId,
@@ -110,25 +114,45 @@ class InspectionService {
     required InspectionResult? result,
     String? note,
     String? photoUrl,
-  }) => _call<Object?>('recordInspectionItem', {
+  }) => _send('recordInspectionItem', {
     'organizationId': organizationId,
     'inspectionId': inspectionId,
     'itemId': itemId,
     'result': result?.id,
     'note': ?note,
     'photoUrl': ?photoUrl,
-  });
+  }, label: 'Inspection answer');
 
   /// Submits the inspection; returns how many deficiencies were raised.
+  /// With no signal it waits on this phone behind its answers
+  /// ([SavedOfflineException]).
   Future<int> submit({
     required String organizationId,
     required String inspectionId,
   }) async {
-    final result = await _call<Map<Object?, Object?>>('submitInspection', {
+    final result = await _send('submitInspection', {
       'organizationId': organizationId,
       'inspectionId': inspectionId,
-    });
-    return (result['deficiencies'] as num?)?.toInt() ?? 0;
+    }, label: 'Inspection submitted');
+    return result is Map ? (result['deficiencies'] as num?)?.toInt() ?? 0 : 0;
+  }
+
+  Future<Object?> _send(
+    String name,
+    Map<String, Object?> data, {
+    required String label,
+  }) async {
+    try {
+      return await (_outbox ?? Outbox.instance).send(
+        callable: name,
+        data: data,
+        label: label,
+        caller: (name, data) async =>
+            (await _require().httpsCallable(name).call<Object?>(data)).data,
+      );
+    } on FirebaseFunctionsException catch (e) {
+      throw OrganizationAdminService.mapCallableError(e);
+    }
   }
 
   /// Signs off a submitted inspection (another Site Manager/Admin).

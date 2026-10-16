@@ -42,5 +42,15 @@
     * https://docs.flutter.dev/platform-integration/web/initialization
   -->
   <script src="flutter_bootstrap.js" async></script>
+  <!-- Keeps the app opening with weak or no signal (see offline_sw.js). -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('offline_sw.js').catch(function (e) {
+          console.warn('Offline support unavailable:', e);
+        });
+      });
+    }
+  </script>
 </body>
 </html>

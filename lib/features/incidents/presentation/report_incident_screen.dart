@@ -1,3 +1,4 @@
+import '../../../core/offline/saved_on_phone_note.dart';
 import 'dart:typed_data';
 import '../../organizations/presentation/site_emergency_contacts.dart';
 import '../../../core/widgets/photo_capture.dart';
@@ -78,6 +79,9 @@ class _ReportIncidentScreenState extends State<ReportIncidentScreen> {
   Uint8List? _photoBytes;
   bool _isSubmitting = false;
   bool _submitted = false;
+
+  /// No signal: the report is saved on this phone and sent later.
+  bool _savedOffline = false;
   String? _errorMessage;
 
   DateTime _now() => (widget.now ?? DateTime.now)();
@@ -169,6 +173,12 @@ class _ReportIncidentScreenState extends State<ReportIncidentScreen> {
       );
       if (!mounted) return;
       setState(() => _submitted = true);
+    } on SavedOfflineException {
+      if (!mounted) return;
+      setState(() {
+        _submitted = true;
+        _savedOffline = true;
+      });
     } on AppException catch (e) {
       if (!mounted) return;
       setState(() => _errorMessage = e.message);
@@ -202,7 +212,29 @@ class _ReportIncidentScreenState extends State<ReportIncidentScreen> {
         ),
       );
     } else if (_submitted) {
-      body = _SuccessView(onDone: () => Navigator.of(context).maybePop());
+      body = Column(
+        children: [
+          if (_savedOffline)
+            const Padding(
+              padding: EdgeInsets.fromLTRB(
+                AppSpacing.md,
+                AppSpacing.md,
+                AppSpacing.md,
+                0,
+              ),
+              child: SavedOnPhoneNote(
+                text:
+                    'No signal - your report is saved on this phone and will '
+                    'be sent automatically when the signal comes back. No one '
+                    'has been told yet: if someone is hurt, PHONE your Site '
+                    'Manager now.',
+              ),
+            ),
+          Expanded(
+            child: _SuccessView(onDone: () => Navigator.of(context).maybePop()),
+          ),
+        ],
+      );
     } else {
       body = _buildForm(organizationId: organizationId, siteIds: siteIds);
     }

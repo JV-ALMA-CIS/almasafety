@@ -1,3 +1,7 @@
+import 'incident_pdf.dart';
+import '../../../core/reports/report_context.dart';
+import '../../../core/reports/print_report_button.dart';
+import '../../../core/reports/pdf_report.dart';
 import 'package:flutter/material.dart';
 import '../../corrective_actions/presentation/report_progress.dart';
 import '../../authentication/domain/app_role.dart';
@@ -401,6 +405,7 @@ class IncidentDetailScreen extends StatefulWidget {
     required this.incidentId,
     required this.canManage,
     this.canInvestigate = false,
+    this.printReport,
     required this.repository,
     required this.correctiveActionRepository,
     this.service,
@@ -418,6 +423,9 @@ class IncidentDetailScreen extends StatefulWidget {
   /// May start the investigation, raise corrective actions and close the
   /// incident — Site Manager/Admin only (see `requireIncidentInvestigator`).
   final bool canInvestigate;
+
+  /// Injected in tests; defaults to the device's print window.
+  final ReportPrinter? printReport;
   final IncidentRepository repository;
   final CorrectiveActionRepository correctiveActionRepository;
   final IncidentService? service;
@@ -567,6 +575,38 @@ class _IncidentDetailScreenState extends State<IncidentDetailScreen> {
     );
   }
 
+  /// Prints the incident report (for ENG Form 3394), or saves it as PDF.
+  Future<void> _print(Incident incident, List<CorrectiveAction> actions) async {
+    final organizationName = await organizationNameFor(widget.organizationId);
+    final siteName = await _siteNameFor(incident.siteId) ?? 'Site';
+    await (widget.printReport ?? PdfReport.printDocument)(
+      name:
+          'Incident report - $siteName - '
+          '${PdfReport.date(incident.occurredAt)}',
+      build: (format) => buildIncidentPdf(
+        incident: incident,
+        organizationName: organizationName,
+        siteName: siteName,
+        reportedBy: nameOf(incident.reportedByUid, _names),
+        actions: [
+          for (final action in actions)
+            IncidentReportAction(
+              title: action.title,
+              assignedTo: nameOf(
+                action.assignedTo,
+                _names,
+                stored: action.assignedToName,
+              ),
+              dueDate: action.dueDate,
+              status: action.status.label,
+              completedAt: action.completedAt,
+            ),
+        ],
+        format: format,
+      ),
+    );
+  }
+
   Future<void> _chooseReportingLevel(Incident incident) async {
     final level = await pickReportingLevel(
       context,
@@ -709,6 +749,8 @@ class _IncidentDetailScreenState extends State<IncidentDetailScreen> {
               FeatureChip(icon: Icons.speed, label: severity.label),
           ],
         ),
+        const SizedBox(height: AppSpacing.sm),
+        PrintReportButton(onPrint: () => _print(incident, actions)),
         const SizedBox(height: AppSpacing.md),
         if (_errorMessage != null) ...[
           AuthErrorBanner(message: _errorMessage!),

@@ -44,6 +44,7 @@ Future<Uint8List> buildDeficiencyLogPdf({
   bool compress = true,
 }) async {
   final now = generatedAt ?? DateTime.now();
+  final logo = await PdfReport.logo();
   final open = lines.where((l) => l.isOpen).length;
   final doc = pw.Document(
     compress: compress,
@@ -56,6 +57,7 @@ Future<Uint8List> buildDeficiencyLogPdf({
       margin: const pw.EdgeInsets.all(28),
       header: (context) => PdfReport.header(
         organizationName: organizationName,
+        logo: logo,
         title: 'DEFICIENCY LOG',
         subtitle:
             '$scope - ${lines.length} deficienc'

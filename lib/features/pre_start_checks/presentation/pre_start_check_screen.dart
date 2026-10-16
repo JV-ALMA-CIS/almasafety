@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../../core/errors/app_exception.dart';
+import '../../../core/offline/saved_on_phone_note.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
@@ -46,6 +47,10 @@ class _PreStartCheckScreenState extends State<PreStartCheckScreen> {
   bool _isSubmitting = false;
   String? _error;
   PreStartOutcome? _result;
+
+  /// True when there was no signal and the check was saved on this phone;
+  /// [_result] is then this phone's own reading of the answers.
+  bool _savedOffline = false;
 
   List<PreStartQuestion> get _questions => widget.check.questions;
 
@@ -103,6 +108,7 @@ class _PreStartCheckScreenState extends State<PreStartCheckScreen> {
     try {
       final outcome = await widget.service.submitPreStartCheck(
         organizationId: widget.organizationId,
+        forDate: widget.check.date.isEmpty ? null : widget.check.date,
         answers: {
           for (final question in _questions)
             question.id: (
@@ -115,6 +121,12 @@ class _PreStartCheckScreenState extends State<PreStartCheckScreen> {
       );
       if (!mounted) return;
       setState(() => _result = outcome);
+    } on SavedOfflineException {
+      if (!mounted) return;
+      setState(() {
+        _savedOffline = true;
+        _result = _preview;
+      });
     } on AppException catch (e) {
       if (!mounted) return;
       setState(() => _error = e.message);
@@ -138,7 +150,22 @@ class _PreStartCheckScreenState extends State<PreStartCheckScreen> {
       children: [
         PreStartOutcomePanel(outcome: outcome),
         const SizedBox(height: AppSpacing.md),
-        if (outcome == PreStartOutcome.stop)
+        if (_savedOffline) ...[
+          const SavedOnPhoneNote(
+            text:
+                'No signal - your check is saved on this phone and will be '
+                'sent automatically when the signal comes back.',
+          ),
+          const SizedBox(height: AppSpacing.md),
+        ],
+        if (outcome == PreStartOutcome.stop && _savedOffline)
+          const Text(
+            'There is no signal, so your Foreman has NOT been told yet. Go '
+            'and tell them in person now. Do not start this work until they '
+            'have spoken with you.',
+            style: AppTextStyles.bodyLarge,
+          )
+        else if (outcome == PreStartOutcome.stop)
           const Text(
             'Your Foreman has been told. Do not start this work until they '
             'have spoken with you.',

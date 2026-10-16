@@ -7,6 +7,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pdf/pdf.dart';
 import 'package:provider/provider.dart';
+import 'package:jva_safety/features/daily_safety_meetings/presentation/daily_meeting_pdf.dart';
+import 'package:jva_safety/features/incidents/domain/incident.dart';
+import 'package:jva_safety/features/incidents/presentation/incident_pdf.dart';
+import 'package:jva_safety/features/inspections/data/inspection_repository.dart';
+import 'package:jva_safety/features/inspections/domain/inspection.dart';
+import 'package:jva_safety/features/inspections/presentation/inspection_pdf.dart';
+import 'package:jva_safety/features/inspections/presentation/inspections_screen.dart';
+import 'package:jva_safety/features/safety_meetings/domain/safety_meeting.dart';
+import 'package:jva_safety/features/safety_meetings/presentation/safety_meeting_pdf.dart';
+import 'package:jva_safety/features/safety_meetings/presentation/safety_meetings_screen.dart';
 import 'package:jva_safety/core/reports/pdf_report.dart';
 import 'package:jva_safety/core/services/firestore_service.dart';
 import 'package:jva_safety/core/services/session_controller.dart';
@@ -106,6 +116,21 @@ RiskAssessment _aha({String status = 'accepted'}) =>
     });
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('the company logo is on the printed reports', () async {
+    expect(await PdfReport.logo(), isNotNull);
+    final raw = latin1.decode(
+      await buildDeficiencyLogPdf(
+        lines: const [],
+        organizationName: 'JV ALMA C.I.S.',
+        scope: 'All',
+        compress: false,
+      ),
+    );
+    expect(raw, matches(RegExp(r'/Subtype\s*/Image')));
+  });
+
   group('the report kit', () {
     test('typographic characters become plain ones the PDF can draw', () {
       expect(
@@ -297,7 +322,266 @@ void main() {
       expect(printer.pdf, isNotNull);
     });
   });
+
+  group('more reports', () {
+    void expectAll(String text, List<String> expected) {
+      for (final e in expected) {
+        expect(text, contains(e), reason: e);
+      }
+    }
+
+    test(
+      'weekly meeting record: subjects, attendance to sign, concerns',
+      () async {
+        final meeting = SafetyMeeting.fromMap('m1', {
+          'organizationId': 'org',
+          'kind': 'weeklyEmployee',
+          'date': '2026-10-15',
+          'siteName': 'Italian Embassy',
+          'topics': ['PPE and its condition'],
+          'attendeeUids': ['w1'],
+          'attendeeNames': {'w1': 'Wanjiru'},
+          'otherAttendees': ['Visiting electrician'],
+          'concerns': ['Extinguisher missing at gate'],
+          'facilitatorUid': 'f1',
+          'facilitatorName': 'Fred Foreman',
+        });
+        expectAll(
+          _pdfText(
+            await buildSafetyMeetingPdf(
+              meeting: meeting,
+              organizationName: 'JV ALMA C.I.S.',
+              compress: false,
+            ),
+          ),
+          [
+            'WEEKLY EMPLOYEE SAFETY MEETING',
+            'SUBJECTS COVERED',
+            'PPE and its condition',
+            'Wanjiru',
+            'Visiting electrician',
+            'Signature',
+            'Extinguisher missing at gate',
+            'Fred Foreman',
+          ],
+        );
+      },
+    );
+
+    test('incident report: what happened, reporting steps, actions', () async {
+      final incident = Incident.fromMap('i1', {
+        'organizationId': 'org',
+        'projectId': 'p',
+        'siteId': 's1',
+        'reportedByUid': 'w1',
+        'type': 'injury',
+        'description': 'Fell from a ladder',
+        'occurredAt': Timestamp.fromDate(DateTime(2026, 10, 13, 8)),
+        'status': 'underInvestigation',
+        'severity': 'serious',
+        'injuredPersonName': 'John Doe',
+        'immediateAction': 'First aid given',
+        'correctiveActionIds': <String>[],
+        'reportingLevel': 'lostTime',
+        'reportingSteps': [
+          {
+            'id': 'form3394',
+            'label': 'ENG Form 3394 accident investigation report submitted',
+            'dueAt': Timestamp.fromDate(DateTime(2026, 10, 18, 8)),
+          },
+        ],
+      });
+      expectAll(
+        _pdfText(
+          await buildIncidentPdf(
+            incident: incident,
+            organizationName: 'JV ALMA C.I.S.',
+            siteName: 'Rosslyn Ridge',
+            reportedBy: 'Wanjiru',
+            actions: [
+              IncidentReportAction(
+                title: 'Tie off ladders',
+                assignedTo: 'Fred Foreman',
+                dueDate: DateTime(2026, 10, 20),
+                status: 'Open',
+              ),
+            ],
+            compress: false,
+          ),
+        ),
+        [
+          'INCIDENT REPORT',
+          'ENG Form 3394',
+          'Fell from a ladder',
+          'John Doe',
+          'First aid given',
+          'Lost time or major damage',
+          'NOT DONE',
+          'Tie off ladders',
+          'Fred Foreman',
+        ],
+      );
+    });
+
+    test(
+      'inspection report: deficiencies and the checklist by section',
+      () async {
+        final text = _pdfText(
+          await buildInspectionPdf(
+            inspection: _inspection(),
+            organizationName: 'JV ALMA C.I.S.',
+            compress: false,
+          ),
+        );
+        expectAll(text, [
+          'DAILY SITE INSPECTION REPORT',
+          'DEFICIENCIES (1)',
+          'Guardrails fitted: Missing on level 2',
+          'CHECKLIST',
+          'Daily checks',
+          'NOT OK',
+          'Fred Foreman',
+        ]);
+      },
+    );
+
+    test(
+      'daily meeting record: points, AHAs, attendance, crew result',
+      () async {
+        expectAll(
+          _pdfText(
+            await buildDailyMeetingPdf(
+              organizationName: 'JV ALMA C.I.S.',
+              compress: false,
+              report: const DailyMeetingReport(
+                siteName: 'Rosslyn Ridge',
+                projectName: 'Roof replacement',
+                date: '2026-10-15',
+                foremanName: 'Fred Foreman',
+                status: 'Completed',
+                crewResult: 'GO',
+                activities: ['Roofing'],
+                points: [('Working at height', 'Harness checks')],
+                ahasCovered: ['Removals (revision 2)'],
+                attendance: [('Wanjiru', 'Present')],
+                concerns: ['Hazard: loose sheet'],
+                correctiveActions: ['Secure sheets - Open'],
+              ),
+            ),
+          ),
+          [
+            'DAILY SAFETY MEETING',
+            'Roofing',
+            'Working at height: Harness checks',
+            'Removals (revision 2)',
+            'Wanjiru',
+            'Present',
+            'GO',
+            'Secure sheets',
+          ],
+        );
+      },
+    );
+
+    testWidgets('a monthly meeting prints from its page', (tester) async {
+      final printer = _Printer();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SafetyMeetingDetailScreen(
+            meeting: SafetyMeeting.fromMap('m1', {
+              'organizationId': 'org',
+              'kind': 'monthlySupervisory',
+              'date': '2026-10-01',
+              'facilitatorUid': 'f1',
+            }),
+            printReport: printer.call,
+          ),
+        ),
+      );
+      await tester.tap(find.text('Print / PDF'));
+      await tester.pumpAndSettle();
+      expect(
+        printer.name,
+        'Monthly supervisory meeting - All sites - 2026-10-01',
+      );
+      expect(printer.pdf, isNotNull);
+    });
+
+    testWidgets('an inspection prints from its page', (tester) async {
+      tester.view.physicalSize = const Size(900, 2400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      final firestore = FakeFirebaseFirestore();
+      await firestore.doc('organizations/org/inspections/i1').set({
+        'organizationId': 'org',
+        'siteId': 's1',
+        'siteName': 'Rosslyn Ridge',
+        'templateId': 't',
+        'templateName': 'Daily site inspection',
+        'kind': 'daily',
+        'status': 'submitted',
+        'inspectorUid': 'f1',
+        'inspectorName': 'Fred Foreman',
+        'items': <Object>[],
+        'startedAt': Timestamp.fromDate(DateTime(2026, 10, 15)),
+      });
+      final printer = _Printer();
+      await tester.pumpWidget(
+        ChangeNotifierProvider<SessionController>(
+          create: (_) => _Session(),
+          child: MaterialApp(
+            home: InspectionDetailScreen(
+              organizationId: 'org',
+              inspectionId: 'i1',
+              repository: InspectionRepository(
+                firestoreService: FirestoreService(firestore: firestore),
+                organizationId: 'org',
+              ),
+              canSignOff: false,
+              printReport: printer.call,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Print / PDF'));
+      await tester.pumpAndSettle();
+      expect(printer.name, startsWith('Daily site inspection - Rosslyn Ridge'));
+      expect(printer.pdf, isNotNull);
+    });
+  });
 }
+
+Inspection _inspection() => Inspection(
+  id: 'i1',
+  organizationId: 'org',
+  siteId: 's1',
+  siteName: 'Rosslyn Ridge',
+  templateId: 't',
+  templateName: 'Daily site inspection',
+  kind: InspectionKind.daily,
+  status: InspectionStatus.submitted,
+  inspectorUid: 'f1',
+  inspectorName: 'Fred Foreman',
+  okCount: 1,
+  notOkCount: 1,
+  startedAt: DateTime(2026, 10, 15),
+  items: const [
+    InspectionItem(
+      id: 'd1',
+      section: 'Daily checks',
+      text: 'PPE worn',
+      result: InspectionResult.ok,
+    ),
+    InspectionItem(
+      id: 'd2',
+      section: 'Daily checks',
+      text: 'Guardrails fitted',
+      result: InspectionResult.notOk,
+      note: 'Missing on level 2',
+    ),
+  ],
+);
 
 Map<String, Object?> _ahaData() => {
   'organizationId': 'org',

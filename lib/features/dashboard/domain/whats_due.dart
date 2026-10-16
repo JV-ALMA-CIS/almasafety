@@ -1,3 +1,4 @@
+import '../../man_hours/domain/man_hours.dart';
 import '../../hazards/domain/hazard.dart';
 import '../../hazards/domain/hazard_status.dart';
 import '../../incidents/domain/incident.dart';
@@ -9,6 +10,8 @@ import '../../safety_meetings/domain/safety_meeting.dart';
 /// What a "What's due" line is about — decides its colour, icon and where
 /// tapping it goes.
 enum DueKind {
+  manHoursNotEntered,
+  manHoursNotReported,
   incidentReportsOverdue,
   incidentReportingNotSet,
   incidentReportsDueSoon,
@@ -59,6 +62,11 @@ List<DueItem> computeDueItems({
   List<RiskAssessment> riskAssessments = const [],
   List<Hazard> hazards = const [],
   List<Incident> incidents = const [],
+
+  /// Last month's man-hours entries (Safety Plan 8a), and whether that month
+  /// was reported to the Safety Office; null skips the man-hours lines.
+  List<ManHoursEntry>? manHoursEntries,
+  ManHoursReport? manHoursReport,
   required DateTime now,
 }) {
   final siteIds = {for (final s in sites) s.id};
@@ -112,6 +120,40 @@ List<DueItem> computeDueItems({
               '${soon.length} incident reporting '
               '${_plural(soon.length, 'step', 'steps')} due within 24 hours',
           detail: soon.map((s) => s.label).toSet().join('; '),
+        ),
+      );
+    }
+  }
+
+  // ---- Monthly man-hours (Safety Plan 8a): last month, due the 25th ----
+  if (manHoursEntries != null && sites.isNotEmpty) {
+    final month = reportingMonth(now);
+    final due = manHoursDueDate(month);
+    final overdue = now.isAfter(due);
+    final dueText = overdue
+        ? 'OVERDUE - was due ${shortDay(due)}'
+        : 'due ${shortDay(due)}';
+    final entered = {for (final e in manHoursEntries) e.siteId};
+    final missing = [
+      for (final site in sites)
+        if (!entered.contains(site.id)) site,
+    ];
+    if (missing.isNotEmpty) {
+      items.add(
+        DueItem(
+          kind: DueKind.manHoursNotEntered,
+          title: 'Man-hours for ${monthLabel(month)} not entered',
+          detail: '${names(missing)} · $dueText',
+        ),
+      );
+    } else if (isManager && manHoursReport == null) {
+      items.add(
+        DueItem(
+          kind: DueKind.manHoursNotReported,
+          title:
+              '${monthLabel(month)} man-hours not yet reported to the Safety '
+              'Office',
+          detail: dueText,
         ),
       );
     }

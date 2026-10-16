@@ -545,6 +545,17 @@ export const submitPreStartCheck = onCall(async (request) => {
   const organizationId = requireString(request, "organizationId");
   const worker = await requireActiveWorkerRole(request, organizationId);
   const date = todaysMeetingDate();
+  // A check saved on the phone with no signal says which day its questions
+  // were for; if the signal only came back the next day, it must not count
+  // as that day's check.
+  const forDate = (request.data ?? {}).forDate;
+  if (typeof forDate === "string" && forDate && forDate !== date) {
+    throw new HttpsError(
+      "failed-precondition",
+      `This Pre-Start Check was for ${forDate} and could not be sent that ` +
+        "day. Please do today's check."
+    );
+  }
   const db = getFirestore();
   const checkRef = db.doc(
     `organizations/${organizationId}/pre_start_checks/` +

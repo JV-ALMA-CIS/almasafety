@@ -1,3 +1,4 @@
+import '../../../core/offline/outbox.dart';
 import 'dart:typed_data';
 
 import 'package:cloud_functions/cloud_functions.dart';
@@ -6,7 +7,6 @@ import '../../../core/constants/firestore_paths.dart';
 import '../../corrective_actions/domain/corrective_action_evidence.dart';
 import '../../../core/errors/app_exception.dart';
 import '../../../core/services/firestore_service.dart';
-import '../../../core/services/storage_service.dart';
 import '../../organizations/data/organization_admin_service.dart';
 
 /// Client for the incident callables in `functions/src/incident_callable.ts`
@@ -18,14 +18,14 @@ class IncidentService {
   IncidentService({
     FirebaseFunctions? functions,
     FirestoreService? firestoreService,
-    StorageService? storageService,
+    Outbox? outbox,
   }) : _injected = functions,
        _firestoreService = firestoreService ?? FirestoreService(),
-       _storageService = storageService ?? StorageService();
+       _outbox = outbox ?? Outbox.instance;
 
   final FirebaseFunctions? _injected;
   final FirestoreService _firestoreService;
-  final StorageService _storageService;
+  final Outbox _outbox;
 
   FirebaseFunctions _require() {
     final injected = _injected;
@@ -58,35 +58,33 @@ class IncidentService {
         .doc()
         .id;
 
-    String? photoUrl;
-    if (photoBytes != null && photoFileName != null) {
-      try {
-        final ref = _storageService
-            .orgRef(organizationId)
-            .child('incidents/$incidentId/$photoFileName');
-        await ref.putData(photoBytes);
-        photoUrl = await ref.getDownloadURL();
-      } on FirebaseException catch (e) {
-        throw DataException(
-          e.message ?? 'Failed to upload the incident photo.',
-          cause: e,
-        );
-      }
-    }
-
-    final result = await _call<Map<Object?, Object?>>('createIncident', {
-      'organizationId': organizationId,
-      'siteId': siteId,
-      'incidentId': incidentId,
-      'type': type,
-      'description': description,
-      'occurredAt': occurredAt.toUtc().toIso8601String(),
-      'location': ?location,
-      'injuredPersonName': ?injuredPersonName,
-      'immediateAction': ?immediateAction,
-      'photoUrl': ?photoUrl,
-    });
-    return result['id'] as String? ?? incidentId;
+    // Through the outbox: with no signal the report (and its photo) waits on
+    // this phone. The pre-allocated id makes a repeat send harmless, and
+    // occurredAt is the person's own time, so a late send keeps it.
+    final result = await _send(
+      'createIncident',
+      {
+        'organizationId': organizationId,
+        'siteId': siteId,
+        'incidentId': incidentId,
+        'type': type,
+        'description': description,
+        'occurredAt': occurredAt.toUtc().toIso8601String(),
+        'location': ?location,
+        'injuredPersonName': ?injuredPersonName,
+        'immediateAction': ?immediateAction,
+      },
+      label: 'Incident report',
+      photo: photoBytes != null && photoFileName != null
+          ? OutboxPhoto(
+              storagePath:
+                  'organizations/$organizationId/incidents/$incidentId/'
+                  '$photoFileName',
+              bytes: photoBytes,
+            )
+          : null,
+    );
+    return result is Map ? result['id'] as String? ?? incidentId : incidentId;
   }
 
   /// Starts the investigation, classifying [severity]. Reviewer roles only.
@@ -178,6 +176,31 @@ class IncidentService {
       return result.data;
     } on FirebaseFunctionsException catch (e) {
       throw OrganizationAdminService.mapCallableError(e);
+    }
+  }
+
+  /// Sends [name] through the [Outbox]: with no signal the entry is saved on
+  /// this phone and [SavedOfflineException] is thrown, and it is sent once
+  /// the connection comes back.
+  Future<Object?> _send(
+    String name,
+    Map<String, Object?> data, {
+    required String label,
+    OutboxPhoto? photo,
+  }) async {
+    try {
+      return await _outbox.send(
+        callable: name,
+        data: data,
+        label: label,
+        photo: photo,
+        caller: (name, data) async =>
+            (await _require().httpsCallable(name).call<Object?>(data)).data,
+      );
+    } on FirebaseFunctionsException catch (e) {
+      throw OrganizationAdminService.mapCallableError(e);
+    } on FirebaseException catch (e) {
+      throw DataException(e.message ?? 'Failed to upload the photo.', cause: e);
     }
   }
 }

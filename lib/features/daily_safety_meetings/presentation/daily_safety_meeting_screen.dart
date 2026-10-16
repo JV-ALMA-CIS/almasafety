@@ -1,3 +1,4 @@
+import '../../../core/offline/outbox.dart';
 import 'dart:async';
 import '../../../core/widgets/photo_capture.dart';
 import '../../corrective_actions/presentation/evidence_requirement_picker.dart';
@@ -463,6 +464,8 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
     });
     try {
       await action();
+    } on SavedOfflineException {
+      // Shown on the worker's row as "saved on this phone"; sent later.
     } on AppException catch (e) {
       if (!mounted) return;
       setState(() => _errorMessage = e.message);
@@ -1244,6 +1247,35 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
   /// Asks for the crew's GO / GO corrected / STOP result first; cancelling
   /// that dialog leaves the meeting in progress.
   Future<void> _complete() async {
+    // Attendance marked with no signal has to reach the server first.
+    final outbox = Outbox.instance;
+    bool waitingHere() => outbox
+        .pending(
+          'recordMeetingAttendance',
+          (data) => data['meetingId'] == widget.meeting.id,
+        )
+        .isNotEmpty;
+    if (waitingHere()) await outbox.flush();
+    if (waitingHere()) {
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          content: const Text(
+            'Some attendance is still saved on this phone, waiting for '
+            'signal. Complete the meeting once it has been sent.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+    if (!mounted) return;
     final result = await showCrewOutcomeDialog(context);
     if (result == null || !mounted) return;
     await widget.onSave(
@@ -2798,62 +2830,84 @@ class _AttendanceSectionState extends State<_AttendanceSection> {
         return LiveStreamBuilder<List<MeetingAttendance>>(
           streamKey: widget.attendanceRepository,
           stream: () => widget.attendanceRepository.watchAll(),
-          builder: (context, attendanceSnapshot) {
-            final attendanceByWorker = {
-              for (final record in attendanceSnapshot.data ?? const [])
-                record.workerId: record.status,
-            };
-            final briefedWorkers = {
-              for (final record in attendanceSnapshot.data ?? const [])
-                if (record.briefedInPerson) record.workerId,
-            };
+          builder: (context, attendanceSnapshot) => ListenableBuilder(
+            listenable: Outbox.instance,
+            builder: (context, _) {
+              final attendanceByWorker = {
+                for (final record in attendanceSnapshot.data ?? const [])
+                  record.workerId: record.status,
+              };
+              final briefedWorkers = {
+                for (final record in attendanceSnapshot.data ?? const [])
+                  if (record.briefedInPerson) record.workerId,
+              };
+              // Marks made with no signal show straight away, flagged as
+              // saved on this phone until they are sent.
+              final waitingWorkers = <String>{};
+              for (final entry in Outbox.instance.pending(
+                'recordMeetingAttendance',
+                (data) => data['meetingId'] == widget.meeting.id,
+              )) {
+                final workerId = entry.data['workerId'];
+                final status = MeetingAttendanceStatus.tryFromId(
+                  entry.data['status'] as String?,
+                );
+                if (workerId is! String || status == null) continue;
+                attendanceByWorker[workerId] = status;
+                if (entry.data['briefedInPerson'] == true) {
+                  briefedWorkers.add(workerId);
+                }
+                waitingWorkers.add(workerId);
+              }
 
-            if (sortedWorkerIds.isEmpty) {
-              return const Text(
-                'No workers are assigned to this meeting\'s activities yet.',
-                style: AppTextStyles.bodyMedium,
-              );
-            }
+              if (sortedWorkerIds.isEmpty) {
+                return const Text(
+                  'No workers are assigned to this meeting\'s activities yet.',
+                  style: AppTextStyles.bodyMedium,
+                );
+              }
 
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (sortedWorkerIds.length > 5)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: AppSpacing.sm),
-                    child: TextField(
-                      controller: _searchController,
-                      decoration: const InputDecoration(
-                        labelText: 'Search workers',
-                        prefixIcon: Icon(Icons.search),
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (sortedWorkerIds.length > 5)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                      child: TextField(
+                        controller: _searchController,
+                        decoration: const InputDecoration(
+                          labelText: 'Search workers',
+                          prefixIcon: Icon(Icons.search),
+                        ),
                       ),
                     ),
+                  Text(
+                    '${attendanceByWorker.length} of ${sortedWorkerIds.length} '
+                    'recorded',
+                    style: AppTextStyles.bodyMedium,
                   ),
-                Text(
-                  '${attendanceByWorker.length} of ${sortedWorkerIds.length} '
-                  'recorded',
-                  style: AppTextStyles.bodyMedium,
-                ),
-                const SizedBox(height: AppSpacing.sm),
-                for (final workerId in filteredWorkerIds)
-                  _WorkerAttendanceRow(
-                    workerId: workerId,
-                    name: _nameFor(workerId),
-                    status: attendanceByWorker[workerId],
-                    briefedInPerson: briefedWorkers.contains(workerId),
-                    outstandingLearning: _learningStatus?[workerId],
-                    canEdit: widget.canEdit,
-                    isSaving: widget.isSaving,
-                    onRecord: (status) =>
-                        widget.onRecordAttendance(workerId, status),
-                    onBriefedInPerson: () => _confirmBriefed(
-                      workerId,
-                      _learningStatus?[workerId] ?? const [],
+                  const SizedBox(height: AppSpacing.sm),
+                  for (final workerId in filteredWorkerIds)
+                    _WorkerAttendanceRow(
+                      workerId: workerId,
+                      name: _nameFor(workerId),
+                      status: attendanceByWorker[workerId],
+                      briefedInPerson: briefedWorkers.contains(workerId),
+                      waitingToSend: waitingWorkers.contains(workerId),
+                      outstandingLearning: _learningStatus?[workerId],
+                      canEdit: widget.canEdit,
+                      isSaving: widget.isSaving,
+                      onRecord: (status) =>
+                          widget.onRecordAttendance(workerId, status),
+                      onBriefedInPerson: () => _confirmBriefed(
+                        workerId,
+                        _learningStatus?[workerId] ?? const [],
+                      ),
                     ),
-                  ),
-              ],
-            );
-          },
+                ],
+              );
+            },
+          ),
         );
       },
     );
@@ -2976,9 +3030,13 @@ class _WorkerAttendanceRow extends StatelessWidget {
     this.name,
     this.outstandingLearning,
     this.briefedInPerson = false,
+    this.waitingToSend = false,
   });
 
   final String workerId;
+
+  /// The mark is saved on this phone, waiting for signal.
+  final bool waitingToSend;
 
   /// The worker's display name, or null if it could not be resolved — falls
   /// back to showing [workerId] itself. See [_AttendanceSection.members].
@@ -3020,6 +3078,23 @@ class _WorkerAttendanceRow extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(name ?? workerId, style: AppTextStyles.bodyMedium),
+            if (waitingToSend)
+              const Row(
+                children: [
+                  Icon(
+                    Icons.cloud_upload_outlined,
+                    size: 16,
+                    color: AppColors.secondary,
+                  ),
+                  SizedBox(width: AppSpacing.xs),
+                  Expanded(
+                    child: Text(
+                      'Saved on this phone - sends when there is signal',
+                      style: AppTextStyles.label,
+                    ),
+                  ),
+                ],
+              ),
             if (outstanding != null && outstanding.isNotEmpty) ...[
               const SizedBox(height: AppSpacing.xs),
               Row(

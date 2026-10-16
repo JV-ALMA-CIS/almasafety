@@ -1,3 +1,7 @@
+import 'safety_meeting_pdf.dart';
+import '../../../core/reports/report_context.dart';
+import '../../../core/reports/print_report_button.dart';
+import '../../../core/reports/pdf_report.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/services/firestore_service.dart';
@@ -331,9 +335,30 @@ class SafetyMeetingCard extends StatelessWidget {
 
 /// Everything recorded for one meeting.
 class SafetyMeetingDetailScreen extends StatelessWidget {
-  const SafetyMeetingDetailScreen({super.key, required this.meeting});
+  const SafetyMeetingDetailScreen({
+    super.key,
+    required this.meeting,
+    this.printReport,
+  });
 
   final SafetyMeeting meeting;
+
+  /// Injected in tests; defaults to the device's print window.
+  final ReportPrinter? printReport;
+
+  Future<void> _print() async {
+    final organizationName = await organizationNameFor(meeting.organizationId);
+    await (printReport ?? PdfReport.printDocument)(
+      name:
+          '${meeting.kind.label} - ${meeting.siteName ?? 'All sites'} - '
+          '${meeting.date}',
+      build: (format) => buildSafetyMeetingPdf(
+        meeting: meeting,
+        organizationName: organizationName,
+        format: format,
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -364,6 +389,8 @@ class SafetyMeetingDetailScreen extends StatelessWidget {
               ),
             ],
           ),
+          const SizedBox(height: AppSpacing.sm),
+          PrintReportButton(onPrint: _print),
           const SizedBox(height: AppSpacing.md),
           _Section(
             title: 'Subjects covered',

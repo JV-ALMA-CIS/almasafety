@@ -1,3 +1,4 @@
+import '../core/offline/outbox_status_bar.dart';
 import 'package:flutter/material.dart';
 import '../core/widgets/live_stream_builder.dart';
 import 'package:go_router/go_router.dart';
@@ -144,7 +145,8 @@ class AppShell extends StatelessWidget {
           onPressed: () => sessionController.signOut(),
         ),
       ],
-      body: child,
+      // Shows "no signal" / "saved on this phone" only when it applies.
+      body: OutboxStatusBar(child: child),
     );
   }
 
@@ -258,6 +260,15 @@ class AppShell extends StatelessWidget {
             route: AppRoutes.riskAssessments,
             color: AppColors.riskAssessments,
           ),
+          // Safety Plan 8a — entered by Foremen and Site Managers.
+          if (canReviewPendingAccounts)
+            const NavSectionEntry(
+              icon: Icons.schedule_outlined,
+              selectedIcon: Icons.schedule,
+              label: 'Monthly Man-Hours',
+              route: AppRoutes.manHours,
+              color: AppColors.analytics,
+            ),
           const NavSectionEntry(
             icon: Icons.build_outlined,
             selectedIcon: Icons.build,

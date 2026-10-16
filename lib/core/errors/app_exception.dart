@@ -28,3 +28,15 @@ class PermissionDeniedException extends AppException {
 class NetworkException extends AppException {
   const NetworkException(super.message, {super.cause});
 }
+
+/// Not a failure: there was no signal, so the entry was saved on this phone
+/// and will be sent automatically once the connection returns (see
+/// `Outbox`). Screens catch it to show a "saved, waiting to send" state;
+/// anything that doesn't still shows [message], which reads correctly.
+class SavedOfflineException extends AppException {
+  const SavedOfflineException([
+    super.message =
+        'No signal right now. This is saved on this phone and will be sent '
+        'automatically when the connection comes back.',
+  ]);
+}

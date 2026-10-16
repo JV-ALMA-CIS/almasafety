@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:jva_safety/core/errors/app_exception.dart';
+import 'package:jva_safety/core/offline/outbox.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:jva_safety/features/pre_start_checks/data/pre_start_check_service.dart';
 import 'package:jva_safety/features/pre_start_checks/domain/pre_start_answer.dart';
 import 'package:jva_safety/features/pre_start_checks/domain/pre_start_check.dart';
@@ -32,6 +34,7 @@ class _FakeService extends PreStartCheckService {
   final PreStartOutcome outcome;
   final AppException? submitError;
   Map<String, PreStartResponse>? submitted;
+  String? submittedFor;
 
   @override
   Future<MyPreStartCheck> getMyPreStartCheck({
@@ -42,7 +45,9 @@ class _FakeService extends PreStartCheckService {
   Future<PreStartOutcome> submitPreStartCheck({
     required String organizationId,
     required Map<String, PreStartResponse> answers,
+    String? forDate,
   }) async {
+    submittedFor = forDate;
     final error = submitError;
     if (error != null) throw error;
     submitted = answers;
@@ -212,6 +217,102 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('Submit Check'), findsOneWidget);
+    });
+  });
+
+  group('no signal', () {
+    testWidgets('a check made with no signal is saved on the phone; a STOP '
+        'tells the worker to find their Foreman in person', (tester) async {
+      final service = _FakeService(submitError: const SavedOfflineException());
+      await _pumpScreen(tester, service);
+
+      await tester.tap(_yes(0));
+      await tester.pump();
+      await tester.tap(_no(1));
+      await tester.pump();
+      await tester.tap(find.text("No — I can't fix it"));
+      await tester.pump();
+      await tester.enterText(find.byType(TextField), 'No harness anchor');
+      await tester.pump();
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Submit Check'));
+      await tester.pumpAndSettle();
+
+      expect(service.submittedFor, '2026-10-07');
+      expect(find.text('STOP'), findsOneWidget);
+      expect(
+        find.textContaining('your check is saved on this phone'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('your Foreman has NOT been told yet'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Your Foreman has been told'), findsNothing);
+    });
+
+    testWidgets('the card shows a check waiting on this phone, then the '
+        'result once it is sent', (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      var online = false;
+      final outbox = Outbox(
+        caller: (name, data) async => {'outcome': 'go'},
+        uploader: (path, bytes) async => '',
+        currentUid: () => 'w1',
+        isOnline: () => online,
+        preferences: SharedPreferences.getInstance,
+      );
+      addTearDown(outbox.dispose);
+      await tester.runAsync(() async {
+        try {
+          await outbox.send(
+            callable: 'submitPreStartCheck',
+            data: {'organizationId': 'org-1', 'forDate': '2026-10-07'},
+            label: 'Daily Pre-Start Check',
+          );
+        } on SavedOfflineException {
+          // Expected: no signal.
+        }
+      });
+      final service = _FakeService(
+        check: const MyPreStartCheck(
+          date: '2026-10-07',
+          siteName: 'Rosslyn Site',
+          questions: _questions,
+        ),
+      );
+      await tester.pumpWidget(
+        _wrap(
+          WorkerPreStartCard(
+            organizationId: 'org-1',
+            service: service,
+            outbox: outbox,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('Pre-Start Check done - saved on this phone'),
+        findsOneWidget,
+      );
+      expect(find.text('Start Check'), findsNothing);
+
+      // Signal back: it is sent and the card asks the server again.
+      service.check = const MyPreStartCheck(
+        date: '2026-10-07',
+        siteName: 'Rosslyn Site',
+        questions: [],
+        submission: PreStartSubmission(
+          outcome: PreStartOutcome.go,
+          answers: [],
+        ),
+      );
+      online = true;
+      await tester.runAsync(outbox.flush);
+      await tester.pump();
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('saved on this phone'), findsNothing);
+      expect(find.text('GO'), findsOneWidget);
     });
   });
 

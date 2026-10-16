@@ -7,8 +7,10 @@ import 'package:jva_safety/features/dashboard/domain/whats_due.dart';
 import 'package:jva_safety/features/dashboard/presentation/whats_due_card.dart';
 import 'package:jva_safety/features/hazards/data/hazard_repository.dart';
 import 'package:jva_safety/features/incidents/data/incident_repository.dart';
+import 'package:jva_safety/features/man_hours/data/man_hours_repository.dart';
 import 'package:jva_safety/features/inspections/data/inspection_repository.dart';
 import 'package:jva_safety/features/inspections/domain/inspection.dart';
+import 'package:jva_safety/features/man_hours/domain/man_hours.dart';
 import 'package:jva_safety/features/organizations/data/site_repository.dart';
 import 'package:jva_safety/features/organizations/domain/organization_record_status.dart';
 import 'package:jva_safety/features/organizations/domain/site.dart';
@@ -282,6 +284,10 @@ void main() {
                 firestoreService: service,
                 organizationId: 'org',
               ),
+              manHoursRepository: ManHoursRepository(
+                firestoreService: service,
+                organizationId: 'org',
+              ),
               now: () => _now,
             ),
           ),
@@ -341,9 +347,83 @@ void main() {
           'facilitatorUid': 'x',
         });
       }
+      // September's man-hours entered and reported.
+      await firestore.doc('organizations/org/man_hours/rosslyn_2026-09').set({
+        'siteId': 'rosslyn',
+        'month': '2026-09',
+        'hours': 1200,
+        'workers': 8,
+      });
+      await firestore.doc('organizations/org/man_hours_reports/2026-09').set({
+        'month': '2026-09',
+      });
       await tester.pumpWidget(card());
       await tester.pumpAndSettle();
       expect(find.text("Nothing due — you're up to date"), findsOneWidget);
+    });
+  });
+
+  group("man-hours in What's Due", () {
+    final rosslyn2 = _site('rosslyn', 'Rosslyn Ridge');
+    final embassy2 = _site('embassy', 'Italian Embassy');
+    List<DueItem> due({
+      required bool isManager,
+      List<ManHoursEntry> entries = const [],
+      ManHoursReport? report,
+      DateTime? now,
+    }) => computeDueItems(
+      uid: 'u',
+      isManager: isManager,
+      sites: [rosslyn2, embassy2],
+      templates: const [],
+      inspections: const [],
+      meetings: [
+        _meeting(
+          SafetyMeetingKind.weeklyEmployee,
+          '2026-10-15',
+          site: 'rosslyn',
+        ),
+        _meeting(
+          SafetyMeetingKind.weeklyEmployee,
+          '2026-10-15',
+          site: 'embassy',
+        ),
+        _meeting(SafetyMeetingKind.monthlySupervisory, '2026-10-01'),
+      ],
+      manHoursEntries: entries,
+      manHoursReport: report,
+      now: now ?? _now,
+    ).where((i) => i.kind.name.startsWith('manHours')).toList();
+    ManHoursEntry entry(String site) =>
+        ManHoursEntry(siteId: site, month: '2026-09', hours: 100, workers: 2);
+
+    test('sites without last month entered are listed, with the due date', () {
+      final items = due(isManager: true, entries: [entry('rosslyn')]);
+      expect(items.single.kind, DueKind.manHoursNotEntered);
+      expect(items.single.title, 'Man-hours for September 2026 not entered');
+      expect(items.single.detail, 'Italian Embassy · due 25 Oct');
+    });
+
+    test('after the 25th it is overdue', () {
+      final items = due(isManager: false, now: DateTime(2026, 10, 26));
+      expect(items.single.detail, contains('OVERDUE'));
+    });
+
+    test('all entered: a manager is reminded to report it, until reported', () {
+      final all = [entry('rosslyn'), entry('embassy')];
+      expect(
+        due(isManager: true, entries: all).single.kind,
+        DueKind.manHoursNotReported,
+      );
+      expect(due(isManager: false, entries: all), isEmpty);
+      expect(
+        due(
+          isManager: true,
+          entries: all,
+          report: const ManHoursReport(month: '2026-09'),
+        ),
+        isEmpty,
+      );
     });
   });
 }

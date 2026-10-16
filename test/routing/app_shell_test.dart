@@ -141,42 +141,47 @@ void main() {
       await tester.pumpWidget(wrap(role: AppRole.admin));
       await tester.pumpAndSettle();
       await openDrawer(tester);
+      // Brings a menu entry into view, scrolling only when it isn't built.
+      Future<void> reveal(String text) async {
+        if (find.text(text).evaluate().isEmpty) {
+          await tester.scrollUntilVisible(
+            find.text(text),
+            200,
+            scrollable: find
+                .descendant(
+                  of: find.byType(Drawer),
+                  matching: find.byType(Scrollable),
+                )
+                .first,
+          );
+        }
+        await tester.ensureVisible(find.text(text));
+        await tester.pumpAndSettle();
+      }
 
       expect(find.text('Dashboard'), findsOneWidget);
       expect(find.text('OPERATIONS'), findsOneWidget);
       expect(find.text('Projects'), findsOneWidget);
       expect(find.text('SAFETY'), findsOneWidget);
       expect(find.text('Hazards'), findsOneWidget);
-      expect(find.text('Corrective Actions'), findsOneWidget);
-      expect(find.text('Safety Alerts'), findsOneWidget);
-      await tester.scrollUntilVisible(
-        find.text('Risk Assessments (AHA)'),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
+      await reveal('Risk Assessments (AHA)');
       expect(find.text('Risk Assessments (AHA)'), findsOneWidget);
-      await tester.scrollUntilVisible(
-        find.text('MEETINGS & LEARNING'),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
+      await reveal('Monthly Man-Hours');
+      expect(find.text('Monthly Man-Hours'), findsOneWidget);
+      await reveal('Corrective Actions');
+      expect(find.text('Corrective Actions'), findsOneWidget);
+      await reveal('Safety Alerts');
+      expect(find.text('Safety Alerts'), findsOneWidget);
+      await reveal('MEETINGS & LEARNING');
       expect(find.text('MEETINGS & LEARNING'), findsOneWidget);
-      await tester.scrollUntilVisible(
-        find.text('Daily Safety Meetings'),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
+      await reveal('Daily Safety Meetings');
       expect(find.text('Daily Safety Meetings'), findsOneWidget);
       // "Safety Learning" here is a Foreman/Worker's own required-learning
       // list — an Admin has no personal learning records and reviews
       // org-wide via "Learning Compliance" under Insights instead. See
       // AppShell._sectionsFor's doc comment.
       expect(find.text('Safety Learning'), findsNothing);
-      await tester.scrollUntilVisible(
-        find.text('Safety Videos'),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
+      await reveal('Safety Videos');
       expect(find.text('Safety Videos'), findsOneWidget);
       // The sidebar header now also shows the user's name and role, so
       // this entry may sit below the fold — scroll it into view first.
@@ -285,6 +290,17 @@ void main() {
         await openDrawer(tester);
 
         expect(find.text('SAFETY'), findsOneWidget);
+        await tester.scrollUntilVisible(
+          find.text('Monthly Man-Hours'),
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        expect(find.text('Monthly Man-Hours'), findsOneWidget);
+        await tester.scrollUntilVisible(
+          find.text('MEETINGS & LEARNING'),
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
         expect(find.text('MEETINGS & LEARNING'), findsOneWidget);
         // The sidebar header now also shows the user's name and role, so
         // this entry may sit below the fold — scroll it into view first.

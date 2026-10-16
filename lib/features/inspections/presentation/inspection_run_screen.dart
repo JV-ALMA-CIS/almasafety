@@ -1,3 +1,4 @@
+import '../../../core/offline/saved_on_phone_note.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -61,6 +62,9 @@ class _InspectionRunScreenState extends State<InspectionRunScreen> {
   String? _errorMessage;
   String? _uploadingItemId;
 
+  /// True once an answer had to be kept on this phone for lack of signal.
+  bool _savedOffline = false;
+
   @override
   void dispose() {
     for (final timer in _noteTimers.values) {
@@ -87,6 +91,8 @@ class _InspectionRunScreenState extends State<InspectionRunScreen> {
         note: answer.note,
         photoUrl: answer.photoUrl,
       );
+    } on SavedOfflineException {
+      if (mounted) setState(() => _savedOffline = true);
     } on AppException catch (e) {
       if (mounted) setState(() => _errorMessage = e.message);
     } finally {
@@ -182,20 +188,43 @@ class _InspectionRunScreenState extends State<InspectionRunScreen> {
       for (final item in inspection.items) {
         final local = _local[item.id];
         if (local != null && local.note != item.note) {
-          await _service.recordItem(
-            organizationId: widget.organizationId,
-            inspectionId: widget.inspectionId,
-            itemId: item.id,
-            result: local.result,
-            note: local.note,
-            photoUrl: local.photoUrl,
-          );
+          try {
+            await _service.recordItem(
+              organizationId: widget.organizationId,
+              inspectionId: widget.inspectionId,
+              itemId: item.id,
+              result: local.result,
+              note: local.note,
+              photoUrl: local.photoUrl,
+            );
+          } on SavedOfflineException {
+            // Kept on this phone; it goes ahead of the submission below.
+          }
         }
       }
-      await _service.submit(
-        organizationId: widget.organizationId,
-        inspectionId: widget.inspectionId,
-      );
+      try {
+        await _service.submit(
+          organizationId: widget.organizationId,
+          inspectionId: widget.inspectionId,
+        );
+      } on SavedOfflineException {
+        if (!mounted) return;
+        await showDialog<void>(
+          context: context,
+          builder: (context) => AlertDialog(
+            content: const Text(
+              'No signal - this inspection is saved on this phone and will '
+              'be submitted automatically when the signal comes back.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+      }
       if (!mounted) return;
       Navigator.of(context).pop(true);
     } on AppException catch (e) {
@@ -280,6 +309,15 @@ class _InspectionRunScreenState extends State<InspectionRunScreen> {
               if (_errorMessage != null) ...[
                 const SizedBox(height: AppSpacing.md),
                 AuthErrorBanner(message: _errorMessage!),
+              ],
+              if (_savedOffline) ...[
+                const SizedBox(height: AppSpacing.md),
+                const SavedOnPhoneNote(
+                  text:
+                      'No signal - your answers are saved on this phone and '
+                      'will be sent when the signal comes back. Keep going. '
+                      'Photos need signal.',
+                ),
               ],
               for (final entry in sections.entries) ...[
                 const SizedBox(height: AppSpacing.md),

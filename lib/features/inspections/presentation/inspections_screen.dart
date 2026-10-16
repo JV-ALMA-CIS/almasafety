@@ -1,3 +1,7 @@
+import 'inspection_pdf.dart';
+import '../../../core/reports/report_context.dart';
+import '../../../core/reports/print_report_button.dart';
+import '../../../core/reports/pdf_report.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
@@ -603,7 +607,11 @@ class InspectionDetailScreen extends StatefulWidget {
     required this.repository,
     required this.canSignOff,
     this.service,
+    this.printReport,
   });
+
+  /// Injected in tests; defaults to the device's print window.
+  final ReportPrinter? printReport;
 
   final String organizationId;
   final String inspectionId;
@@ -690,6 +698,25 @@ class _InspectionDetailScreenState extends State<InspectionDetailScreen> {
                     label: '${inspection.naCount} N/A',
                   ),
                 ],
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              PrintReportButton(
+                onPrint: () async {
+                  final organizationName = await organizationNameFor(
+                    widget.organizationId,
+                  );
+                  await (widget.printReport ?? PdfReport.printDocument)(
+                    name:
+                        '${inspection.templateName} - '
+                        '${inspection.siteName ?? 'site'} - '
+                        '${PdfReport.date(inspection.submittedAt ?? inspection.startedAt)}',
+                    build: (format) => buildInspectionPdf(
+                      inspection: inspection,
+                      organizationName: organizationName,
+                      format: format,
+                    ),
+                  );
+                },
               ),
               if (_errorMessage != null) ...[
                 const SizedBox(height: AppSpacing.md),

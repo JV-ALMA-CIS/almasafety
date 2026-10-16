@@ -332,6 +332,34 @@ void main() {
     expect(find.text('Hazard Reported'), findsOneWidget);
   });
 
+  testWidgets('with no signal the report is saved on the phone, not lost', (
+    tester,
+  ) async {
+    useTallSurface(tester);
+    final service = _FakeHazardService()..error = const SavedOfflineException();
+    await tester.pumpWidget(
+      buildApp(
+        session: _FakeSession(role: AppRole.worker, siteIds: const ['site-1']),
+        hazardService: service,
+      ),
+    );
+
+    await tester.tap(find.text('Electrical'));
+    await tester.pump();
+    await tester.enterText(
+      find.byType(TextFormField).first,
+      'Exposed wiring near the water tank',
+    );
+    await tapSubmit(tester);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Hazard Reported'), findsOneWidget);
+    expect(
+      find.textContaining('your report is saved on this phone'),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('choosing "Something nearly happened" reports a near-miss', (
     tester,
   ) async {

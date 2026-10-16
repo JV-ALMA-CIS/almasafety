@@ -1,3 +1,4 @@
+import '../../../core/offline/outbox.dart';
 import 'dart:typed_data';
 
 import 'package:cloud_functions/cloud_functions.dart';
@@ -34,11 +35,14 @@ class HazardService {
     FirebaseFunctions? functions,
     FirestoreService? firestoreService,
     StorageService? storageService,
+    Outbox? outbox,
   }) : _injected = functions,
        _firestoreService = firestoreService ?? FirestoreService(),
-       _storageService = storageService ?? StorageService();
+       _storageService = storageService ?? StorageService(),
+       _outbox = outbox ?? Outbox.instance;
 
   final FirebaseFunctions? _injected;
+  final Outbox _outbox;
   final FirestoreService _firestoreService;
   final StorageService _storageService;
 
@@ -114,26 +118,30 @@ class HazardService {
   }) async {
     final hazardId = allocateHazardId(organizationId);
 
-    String? photoUrl;
-    if (photoBytes != null && photoFileName != null) {
-      photoUrl = await uploadHazardPhoto(
-        organizationId: organizationId,
-        hazardId: hazardId,
-        fileName: photoFileName,
-        bytes: photoBytes,
-      );
-    }
-
-    return createHazard(
-      organizationId: organizationId,
-      siteId: siteId,
-      hazardId: hazardId,
-      kind: kind,
-      category: category,
-      description: description,
-      location: location,
-      photoUrl: photoUrl,
+    // Through the outbox: with no signal the report (and its photo) waits on
+    // this phone. The pre-allocated id makes a repeat send harmless.
+    final result = await _send(
+      'createHazard',
+      {
+        'organizationId': organizationId,
+        'siteId': siteId,
+        'hazardId': hazardId,
+        'kind': kind,
+        'category': category,
+        'description': description,
+        'location': ?location,
+      },
+      label: kind == 'nearMiss' ? 'Near-miss report' : 'Hazard report',
+      photo: photoBytes != null && photoFileName != null
+          ? OutboxPhoto(
+              storagePath:
+                  'organizations/$organizationId/hazards/$hazardId/'
+                  '$photoFileName',
+              bytes: photoBytes,
+            )
+          : null,
     );
+    return result is Map ? result['id'] as String? ?? hazardId : hazardId;
   }
 
   /// Calls `createHazard` directly, given a pre-allocated [hazardId] (see
@@ -224,6 +232,31 @@ class HazardService {
       return result.data;
     } on FirebaseFunctionsException catch (e) {
       throw OrganizationAdminService.mapCallableError(e);
+    }
+  }
+
+  /// Sends [name] through the [Outbox]: with no signal the entry is saved on
+  /// this phone and [SavedOfflineException] is thrown, and it is sent once
+  /// the connection comes back.
+  Future<Object?> _send(
+    String name,
+    Map<String, Object?> data, {
+    required String label,
+    OutboxPhoto? photo,
+  }) async {
+    try {
+      return await _outbox.send(
+        callable: name,
+        data: data,
+        label: label,
+        photo: photo,
+        caller: (name, data) async =>
+            (await _require().httpsCallable(name).call<Object?>(data)).data,
+      );
+    } on FirebaseFunctionsException catch (e) {
+      throw OrganizationAdminService.mapCallableError(e);
+    } on FirebaseException catch (e) {
+      throw DataException(e.message ?? 'Failed to upload the photo.', cause: e);
     }
   }
 }

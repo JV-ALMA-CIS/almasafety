@@ -1,3 +1,6 @@
+import 'daily_meeting_pdf.dart';
+import '../../../core/reports/print_report_button.dart';
+import '../../../core/reports/pdf_report.dart';
 import 'package:flutter/material.dart';
 import '../../../core/widgets/live_stream_builder.dart';
 import '../../organizations/presentation/site_select_list.dart';
@@ -391,6 +394,7 @@ class _AdminMeetingCard extends StatelessWidget {
 /// this codebase.
 class DailySafetyMeetingSummaryScreen extends StatefulWidget {
   const DailySafetyMeetingSummaryScreen({
+    this.printReport,
     required this.organization,
     required this.meeting,
     required this.members,
@@ -432,6 +436,9 @@ class DailySafetyMeetingSummaryScreen extends StatefulWidget {
   final SafetyMeetingPointRepository? meetingPointRepository;
   final MeetingPointNoteRepository? pointNoteRepository;
   final MeetingEvidenceRepository? evidenceRepository;
+
+  /// Injected in tests; defaults to the device's print window.
+  final ReportPrinter? printReport;
 
   @override
   State<DailySafetyMeetingSummaryScreen> createState() =>
@@ -603,6 +610,95 @@ class _DailySafetyMeetingSummaryScreenState
                                             : CrewOutcomeBadge(
                                                 outcome: meeting.crewOutcome!,
                                               ),
+                                      ),
+                                      const SizedBox(height: AppSpacing.sm),
+                                      PrintReportButton(
+                                        onPrint: () =>
+                                            (widget.printReport ??
+                                            PdfReport.printDocument)(
+                                              name:
+                                                  'Daily safety meeting - '
+                                                  '${widget.site?.name ?? meeting.siteId} - '
+                                                  '${meeting.date}',
+                                              build: (format) => buildDailyMeetingPdf(
+                                                organizationName:
+                                                    widget.organization.name,
+                                                format: format,
+                                                report: DailyMeetingReport(
+                                                  siteName:
+                                                      widget.site?.name ??
+                                                      meeting.siteId,
+                                                  projectName:
+                                                      widget.project?.name ??
+                                                      meeting.projectId,
+                                                  date: meeting.date,
+                                                  foremanName:
+                                                      _nameFor(
+                                                        meeting.foremanId,
+                                                      ) ??
+                                                      'Foreman',
+                                                  status: meeting.status.label,
+                                                  crewResult:
+                                                      meeting.crewOutcome ==
+                                                          null
+                                                      ? null
+                                                      : [
+                                                          meeting
+                                                              .crewOutcome!
+                                                              .label,
+                                                          ?meeting
+                                                              .crewOutcomeNote,
+                                                        ].join(' - '),
+                                                  activities: [
+                                                    for (final id
+                                                        in meeting.activityIds)
+                                                      activitiesById[id]
+                                                              ?.name ??
+                                                          id,
+                                                  ],
+                                                  points: [
+                                                    for (final id
+                                                        in meeting
+                                                            .meetingPointIds)
+                                                      (
+                                                        pointsById[id]?.title ??
+                                                            id,
+                                                        notesByPointId[id]
+                                                            ?.note,
+                                                      ),
+                                                  ],
+                                                  ahasCovered: [
+                                                    for (final aha
+                                                        in meeting.ahasCovered)
+                                                      '${aha.featureOfWork} '
+                                                          '(revision ${aha.revision})',
+                                                  ],
+                                                  attendance: [
+                                                    for (final record
+                                                        in attendance)
+                                                      (
+                                                        _nameFor(
+                                                              record.workerId,
+                                                            ) ??
+                                                            record.workerId,
+                                                        record.status.label,
+                                                      ),
+                                                  ],
+                                                  concerns: [
+                                                    for (final concern
+                                                        in concerns)
+                                                      '${concern.category.label}: '
+                                                          '${concern.description}',
+                                                  ],
+                                                  correctiveActions: [
+                                                    for (final action
+                                                        in actions)
+                                                      '${action.title} - '
+                                                          '${action.status.label}',
+                                                  ],
+                                                ),
+                                              ),
+                                            ),
                                       ),
                                       const SizedBox(height: AppSpacing.md),
                                       _SummarySection(

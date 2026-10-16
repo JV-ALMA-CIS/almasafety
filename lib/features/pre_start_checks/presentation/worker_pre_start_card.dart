@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import '../../../core/offline/outbox.dart';
+import '../../../core/offline/saved_on_phone_note.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
@@ -16,10 +18,14 @@ class WorkerPreStartCard extends StatefulWidget {
     super.key,
     required this.organizationId,
     required this.service,
+    this.outbox,
   });
 
   final String organizationId;
   final PreStartCheckService service;
+
+  /// Where a check made with no signal waits; defaults to [Outbox.instance].
+  final Outbox? outbox;
 
   @override
   State<WorkerPreStartCard> createState() => _WorkerPreStartCardState();
@@ -34,6 +40,41 @@ class _WorkerPreStartCardState extends State<WorkerPreStartCard> {
   void _reload() => setState(() {
     _future = _load();
   });
+
+  Outbox get _outbox => widget.outbox ?? Outbox.instance;
+
+  /// Today's check, if it is saved on this phone waiting for signal.
+  List<OutboxEntry> get _waiting => _outbox.pending(
+    'submitPreStartCheck',
+    (data) => data['organizationId'] == widget.organizationId,
+  );
+
+  int _waitingBefore = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _waitingBefore = _waiting.length;
+    _outbox.addListener(_outboxChanged);
+  }
+
+  @override
+  void dispose() {
+    _outbox.removeListener(_outboxChanged);
+    super.dispose();
+  }
+
+  /// Once a waiting check has gone, show the result the server decided.
+  void _outboxChanged() {
+    final now = _waiting.length;
+    if (!mounted) return;
+    if (now < _waitingBefore) {
+      _reload();
+    } else {
+      setState(() {});
+    }
+    _waitingBefore = now;
+  }
 
   Future<void> _start(MyPreStartCheck check) async {
     await Navigator.of(context, rootNavigator: true).push(
@@ -53,6 +94,8 @@ class _WorkerPreStartCardState extends State<WorkerPreStartCard> {
     return FutureBuilder<MyPreStartCheck>(
       future: _future,
       builder: (context, snapshot) {
+        final waiting = _waiting;
+        if (waiting.isNotEmpty) return _savedOnPhone(waiting.first);
         if (snapshot.hasError) {
           return Card(
             margin: EdgeInsets.zero,
@@ -83,6 +126,34 @@ class _WorkerPreStartCardState extends State<WorkerPreStartCard> {
         if (submission != null) return _done(submission);
         return _todo(check);
       },
+    );
+  }
+
+  Widget _savedOnPhone(OutboxEntry entry) {
+    if (entry.failed) {
+      return Card(
+        margin: EdgeInsets.zero,
+        child: ListTile(
+          leading: const Icon(Icons.error_outline, color: AppColors.danger),
+          title: const Text(
+            'Your Pre-Start Check could not be sent',
+            style: AppTextStyles.bodyLarge,
+          ),
+          subtitle: Text(entry.error ?? '', style: AppTextStyles.bodyMedium),
+          trailing: TextButton(
+            onPressed: () async {
+              await _outbox.remove(entry.id);
+              _reload();
+            },
+            child: const Text('Do it again'),
+          ),
+        ),
+      );
+    }
+    return const SavedOnPhoneNote(
+      text:
+          'Pre-Start Check done - saved on this phone. It will be sent '
+          'automatically when the signal comes back.',
     );
   }
 

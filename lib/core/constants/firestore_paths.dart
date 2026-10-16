@@ -25,6 +25,8 @@ class FirestorePaths {
   static const String inspectionTemplates = 'inspection_templates';
   static const String safetyMeetings = 'safety_meetings';
   static const String riskAssessments = 'risk_assessments';
+  static const String manHours = 'man_hours';
+  static const String manHoursReports = 'man_hours_reports';
   static const String correctiveActions = 'corrective_actions';
   static const String safetyAlerts = 'safety_alerts';
   static const String notifications = 'notifications';
@@ -265,6 +267,16 @@ class FirestorePaths {
   /// and weekly HSE walk-downs (`inspection_callable.ts`).
   static String inspectionsCollection(String organizationId) =>
       '${organization(organizationId)}/$inspections';
+
+  /// `organizations/{organizationId}/man_hours` — monthly man-hours per
+  /// site (Safety Plan 8a, `man_hours_callable.ts`).
+  static String manHoursCollection(String organizationId) =>
+      '${organization(organizationId)}/$manHours';
+
+  /// `organizations/{organizationId}/man_hours_reports` — months reported
+  /// to the Safety Office.
+  static String manHoursReportsCollection(String organizationId) =>
+      '${organization(organizationId)}/$manHoursReports';
 
   /// `organizations/{organizationId}/risk_assessments` — Activity Hazard
   /// Analyses (`risk_assessment_callable.ts`).

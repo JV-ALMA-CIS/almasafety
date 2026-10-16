@@ -1,3 +1,4 @@
+import '../features/man_hours/presentation/man_hours_screen.dart';
 import 'package:flutter/material.dart';
 import '../features/inspections/presentation/inspections_screen.dart';
 import '../features/risk_assessments/presentation/risk_assessments_screen.dart';
@@ -300,6 +301,10 @@ GoRouter buildAppRouter(SessionController session) {
           GoRoute(
             path: AppRoutes.riskAssessments,
             builder: (context, state) => const RiskAssessmentsScreen(),
+          ),
+          GoRoute(
+            path: AppRoutes.manHours,
+            builder: (context, state) => const ManHoursScreen(),
           ),
           GoRoute(
             path: AppRoutes.reportSafetyIssue,

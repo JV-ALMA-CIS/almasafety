@@ -133,6 +133,9 @@ class AppRoutes {
 
   /// Risk assessments — Activity Hazard Analyses (AHA).
   static const String riskAssessments = '/risk-assessments';
+
+  /// Monthly man-hours per site (Safety Plan 8a).
+  static const String manHours = '/man-hours';
   static const String correctiveActions = '/corrective-actions';
   static const String safetyAlerts = '/safety-alerts';
   static const String notifications = '/notifications';

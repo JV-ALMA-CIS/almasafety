@@ -1,3 +1,5 @@
+import '../../man_hours/domain/man_hours.dart';
+import '../../man_hours/data/man_hours_repository.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -45,6 +47,7 @@ class WhatsDueCard extends StatefulWidget {
     this.riskAssessmentRepository,
     this.hazardRepository,
     this.incidentRepository,
+    this.manHoursRepository,
     this.now,
   });
 
@@ -60,6 +63,7 @@ class WhatsDueCard extends StatefulWidget {
   final RiskAssessmentRepository? riskAssessmentRepository;
   final HazardRepository? hazardRepository;
   final IncidentRepository? incidentRepository;
+  final ManHoursRepository? manHoursRepository;
   final DateTime Function()? now;
 
   @override
@@ -75,6 +79,8 @@ typedef _DueData = ({
   List<RiskAssessment> riskAssessments,
   List<Hazard> hazards,
   List<Incident> incidents,
+  List<ManHoursEntry>? manHoursEntries,
+  ManHoursReport? manHoursReport,
 });
 
 class _WhatsDueCardState extends State<WhatsDueCard> {
@@ -98,11 +104,18 @@ class _WhatsDueCardState extends State<WhatsDueCard> {
             organizationId: org,
           );
       final ids = widget.siteIds;
+      final manHours =
+          widget.manHoursRepository ??
+          ManHoursRepository(firestoreService: firestore, organizationId: org);
+      final month = reportingMonth((widget.now ?? DateTime.now)());
       final streams = <Stream<Object?>>[
         ids == null ? sites.watchAll() : sites.watchByIds(ids),
         inspections.watchTemplates(),
         inspections.watchInspections(),
         meetings.watchMeetings(),
+        // Man-hours never hold the card up: a failure reads as "skip".
+        _nullOnError<List<ManHoursEntry>>(manHours.watchMonth(month)),
+        _nullOnError<ManHoursReport?>(manHours.watchReport(month)),
         if (widget.isManager) ...[
           (widget.riskAssessmentRepository ??
                   RiskAssessmentRepository(
@@ -133,14 +146,16 @@ class _WhatsDueCardState extends State<WhatsDueCard> {
           templates: values[1] as List<InspectionTemplate>,
           inspections: values[2] as List<Inspection>,
           meetings: values[3] as List<SafetyMeeting>,
+          manHoursEntries: values[4] as List<ManHoursEntry>?,
+          manHoursReport: values[5] as ManHoursReport?,
           riskAssessments: widget.isManager
-              ? values[4] as List<RiskAssessment>
+              ? values[6] as List<RiskAssessment>
               : const <RiskAssessment>[],
           hazards: widget.isManager
-              ? values[5] as List<Hazard>
+              ? values[7] as List<Hazard>
               : const <Hazard>[],
           incidents: widget.isManager
-              ? values[6] as List<Incident>
+              ? values[8] as List<Incident>
               : const <Incident>[],
         ),
       );
@@ -178,6 +193,8 @@ class _WhatsDueCardState extends State<WhatsDueCard> {
           riskAssessments: data.riskAssessments,
           hazards: data.hazards,
           incidents: data.incidents,
+          manHoursEntries: data.manHoursEntries,
+          manHoursReport: data.manHoursReport,
           now: (widget.now ?? DateTime.now)(),
         );
         if (items.isEmpty) {
@@ -208,6 +225,8 @@ class _WhatsDueCardState extends State<WhatsDueCard> {
 
 extension on DueKind {
   IconData get icon => switch (this) {
+    DueKind.manHoursNotEntered => Icons.schedule,
+    DueKind.manHoursNotReported => Icons.send,
     DueKind.incidentReportsOverdue => Icons.error,
     DueKind.incidentReportingNotSet => Icons.priority_high,
     DueKind.incidentReportsDueSoon => Icons.timer_outlined,
@@ -222,6 +241,8 @@ extension on DueKind {
   };
 
   Color get color => switch (this) {
+    DueKind.manHoursNotEntered => AppColors.analytics,
+    DueKind.manHoursNotReported => AppColors.analytics,
     DueKind.incidentReportsOverdue => AppColors.stop,
     DueKind.incidentReportingNotSet => AppColors.stop,
     DueKind.incidentReportsDueSoon => AppColors.hazards,
@@ -236,6 +257,8 @@ extension on DueKind {
   };
 
   String get route => switch (this) {
+    DueKind.manHoursNotEntered ||
+    DueKind.manHoursNotReported => AppRoutes.manHours,
     DueKind.incidentReportsOverdue ||
     DueKind.incidentReportingNotSet ||
     DueKind.incidentReportsDueSoon => AppRoutes.incidents,
@@ -348,3 +371,11 @@ Stream<List<Object?>> _combineLatest(List<Stream<Object?>> streams) {
   );
   return controller.stream;
 }
+
+/// [stream], with an error turned into a null value instead — for data that
+/// must never stop the rest of the card from showing.
+Stream<T?> _nullOnError<T>(Stream<T> stream) => stream.transform(
+  StreamTransformer<T, T?>.fromHandlers(
+    handleError: (error, stackTrace, sink) => sink.add(null),
+  ),
+);

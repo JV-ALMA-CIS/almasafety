@@ -1,3 +1,4 @@
+import '../../../core/offline/outbox.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_core/firebase_core.dart';
 import '../../../core/errors/app_exception.dart';
@@ -13,10 +14,11 @@ import '../domain/crew_readiness.dart';
 /// argument: the server derives the acting foreman from `request.auth.uid`,
 /// mirroring every other write surface in this feature.
 class MeetingAttendanceService {
-  MeetingAttendanceService({FirebaseFunctions? functions})
+  MeetingAttendanceService({FirebaseFunctions? functions, this._outbox})
     : _injected = functions;
 
   final FirebaseFunctions? _injected;
+  final Outbox? _outbox;
 
   FirebaseFunctions? get _functions {
     if (_injected != null) return _injected;
@@ -43,19 +45,35 @@ class MeetingAttendanceService {
   /// [briefedInPerson] marks a worker present even though today's lessons
   /// are not complete, recording that the Foreman briefed them face to
   /// face; the server ignores it when nothing is outstanding.
+  ///
+  /// With no signal the mark is saved on this phone (throwing
+  /// [SavedOfflineException]) and sent when the connection comes back;
+  /// sending the same mark twice just records it again.
   Future<void> recordMeetingAttendance({
     required String organizationId,
     required String meetingId,
     required String workerId,
     required String status,
     bool briefedInPerson = false,
-  }) => _call<Object?>('recordMeetingAttendance', {
-    'organizationId': organizationId,
-    'meetingId': meetingId,
-    'workerId': workerId,
-    'status': status,
-    if (briefedInPerson) 'briefedInPerson': true,
-  });
+  }) async {
+    try {
+      await (_outbox ?? Outbox.instance).send(
+        callable: 'recordMeetingAttendance',
+        data: {
+          'organizationId': organizationId,
+          'meetingId': meetingId,
+          'workerId': workerId,
+          'status': status,
+          if (briefedInPerson) 'briefedInPerson': true,
+        },
+        label: 'Meeting attendance',
+        caller: (name, data) async =>
+            (await _require().httpsCallable(name).call<Object?>(data)).data,
+      );
+    } on FirebaseFunctionsException catch (e) {
+      throw OrganizationAdminService.mapCallableError(e);
+    }
+  }
 
   /// A read-only preview of which workers assigned to [meetingId]'s own
   /// activities have outstanding required safety learning — see
