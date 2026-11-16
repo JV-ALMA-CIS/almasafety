@@ -121,6 +121,8 @@ function requireString(request: CallableRequest, field: string): string {
  * @param {string} [params.id] a fixed id: a notification with this id that
  * already exists is NOT sent again (the daily reminders use this so a
  * reminder is sent at most once per day).
+ * @param {boolean} [params.urgent] the push stays on a computer's screen
+ * until clicked.
  * @return {Promise<string>} the notification's id.
  */
 export async function createNotification(params: {
@@ -132,6 +134,7 @@ export async function createNotification(params: {
   relatedEntityType?: string;
   relatedEntityId?: string;
   id?: string;
+  urgent?: boolean;
 }): Promise<string> {
   const collection = getFirestore()
     .collection(`organizations/${params.organizationId}/notifications`);
@@ -155,6 +158,7 @@ export async function createNotification(params: {
     title: params.title,
     message: params.message,
     relatedEntityType: params.relatedEntityType,
+    urgent: params.urgent,
   });
   return ref.id;
 }

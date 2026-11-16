@@ -3,6 +3,8 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import 'core/constants/app_constants.dart';
 import 'core/services/auth_service.dart';
+import 'core/services/foreground_notifications.dart';
+import 'core/services/notification_tap_handler.dart';
 import 'core/services/session_controller.dart';
 import 'core/services/theme_controller.dart';
 import 'core/theme/app_theme.dart';
@@ -51,8 +53,29 @@ class _RoutedApp extends StatefulWidget {
 class _RoutedAppState extends State<_RoutedApp> {
   late final GoRouter _router = appRouterFrom(context);
 
+  /// A tapped push notification opens its page (installed app only).
+  late final NotificationTapHandler _notificationTaps = NotificationTapHandler(
+    session: context.read<SessionController>(),
+    go: _router.go,
+  );
+
+  final _messengerKey = GlobalKey<ScaffoldMessengerState>();
+
+  /// A push arriving while the app is open still pops up.
+  late final ForegroundNotifications _foregroundNotifications =
+      ForegroundNotifications(messengerKey: _messengerKey, go: _router.go);
+
+  @override
+  void initState() {
+    super.initState();
+    _notificationTaps.start();
+    _foregroundNotifications.start();
+  }
+
   @override
   void dispose() {
+    _notificationTaps.dispose();
+    _foregroundNotifications.dispose();
     _router.dispose();
     super.dispose();
   }
@@ -68,6 +91,7 @@ class _RoutedAppState extends State<_RoutedApp> {
       darkTheme: AppTheme.dark,
       themeMode: controller.mode,
       routerConfig: _router,
+      scaffoldMessengerKey: _messengerKey,
       // Settings → Text size, on top of the device's own setting. Always
       // wrapped (even at 1x) so changing it never rebuilds open screens.
       builder: (context, child) {

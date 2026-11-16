@@ -205,6 +205,7 @@ export {
   onIncidentReported,
   onInspectionUpdated,
   onRiskAssessmentCreated,
+  onSafetyAlertCreated,
   sendDailyReminders,
 } from "./notification_triggers";
 

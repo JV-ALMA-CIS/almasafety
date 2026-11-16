@@ -35,8 +35,12 @@ async function clearFirestore() {
   await Promise.all(collections.map((c) => db.recursiveDelete(c)));
 }
 
+const NAMES = {wanjiru: "Wanjiru Kamau", fred: "Fred Otieno"};
+
 async function seedMember(uid, role, siteIds = [], status = "active") {
-  await db.doc(`users/${uid}`).set({uid, name: uid, accountStatus: "active"});
+  await db.doc(`users/${uid}`).set({
+    uid, name: NAMES[uid] ?? uid, accountStatus: "active",
+  });
   await db.doc(`users/${uid}/memberships/${ORG}`).set({
     organizationId: ORG, role, siteIds, status,
   });
@@ -73,6 +77,7 @@ describe("corrective actions", () => {
     assignedTo: "fred",
     assignedBy: "eston",
     assignedToName: "Fred",
+    assignedByName: "Eston",
     status: "open",
     dueDate: Timestamp.fromDate(new Date("2026-10-16T09:00:00Z")),
   };
@@ -87,7 +92,7 @@ describe("corrective actions", () => {
       relatedEntityId: "ca-1",
       isRead: false,
     });
-    expect(n.message).toMatch(/Fit guardrail — due Fri 16 Oct/);
+    expect(n.message).toMatch(/^Eston: Fit guardrail — due Fri 16 Oct/);
     expect(await allRecipients()).toEqual(["fred"]);
   });
 
@@ -131,8 +136,10 @@ describe("reports", () => {
         description: "Loose scaffold board",
       });
       expect(await allRecipients()).toEqual(["admin-1", "eston", "fred"]);
-      expect((await inbox("fred"))[0].title)
-        .toBe("Hazard reported at Italian Embassy");
+      const [n] = await inbox("fred");
+      expect(n.title).toBe("Hazard reported at Italian Embassy");
+      // Who it is from, then what they wrote — like a chat message.
+      expect(n.message).toBe("Wanjiru Kamau: Loose scaffold board");
     });
 
   test("a Foreman reporting is not notified of their own report",
@@ -174,6 +181,36 @@ describe("inspections and AHAs", () => {
     });
     expect(await allRecipients()).toEqual(["admin-1"]);
   });
+});
+
+describe("safety alerts", () => {
+  test("→ everyone at the site and every manager, not the creator",
+    async () => {
+      await seedMember("other-worker", "worker", ["site-2"]);
+      await seedMember("gone-worker", "worker", ["site-1"], "suspended");
+      await fns.safetyAlertCreated(ORG, "sa-1", {
+        siteId: "site-1", createdBy: "fred", severity: "critical",
+        title: "Crane lift over walkway", description: "Keep clear 10-12.",
+      });
+      expect(await allRecipients()).toEqual(["admin-1", "eston", "wanjiru"]);
+      const [n] = await inbox("wanjiru");
+      expect(n.title).toBe(
+        "CRITICAL SAFETY ALERT at Italian Embassy: Crane lift over walkway");
+      expect(n.message).toBe("Fred Otieno: Keep clear 10-12.");
+      expect(n.type).toBe("safetyAlert");
+      expect(n.relatedEntityType).toBe("safetyAlert");
+      expect(n.relatedEntityId).toBe("sa-1");
+    });
+
+  test("a manager's alert reaches the site's Foreman and Workers",
+    async () => {
+      await fns.safetyAlertCreated(ORG, "sa-2", {
+        siteId: "site-1", createdBy: "eston", severity: "low",
+        title: "Wet floor", description: "Ground floor lobby.",
+      });
+      expect(await allRecipients()).toEqual(["admin-1", "fred", "wanjiru"]);
+      expect((await inbox("fred"))[0].title).toMatch(/^Safety notice/);
+    });
 });
 
 describe("daily reminders", () => {

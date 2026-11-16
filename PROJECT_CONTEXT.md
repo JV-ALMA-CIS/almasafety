@@ -1610,11 +1610,38 @@ Pre-Start Check content (October 2026): the tools question now names the
 
 In-app notifications (October 2026): corrective actions assigned / submitted
   / approved / sent back, hazards and incidents reported, inspections to sign
-  off, AHAs to accept — plus a 06:00 daily reminder of actions due or overdue
+  off, AHAs to accept, Safety Alerts raised (to everyone at the alert's site —
+  Workers and Foremen — and every Site Manager/Admin; November 2026)
+  — plus a 06:00 daily reminder of actions due or overdue
   and overdue incident reporting. Tapping one opens its page. They are also
   PUSHED to each person's phones/browsers: a floating card at the top of the
   dashboard asks to turn them on until that device allows them (✕ hides it
   for the session; on iPhone: add the app to the Home Screen first).
+  Messages read like a chat: "Jane Doe: Loose scaffold board". Android app
+  (November 2026): pushes arrive on the "Safety alerts" channel
+  (MainActivity.kt) — a pop-up banner with the phone's own default sound,
+  nothing custom or loud — with a white bell status-bar icon; tapping one
+  opens its page, after sign-in if the app was closed
+  (lib/core/services/notification_tap_handler.dart).
+  While the app is OPEN (lib/core/services/foreground_notifications.dart):
+  on a computer/browser a real system pop-up like Outlook's (shown through
+  the push service worker), in the Android app a bar with "Open". Urgent
+  pushes (incidents, high/critical Safety Alerts) stay on a computer's
+  screen until clicked — never louder. Clicking any web notification opens
+  its page on whichever address the app is used from
+  (web/firebase-messaging-sw.js → web/index.html).
+  Shared devices (any phone/tablet/computer — roles are not tied to
+  devices): a device belongs to the last person who signed in on it —
+  `registerPushToken` removes it from every other account (collection-group
+  query on `push_tokens.token`, index in firestore.indexes.json), so a
+  sign-out without signal never leaks the previous person's alerts.
+  Sign-out waits at most 5 s for removing the device.
+  Computers (browser on Windows/Mac/Linux): once notifications are on, a
+  floating dashboard card "Get alerts on this computer" offers a 3-step
+  how-to (install the app from Edge/Chrome, let the browser run in the
+  background, let Windows show the pop-ups) — "Got it"/"Show me how" hide
+  it on that computer for good; the how-to stays in Settings →
+  Notifications (lib/core/widgets/desktop_alerts_help.dart).
 
 Printable reports (October 2026): "Print / PDF" on each AHA (the Safety
   Plan's form layout: details, steps / hazards / controls, equipment /

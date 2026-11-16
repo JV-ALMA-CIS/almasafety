@@ -120,6 +120,14 @@
       "indexes": [
         {"order": "ASCENDING", "queryScope": "COLLECTION_GROUP"}
       ]
+    },
+    {
+      "collectionGroup": "push_tokens",
+      "fieldPath": "token",
+      "indexes": [
+        {"order": "ASCENDING", "queryScope": "COLLECTION"},
+        {"order": "ASCENDING", "queryScope": "COLLECTION_GROUP"}
+      ]
     }
   ]
 }

@@ -6,6 +6,48 @@
 // Must live at the site root as `firebase-messaging-sw.js` — that is where
 // the Firebase Messaging SDK looks for it.
 
+// Clicking a notification opens its page — registered BEFORE the Firebase
+// SDK's own click listener so it runs first. Handles both kinds:
+// - shown by the SDK for a push while the app is closed/hidden (the page is
+//   in the push data, `FCM_MSG.data.route`);
+// - shown by the app itself while it is open (`data.route`, see
+//   lib/core/services/foreground_notifications.dart).
+// The page opens on THIS address (whichever one the app is used from): an
+// open app window is brought forward and told which page to show
+// (web/index.html listens); otherwise a new window opens on that page.
+self.addEventListener("notificationclick", (event) => {
+  const data = event.notification.data || {};
+  const fcm = data.FCM_MSG;
+  const route = (fcm && fcm.data && fcm.data.route) || data.route;
+  if (!route) return;
+  event.stopImmediatePropagation();
+  event.notification.close();
+  event.waitUntil(openPage(route));
+});
+
+/**
+ * Brings the app forward on [route] ("/hazards"), or opens it there.
+ *
+ * @param {string} route the page.
+ * @return {Promise<void>} when done.
+ */
+async function openPage(route) {
+  const page = /^\/[a-z-]+$/.test(route) ? route : "/notifications";
+  const windows = await self.clients.matchAll({
+    type: "window",
+    includeUncontrolled: true,
+  });
+  const app = windows.find(
+    (w) => new URL(w.url).origin === self.location.origin
+  );
+  if (app) {
+    await app.focus();
+    app.postMessage({type: "almasafety-open", route: page});
+    return;
+  }
+  await self.clients.openWindow(self.location.origin + "/#" + page);
+}
+
 importScripts(
   "https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"
 );

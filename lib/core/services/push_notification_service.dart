@@ -135,19 +135,43 @@ class PushNotificationService {
     _registeredToken = token;
   }
 
+  /// How long signing out waits for the device to be removed — signing
+  /// out must never hang on a weak signal.
+  static const unregisterTimeout = Duration(seconds: 5);
+
   /// Removes this device from the account — on sign-out, so the next
-  /// person on this phone does not get the previous person's notifications.
+  /// person on this phone/tablet/computer does not get the previous
+  /// person's notifications.
+  ///
+  /// Best effort and quick: when it cannot reach the server in
+  /// [unregisterTimeout], the next person to sign in on this device takes
+  /// it over anyway (`registerPushToken` removes it from every other
+  /// account).
   Future<void> unregister() async {
-    final token = _registeredToken;
     final functions = _callables;
-    if (token == null || functions == null) return;
+    if (functions == null) return;
     try {
-      await functions.httpsCallable('unregisterPushToken').call<Object?>({
-        'token': token,
-      });
+      await _unregister(functions).timeout(unregisterTimeout);
     } on Object catch (e) {
       debugPrint('Push unregistration failed: $e');
     }
     _registeredToken = null;
+  }
+
+  Future<void> _unregister(FirebaseFunctions functions) async {
+    // Not registered in this session (e.g. signing out before the
+    // dashboard opened) — the device may still be on the account.
+    var token = _registeredToken;
+    if (token == null) {
+      final messaging = _instance;
+      if (messaging == null || await permission() != PushPermission.allowed) {
+        return;
+      }
+      token = await messaging.getToken(vapidKey: kIsWeb ? vapidKey : null);
+    }
+    if (token == null) return;
+    await functions.httpsCallable('unregisterPushToken').call<Object?>({
+      'token': token,
+    });
   }
 }

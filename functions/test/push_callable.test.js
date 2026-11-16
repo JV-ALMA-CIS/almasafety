@@ -58,6 +58,24 @@ test("a device registers on the caller's own account, once", async () => {
   expect(saved[0]).toMatchObject({token: "token-abc", platform: "web"});
 });
 
+test("a shared device belongs only to the person who signed in last",
+  async () => {
+    // Fred signed out without signal: his sign-out never reached the
+    // server, so the device is still on his account…
+    await fns.registerPushToken.run(call("fred", {token: "tablet-1"}));
+    await fns.registerPushToken.run(call("fred", {token: "fred-phone"}));
+    // …then Wanjiru signs in on the same device.
+    await fns.registerPushToken.run(call("wanjiru", {token: "tablet-1"}));
+
+    expect((await tokens("wanjiru")).map((t) => t.token)).toEqual([
+      "tablet-1",
+    ]);
+    // Fred keeps his own phone, but no longer the shared device.
+    expect((await tokens("fred")).map((t) => t.token)).toEqual([
+      "fred-phone",
+    ]);
+  });
+
 test("signing out removes the device", async () => {
   await fns.registerPushToken.run(call("fred", {token: "token-abc"}));
   await fns.unregisterPushToken.run(call("fred", {token: "token-abc"}));

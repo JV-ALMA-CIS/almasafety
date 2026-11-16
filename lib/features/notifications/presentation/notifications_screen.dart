@@ -14,6 +14,7 @@ import '../data/notification_repository.dart';
 import '../data/notification_service.dart';
 import '../domain/app_notification.dart';
 import '../domain/notification_type.dart';
+import '../../../core/widgets/color_choice_chips.dart';
 import '../../../core/widgets/feature_header.dart';
 import '../../../core/widgets/status_badge.dart';
 
@@ -104,20 +105,34 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     }
   }
 
-  Future<void> _markAllRead(String organizationId) async {
+  /// Shows every one of [unread] as read at once and tells the server in
+  /// the background; if that fails they show as unread again, with the
+  /// error.
+  Future<void> _markAllRead(
+    String organizationId,
+    List<AppNotification> unread,
+  ) async {
+    final ids = unread.map((n) => n.id).toSet();
     setState(() {
       _isSaving = true;
       _errorMessage = null;
+      _readLocally.addAll(ids);
     });
     try {
       await _service.markAllNotificationsRead(organizationId: organizationId);
     } on AppException catch (e) {
       if (!mounted) return;
-      setState(() => _errorMessage = e.message);
+      setState(() {
+        _readLocally.removeAll(ids);
+        _errorMessage = e.message;
+      });
     } finally {
       if (mounted) setState(() => _isSaving = false);
     }
   }
+
+  /// Only unread notifications are listed.
+  bool _unreadOnly = false;
 
   @override
   Widget build(BuildContext context) {
@@ -148,7 +163,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         final isLoading = snapshot.connectionState == ConnectionState.waiting;
         bool isRead(AppNotification n) =>
             n.isRead || _readLocally.contains(n.id);
-        final unreadCount = notifications.where((n) => !isRead(n)).length;
+        final unread = notifications.where((n) => !isRead(n)).toList();
+        final unreadCount = unread.length;
+        final shown = _unreadOnly ? unread : notifications;
+        final now = DateTime.now();
+        final days = groupNotificationsByDay(shown, now);
 
         return Scaffold(
           body: ListView(
@@ -174,7 +193,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                         ),
                         onPressed: _isSaving
                             ? null
-                            : () => _markAllRead(organizationId),
+                            : () => _markAllRead(organizationId, unread),
                         icon: const Icon(Icons.done_all),
                         label: const Text('Mark all read'),
                       ),
@@ -208,14 +227,50 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                     ],
                   ),
                 ),
-              for (final notification in notifications) ...[
-                _NotificationCard(
-                  notification: notification,
-                  isRead: isRead(notification),
-                  isSaving: _isSaving,
-                  onTap: () => _open(organizationId, notification),
+              if (notifications.isNotEmpty) ...[
+                ColorChoiceChips<bool>(
+                  choices: [
+                    ColorChoice(
+                      value: false,
+                      label: 'All (${notifications.length})',
+                      color: AppColors.primaryBright,
+                      icon: Icons.inbox,
+                    ),
+                    ColorChoice(
+                      value: true,
+                      label: 'Unread ($unreadCount)',
+                      color: AppColors.safetyAlerts,
+                      icon: Icons.mark_email_unread,
+                    ),
+                  ],
+                  selected: _unreadOnly,
+                  onSelected: (value) => setState(() => _unreadOnly = value),
                 ),
                 const SizedBox(height: AppSpacing.sm),
+              ],
+              if (_unreadOnly && notifications.isNotEmpty && unread.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: AppSpacing.xl),
+                  child: Text(
+                    'No unread notifications — you are all caught up.',
+                    style: AppTextStyles.bodyMedium,
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              for (final day in days) ...[
+                _DayHeader(
+                  label: day.label,
+                  unread: day.notifications.where((n) => !isRead(n)).length,
+                ),
+                for (final notification in day.notifications) ...[
+                  _NotificationCard(
+                    notification: notification,
+                    isRead: isRead(notification),
+                    isSaving: _isSaving,
+                    onTap: () => _open(organizationId, notification),
+                  ),
+                  const SizedBox(height: AppSpacing.sm),
+                ],
               ],
             ],
           ),
@@ -336,10 +391,12 @@ class _NotificationCard extends StatelessWidget {
                         children: [
                           Icon(Icons.schedule, size: 14, color: color),
                           const SizedBox(width: 4),
-                          Text(
-                            '${notification.type.label} · '
-                            '${_formatDate(notification.createdAt)}',
-                            style: AppTextStyles.label,
+                          Flexible(
+                            child: Text(
+                              '${notification.type.label} · '
+                              '${notificationTime(notification.createdAt)}',
+                              style: AppTextStyles.label,
+                            ),
                           ),
                         ],
                       ),
@@ -355,11 +412,114 @@ class _NotificationCard extends StatelessWidget {
   }
 }
 
-String _formatDate(DateTime? date) {
-  if (date == null) return 'recently';
-  final month = date.month.toString().padLeft(2, '0');
-  final day = date.day.toString().padLeft(2, '0');
-  return '${date.year}-$month-$day';
+/// A day's heading in the list — "Today", with how many are still unread.
+class _DayHeader extends StatelessWidget {
+  const _DayHeader({required this.label, required this.unread});
+
+  final String label;
+  final int unread;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: AppSpacing.sm, bottom: AppSpacing.sm),
+      child: Row(
+        children: [
+          Text(
+            label,
+            style: AppTextStyles.titleLarge.copyWith(
+              color: AppColors.readable(
+                AppColors.primaryBright,
+                Theme.of(context).brightness,
+              ),
+            ),
+          ),
+          if (unread > 0) ...[
+            const SizedBox(width: AppSpacing.sm),
+            StatusBadge(label: '$unread new', color: AppColors.safetyAlerts),
+          ],
+          const SizedBox(width: AppSpacing.sm),
+          const Expanded(child: Divider()),
+        ],
+      ),
+    );
+  }
+}
+
+/// One day's notifications, newest first, under its [label].
+class NotificationDay {
+  const NotificationDay(this.label, this.notifications);
+
+  final String label;
+  final List<AppNotification> notifications;
+}
+
+const _weekdays = [
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+  'Sunday',
+];
+const _months = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];
+
+/// How the day of [date] reads from [now], the way a messaging app labels
+/// its chats: "Today", "Yesterday", the weekday within the last week, then
+/// "Mon 3 Nov" (with the year when it is not this year). A notification
+/// the server has not stamped yet ([date] null) is today's.
+String notificationDayLabel(DateTime? date, DateTime now) {
+  if (date == null) return 'Today';
+  final local = date.toLocal();
+  final day = DateTime(local.year, local.month, local.day);
+  final today = DateTime(now.year, now.month, now.day);
+  final daysAgo = (today.difference(day).inHours / 24).round();
+  if (daysAgo <= 0) return 'Today';
+  if (daysAgo == 1) return 'Yesterday';
+  if (daysAgo < 7) return _weekdays[local.weekday - 1];
+  final short =
+      '${_weekdays[local.weekday - 1].substring(0, 3)} '
+      '${local.day} ${_months[local.month - 1]}';
+  return local.year == now.year ? short : '$short ${local.year}';
+}
+
+/// "14:05" for [date], local time; "now" when not stamped yet.
+String notificationTime(DateTime? date) {
+  if (date == null) return 'now';
+  final local = date.toLocal();
+  return '${local.hour.toString().padLeft(2, '0')}:'
+      '${local.minute.toString().padLeft(2, '0')}';
+}
+
+/// [notifications] (newest first) split into days, keeping their order.
+List<NotificationDay> groupNotificationsByDay(
+  List<AppNotification> notifications,
+  DateTime now,
+) {
+  final days = <NotificationDay>[];
+  for (final notification in notifications) {
+    final label = notificationDayLabel(notification.createdAt, now);
+    if (days.isEmpty || days.last.label != label) {
+      days.add(NotificationDay(label, [notification]));
+    } else {
+      days.last.notifications.add(notification);
+    }
+  }
+  return days;
 }
 
 /// The page a notification is about, from what it relates to; null when

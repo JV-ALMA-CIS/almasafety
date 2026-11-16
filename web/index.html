@@ -47,6 +47,20 @@
     * https://docs.flutter.dev/platform-integration/web/initialization
   -->
   <script src="flutter_bootstrap.js" async></script>
+  <!-- A clicked notification opens its page in this window (sent by
+       firebase-messaging-sw.js). -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', function (event) {
+        var data = event.data;
+        if (data && data.type === 'almasafety-open' &&
+            /^\/[a-z-]+$/.test(data.route)) {
+          window.location.hash = data.route;
+        }
+      });
+      navigator.serviceWorker.startMessages();
+    }
+  </script>
   <!-- Keeps the app opening with weak or no signal (see offline_sw.js). -->
   <script>
     if ('serviceWorker' in navigator) {

@@ -14,6 +14,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../core/widgets/choice_list.dart';
+import '../../../core/widgets/desktop_alerts_help.dart';
 import '../../../core/widgets/feature_header.dart';
 import '../../../core/widgets/live_stream_builder.dart';
 import '../../authentication/domain/app_role.dart';
@@ -39,6 +40,7 @@ class SettingsScreen extends StatelessWidget {
     super.key,
     this.pushService,
     this.isIosBrowser,
+    this.isDesktop,
     this.authService,
     this.outbox,
     this.siteRepository,
@@ -47,6 +49,7 @@ class SettingsScreen extends StatelessWidget {
   /// Injected in tests.
   final PushNotificationService? pushService;
   final bool? isIosBrowser;
+  final bool? isDesktop;
   final AuthService? authService;
   final Outbox? outbox;
   final SiteRepository? siteRepository;
@@ -133,6 +136,7 @@ class SettingsScreen extends StatelessWidget {
           isIosBrowser:
               isIosBrowser ??
               (kIsWeb && defaultTargetPlatform == TargetPlatform.iOS),
+          isDesktop: isDesktop ?? isDesktopBrowser,
         ),
         const SizedBox(height: AppSpacing.lg),
         const _SectionTitle('Saved on this phone'),
@@ -425,10 +429,17 @@ class _TextSizeChoice extends StatelessWidget {
 
 /// Whether this device gets notifications, with a way to turn them on.
 class _NotificationsTile extends StatefulWidget {
-  const _NotificationsTile({required this.service, required this.isIosBrowser});
+  const _NotificationsTile({
+    required this.service,
+    required this.isIosBrowser,
+    required this.isDesktop,
+  });
 
   final PushNotificationService service;
   final bool isIosBrowser;
+
+  /// A browser on a computer: offers the "alerts on this computer" how-to.
+  final bool isDesktop;
 
   @override
   State<_NotificationsTile> createState() => _NotificationsTileState();
@@ -510,6 +521,17 @@ class _NotificationsTileState extends State<_NotificationsTile> {
               icon: const Icon(Icons.notifications_active_outlined),
               label: const Text('Turn on notifications'),
             ),
+          ),
+        if (widget.isDesktop && permission == PushPermission.allowed)
+          ListTile(
+            leading: const Icon(Icons.computer),
+            title: const Text('Get alerts on this computer'),
+            subtitle: const Text(
+              'Make pop-ups arrive like Outlook pop-ups, even with the '
+              'window closed.',
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => showDesktopAlertsHelp(context),
           ),
       ],
     );

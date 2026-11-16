@@ -119,6 +119,7 @@ void main() {
     PushPermission permission = PushPermission.allowed,
     _FakePush? push,
     bool isIosBrowser = false,
+    bool isDesktop = false,
     double width = 400,
     _FakeOutbox? outbox,
     double textScale = 1,
@@ -157,6 +158,7 @@ void main() {
             body: SettingsScreen(
               pushService: push ?? _FakePush(permission),
               isIosBrowser: isIosBrowser,
+              isDesktop: isDesktop,
               authService: auth,
               outbox: outbox ?? _FakeOutbox(),
               siteRepository: SiteRepository(
@@ -262,6 +264,23 @@ void main() {
         isIosBrowser: true,
       );
       expect(find.textContaining('Add to Home Screen'), findsOneWidget);
+    });
+
+    testWidgets('computer: the how-to for alerts on this computer', (
+      tester,
+    ) async {
+      await pump(tester, isDesktop: true);
+      await tester.tap(find.text('Get alerts on this computer'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Let the browser run in the background'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('phone: no computer how-to', (tester) async {
+      await pump(tester);
+      expect(find.text('Get alerts on this computer'), findsNothing);
     });
   });
 

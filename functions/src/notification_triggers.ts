@@ -13,7 +13,9 @@
  * - an incident reported → Site Managers/Admins and the site's Foremen
  *   (set its reporting level);
  * - an inspection submitted → Site Managers/Admins (not the inspector);
- * - a new AHA draft → the other Site Managers/Admins (to accept).
+ * - a new AHA draft → the other Site Managers/Admins (to accept);
+ * - a Safety Alert raised → everyone at its site (Workers, Foremen) and
+ *   every Site Manager/Admin.
  *
  * Daily at 06:00 (Nairobi) — `sendDailyReminders`, each at most once a day:
  * - a corrective action due tomorrow or overdue → the assignee;
@@ -54,6 +56,34 @@ export async function managersOf(organizationId: string): Promise<string[]> {
 }
 
 /**
+ * Active members of [organizationId] with one of [roles] who are assigned
+ * to [siteId].
+ *
+ * @param {string} organizationId the organization.
+ * @param {string} siteId the site.
+ * @param {string[]} roles the roles to include.
+ * @return {Promise<string[]>} their uids.
+ */
+async function siteMembersAt(
+  organizationId: string,
+  siteId: string,
+  roles: string[]
+): Promise<string[]> {
+  const memberships = await getFirestore()
+    .collectionGroup("memberships")
+    .where("organizationId", "==", organizationId)
+    .get();
+  return memberships.docs
+    .filter((doc) => {
+      const data = doc.data();
+      return data.status === "active" && roles.includes(data.role) &&
+        Array.isArray(data.siteIds) && data.siteIds.includes(siteId);
+    })
+    .map((doc) => doc.ref.parent.parent?.id)
+    .filter((uid): uid is string => typeof uid === "string");
+}
+
+/**
  * Active Foremen of [organizationId] assigned to [siteId].
  *
  * @param {string} organizationId the organization.
@@ -64,18 +94,7 @@ async function foremenAt(
   organizationId: string,
   siteId: string
 ): Promise<string[]> {
-  const memberships = await getFirestore()
-    .collectionGroup("memberships")
-    .where("organizationId", "==", organizationId)
-    .get();
-  return memberships.docs
-    .filter((doc) => {
-      const data = doc.data();
-      return data.status === "active" && data.role === "foreman" &&
-        Array.isArray(data.siteIds) && data.siteIds.includes(siteId);
-    })
-    .map((doc) => doc.ref.parent.parent?.id)
-    .filter((uid): uid is string => typeof uid === "string");
+  return siteMembersAt(organizationId, siteId, ["foreman"]);
 }
 
 /**
@@ -99,6 +118,7 @@ async function notify(
     relatedEntityType: string;
     relatedEntityId: string;
     idPrefix?: string;
+    urgent?: boolean;
   }
 ): Promise<number> {
   const uids = [...new Set(recipients)].filter((uid) => uid && uid !== exclude);
@@ -116,6 +136,7 @@ async function notify(
         id: message.idPrefix ?
           `${message.idPrefix}-${recipientUid}` :
           undefined,
+        urgent: message.urgent,
       });
       sent++;
     } catch (e) {
@@ -170,6 +191,31 @@ async function siteName(
   return typeof site?.name === "string" ? site.name : "a site";
 }
 
+/**
+ * The person's name from their profile, or null.
+ *
+ * @param {unknown} uid the person.
+ * @return {Promise<string | null>} their name.
+ */
+async function nameOf(uid: unknown): Promise<string | null> {
+  if (typeof uid !== "string" || !uid) return null;
+  const name = (await getFirestore().doc(`users/${uid}`).get()).data()?.name;
+  return typeof name === "string" && name.trim() ? name.trim() : null;
+}
+
+/**
+ * [text] as a message from [from] — "Jane Doe: Loose scaffold board" — the
+ * way a messaging app shows who wrote what; just [text] when [from] is not
+ * known.
+ *
+ * @param {string | null} sender who it is from.
+ * @param {string} text what they wrote.
+ * @return {string} the message line.
+ */
+function from(sender: string | null, text: string): string {
+  return sender ? `${sender}: ${text}` : text;
+}
+
 // ---------------------------------------------------------------------------
 // Handlers (exported for tests)
 // ---------------------------------------------------------------------------
@@ -201,7 +247,10 @@ export async function correctiveActionChanged(
     return notify([after.assignedTo], after.assignedBy, {
       ...base,
       title: "New corrective action for you",
-      message: `${title}${due ? ` — due ${dayLabel(due)}` : ""}.`,
+      message: from(
+        typeof after.assignedByName === "string" ? after.assignedByName : null,
+        `${title}${due ? ` — due ${dayLabel(due)}` : ""}.`
+      ),
     });
   }
   if (before.status === after.status) return 0;
@@ -265,7 +314,10 @@ export async function hazardReported(
         `Inspection deficiency at ${where}` :
         nearMiss ? `Near-miss reported at ${where}` :
           `Hazard reported at ${where}`,
-      message: String(hazard.description ?? "").slice(0, 200),
+      message: from(
+        await nameOf(hazard.reportedByUid),
+        String(hazard.description ?? "").slice(0, 200)
+      ),
     }
   );
 }
@@ -294,10 +346,13 @@ export async function incidentReported(
       type: "incident",
       relatedEntityType: "incident",
       relatedEntityId: incidentId,
+      urgent: true,
       title: `INCIDENT reported at ${where}`,
-      message:
+      message: from(
+        await nameOf(incident.reportedByUid),
         `${String(incident.description ?? "").slice(0, 160)} — tell the ` +
-        "COR now and set the reporting level.",
+          "COR now and set the reporting level."
+      ),
     }
   );
 }
@@ -359,6 +414,54 @@ export async function riskAssessmentCreated(
       `revision ${aha.revision ?? 1}) prepared by ` +
       `${aha.preparedByName ?? "a Site Manager"}.`,
   });
+}
+
+/** How each severity reads at the start of an alert's title. */
+const SEVERITY_LABELS: Record<string, string> = {
+  critical: "CRITICAL SAFETY ALERT",
+  high: "SAFETY ALERT (high)",
+  medium: "Safety alert",
+  low: "Safety notice",
+};
+
+/**
+ * A Safety Alert was raised — everyone at its site must know: the site's
+ * Workers and Foremen, and every Site Manager/Admin. Not the person who
+ * raised it.
+ *
+ * @param {string} organizationId the organization.
+ * @param {string} alertId the alert.
+ * @param {Data} alert its data.
+ * @return {Promise<number>} notifications sent.
+ */
+export async function safetyAlertCreated(
+  organizationId: string,
+  alertId: string,
+  alert: Data
+): Promise<number> {
+  const siteId = String(alert.siteId ?? "");
+  const where = await siteName(organizationId, siteId);
+  const label = SEVERITY_LABELS[String(alert.severity)] ?? "Safety alert";
+  return notify(
+    [
+      ...await managersOf(organizationId),
+      ...await siteMembersAt(organizationId, siteId, ["foreman", "worker"]),
+    ],
+    alert.createdBy,
+    {
+      organizationId,
+      type: "safetyAlert",
+      relatedEntityType: "safetyAlert",
+      relatedEntityId: alertId,
+      urgent: alert.severity === "critical" || alert.severity === "high",
+      title: `${label} at ${where}: ${String(alert.title ?? "")}`
+        .slice(0, 140),
+      message: from(
+        await nameOf(alert.createdBy),
+        String(alert.description ?? "").slice(0, 200)
+      ),
+    }
+  );
 }
 
 /**
@@ -494,6 +597,16 @@ export const onRiskAssessmentCreated = onDocumentCreated(
     const data = event.data?.data();
     if (data) {
       await riskAssessmentCreated(event.params.orgId, event.params.id, data);
+    }
+  }
+);
+
+export const onSafetyAlertCreated = onDocumentCreated(
+  "organizations/{orgId}/safety_alerts/{id}",
+  async (event) => {
+    const data = event.data?.data();
+    if (data) {
+      await safetyAlertCreated(event.params.orgId, event.params.id, data);
     }
   }
 );

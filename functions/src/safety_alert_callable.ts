@@ -15,9 +15,11 @@
  * This is RECORD-KEEPING only, exactly like every other feature built so
  * far in this codebase. There is no automated alert generation (nothing
  * here ever creates an alert on its own from a hazard, an overdue
- * corrective action, weather data, or anything else), no push
- * notification, and no Gemini involvement anywhere in this file. An alert
- * exists because an authorized human explicitly created it.
+ * corrective action, weather data, or anything else), and no Gemini
+ * involvement anywhere in this file. An alert exists because an authorized
+ * human explicitly created it. Telling people about it is NOT done here:
+ * `onSafetyAlertCreated` in `notification_triggers.ts` watches the new
+ * document and notifies (inbox + push) everyone at the site.
  *
  * WHAT AUTHORIZES A CALLER
  *

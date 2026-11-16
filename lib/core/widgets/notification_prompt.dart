@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../services/push_notification_service.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_spacing.dart';
 import '../theme/app_text_styles.dart';
+import 'desktop_alerts_help.dart';
 
 /// A floating card at the top of the dashboard asking to turn on
 /// notifications — safety notifications must reach people even when the
@@ -18,12 +22,17 @@ import '../theme/app_text_styles.dart';
 ///   asks again.
 /// - Blocked: a short how-to instead; an iPhone browser: the Home Screen
 ///   tip (notifications only work from the Home Screen app there).
+/// - On a computer, once allowed: "Get alerts on this computer" — how to
+///   make pop-ups arrive like Outlook's ([showDesktopAlertsHelp]). "Got it"
+///   or "Show me how" hides it on that computer for good; ✕ for the
+///   session. The same how-to stays in Settings → Notifications.
 class NotificationPrompt extends StatefulWidget {
   const NotificationPrompt({
     super.key,
     required this.child,
     this.service,
     this.isIosBrowser,
+    this.isDesktop,
   });
 
   final Widget child;
@@ -31,6 +40,12 @@ class NotificationPrompt extends StatefulWidget {
   /// Injected in tests.
   final PushNotificationService? service;
   final bool? isIosBrowser;
+
+  /// Running in a browser on a computer — injected in tests.
+  final bool? isDesktop;
+
+  /// Saved on this device once the computer how-to has been seen.
+  static const desktopTipSeenKey = 'desktop_alerts_tip_seen';
 
   /// Closed (or answered) in this session — kept across visits to the
   /// dashboard until the app is reloaded.
@@ -45,6 +60,11 @@ class _NotificationPromptState extends State<NotificationPrompt> {
       widget.service ?? PushNotificationService();
   PushPermission? _permission;
 
+  /// Whether this computer has already seen the how-to (null: not loaded).
+  bool? _desktopTipSeen;
+
+  bool get _isDesktop => widget.isDesktop ?? isDesktopBrowser;
+
   bool get _isIosBrowser =>
       widget.isIosBrowser ??
       (kIsWeb && defaultTargetPlatform == TargetPlatform.iOS);
@@ -57,7 +77,38 @@ class _NotificationPromptState extends State<NotificationPrompt> {
       setState(() => _permission = permission);
       if (permission == PushPermission.allowed) _service.registerIfAllowed();
     });
+    if (_isDesktop) _loadDesktopTipSeen();
   }
+
+  Future<void> _loadDesktopTipSeen() async {
+    var seen = true;
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      seen = preferences.getBool(NotificationPrompt.desktopTipSeenKey) ?? false;
+    } on Object {
+      // Cannot remember it here — better not to nag on every visit.
+    }
+    if (mounted) setState(() => _desktopTipSeen = seen);
+  }
+
+  /// The how-to was seen ("Got it" / "Show me how") — not shown again on
+  /// this computer.
+  Future<void> _desktopTipDone({required bool showHow}) async {
+    setState(() => _desktopTipSeen = true);
+    if (showHow) unawaited(showDesktopAlertsHelp(context));
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      await preferences.setBool(NotificationPrompt.desktopTipSeenKey, true);
+    } on Object {
+      // Not remembered — it may show once more next time.
+    }
+  }
+
+  /// The computer how-to is what the card shows now.
+  bool get _showingDesktopTip =>
+      _permission == PushPermission.allowed &&
+      _isDesktop &&
+      _desktopTipSeen == false;
 
   /// The card goes away at once and the device's Allow prompt opens
   /// straight away. Only "blocked" brings it back, with the how-to.
@@ -78,7 +129,8 @@ class _NotificationPromptState extends State<NotificationPrompt> {
   bool get _visible {
     if (NotificationPrompt.closedThisSession) return false;
     return switch (_permission) {
-      null || PushPermission.allowed => false,
+      null => false,
+      PushPermission.allowed => _showingDesktopTip,
       PushPermission.unsupported => _isIosBrowser,
       PushPermission.notAsked || PushPermission.blocked => true,
     };
@@ -106,11 +158,17 @@ class _NotificationPromptState extends State<NotificationPrompt> {
                   opacity: visible ? 1 : 0,
                   duration: const Duration(milliseconds: 200),
                   child: visible
-                      ? _PromptCard(
-                          permission: _permission!,
-                          onTurnOn: _turnOn,
-                          onClose: _close,
-                        )
+                      ? _showingDesktopTip
+                            ? _DesktopTipCard(
+                                onShowHow: () => _desktopTipDone(showHow: true),
+                                onGotIt: () => _desktopTipDone(showHow: false),
+                                onClose: _close,
+                              )
+                            : _PromptCard(
+                                permission: _permission!,
+                                onTurnOn: _turnOn,
+                                onClose: _close,
+                              )
                       : const SizedBox.shrink(),
                 ),
               ),
@@ -188,6 +246,95 @@ class _PromptCard extends StatelessWidget {
                       label: const Text('Turn on notifications'),
                     ),
                   ],
+                ],
+              ),
+            ),
+            IconButton(
+              tooltip: 'Close',
+              onPressed: onClose,
+              icon: const Icon(Icons.close),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// "Get alerts on this computer" — a computer that already allows
+/// notifications, until the how-to has been seen.
+class _DesktopTipCard extends StatelessWidget {
+  const _DesktopTipCard({
+    required this.onShowHow,
+    required this.onGotIt,
+    required this.onClose,
+  });
+
+  final VoidCallback onShowHow;
+  final VoidCallback onGotIt;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    const color = AppColors.primaryBright;
+    return Material(
+      elevation: 8,
+      shadowColor: Colors.black54,
+      borderRadius: BorderRadius.circular(14),
+      color: Theme.of(context).colorScheme.surface,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.md,
+          AppSpacing.sm,
+          AppSpacing.xs,
+          AppSpacing.sm,
+        ),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: color.withValues(alpha: 0.6), width: 1.5),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.computer, color: color),
+            const SizedBox(width: AppSpacing.sm),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Get alerts on this computer',
+                    style: AppTextStyles.titleLarge,
+                  ),
+                  const Text(
+                    'Pop-ups like new emails in Outlook, even when you are '
+                    'in another program — three quick settings.',
+                    style: AppTextStyles.bodyMedium,
+                  ),
+                  const SizedBox(height: AppSpacing.xs),
+                  Wrap(
+                    spacing: AppSpacing.sm,
+                    runSpacing: AppSpacing.xs,
+                    children: [
+                      FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: color,
+                          foregroundColor: Colors.white,
+                          minimumSize: const Size(0, 40),
+                        ),
+                        onPressed: onShowHow,
+                        icon: const Icon(Icons.help_outline, size: 18),
+                        label: const Text('Show me how'),
+                      ),
+                      TextButton(
+                        style: TextButton.styleFrom(
+                          minimumSize: const Size(0, 40),
+                        ),
+                        onPressed: onGotIt,
+                        child: const Text('Got it'),
+                      ),
+                    ],
+                  ),
                 ],
               ),
             ),

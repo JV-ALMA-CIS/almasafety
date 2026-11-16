@@ -6,8 +6,11 @@
  * Each device that allows notifications registers its token
  * (`registerPushToken`) under `users/{uid}/push_tokens/{id}`; signing out
  * removes it (`unregisterPushToken`). Both act only on the caller's own
- * account. `firestore.rules` has no grant for `push_tokens`, so clients can
- * neither read nor write them directly.
+ * account — except that a device belongs to ONE person: registering it
+ * removes it from anyone else's account, so a shared phone/tablet/computer
+ * never gets the previous person's notifications, even when their sign-out
+ * could not reach the server. `firestore.rules` has no grant for
+ * `push_tokens`, so clients can neither read nor write them directly.
  *
  * `sendPush` is called by `createNotification` after it writes the inbox
  * notification. It never throws (a push problem must not stop the inbox
@@ -57,13 +60,23 @@ export const registerPushToken = onCall(async (request) => {
   const rawPlatform = (request.data ?? {}).platform;
   const platform =
     typeof rawPlatform === "string" ? rawPlatform.slice(0, 20) : "unknown";
-  await getFirestore()
-    .doc(`users/${uid}/push_tokens/${tokenId(token)}`)
-    .set({
-      token,
-      platform,
-      lastSeenAt: FieldValue.serverTimestamp(),
-    }, {merge: true});
+  const db = getFirestore();
+  const mine = db.doc(`users/${uid}/push_tokens/${tokenId(token)}`);
+  // The same device on anyone else's account (shared device; a sign-out
+  // without signal) — it is now the caller's alone.
+  const elsewhere = await db.collectionGroup("push_tokens")
+    .where("token", "==", token)
+    .get();
+  const batch = db.batch();
+  for (const doc of elsewhere.docs) {
+    if (doc.ref.path !== mine.path) batch.delete(doc.ref);
+  }
+  batch.set(mine, {
+    token,
+    platform,
+    lastSeenAt: FieldValue.serverTimestamp(),
+  }, {merge: true});
+  await batch.commit();
   return {registered: true};
 });
 
@@ -110,6 +123,10 @@ export async function sendPush(params: {
   title: string;
   message: string;
   relatedEntityType?: string | null;
+  /** Stays on a computer's screen until clicked (incidents, serious
+   * alerts) instead of fading away. Never louder — same sound as any other.
+   */
+  urgent?: boolean;
 }): Promise<number> {
   try {
     const db = getFirestore();
@@ -127,12 +144,28 @@ export async function sendPush(params: {
     const response = await getMessaging().sendEachForMulticast({
       tokens: docs.map((d) => d.data().token as string),
       notification: {title: params.title, body: params.message},
-      data: {route},
+      data: {route, urgent: params.urgent ? "1" : "0"},
       webpush: {
+        // Clicks are handled in web/firebase-messaging-sw.js (opens the
+        // page on whichever address the app is used from); this link is
+        // only the fallback.
         fcmOptions: {link},
-        notification: {icon: "/icons/Icon-192.png", badge: "/favicon.png"},
+        notification: {
+          icon: "/icons/Icon-192.png",
+          badge: "/favicon.png",
+          ...(params.urgent ? {requireInteraction: true} : {}),
+        },
       },
-      android: {priority: "high"},
+      // The "Safety alerts" channel (android/.../MainActivity.kt): pops up
+      // as a banner with the phone's own default sound — nothing custom.
+      android: {
+        priority: "high",
+        notification: {
+          channelId: "safety_alerts",
+          icon: "ic_notification",
+          color: "#0B4F6C",
+        },
+      },
     });
 
     const dead = response.responses

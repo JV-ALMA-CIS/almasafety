@@ -41,6 +41,14 @@ class _Session extends SessionController {
 /// function starting up.
 class _SlowService extends NotificationService {
   final pending = <Completer<void>>[];
+  final pendingAll = <Completer<void>>[];
+
+  @override
+  Future<void> markAllNotificationsRead({required String organizationId}) {
+    final completer = Completer<void>();
+    pendingAll.add(completer);
+    return completer.future;
+  }
 
   @override
   Future<void> markNotificationRead({
@@ -117,5 +125,87 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('1 unread'), findsOneWidget);
     expect(find.text('Could not mark it read.'), findsOneWidget);
+  });
+
+  testWidgets('notifications are grouped by day, each with its time', (
+    tester,
+  ) async {
+    final now = DateTime.now();
+    final yesterday = DateTime(now.year, now.month, now.day - 1, 9, 5);
+    await firestore.doc('organizations/org/notifications/n2').set({
+      'organizationId': 'org',
+      'recipientUid': 'me',
+      'type': 'safetyAlert',
+      'title': 'Crane lift',
+      'message': 'Keep clear',
+      'isRead': true,
+      'createdAt': Timestamp.fromDate(yesterday),
+    });
+    await open(tester);
+    expect(find.text('Today'), findsOneWidget);
+    expect(find.text('Yesterday'), findsOneWidget);
+    expect(find.text('1 new'), findsOneWidget);
+    expect(find.textContaining('09:05'), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.text('Today')).dy,
+      lessThan(tester.getTopLeft(find.text('Yesterday')).dy),
+    );
+  });
+
+  testWidgets('the Unread filter hides what has been read', (tester) async {
+    await firestore.doc('organizations/org/notifications/n2').set({
+      'organizationId': 'org',
+      'recipientUid': 'me',
+      'type': 'system',
+      'title': 'Old news',
+      'message': 'Already seen',
+      'isRead': true,
+      'createdAt': Timestamp.now(),
+    });
+    await open(tester);
+    expect(find.text('Old news'), findsOneWidget);
+    await tester.tap(find.text('Unread (1)'));
+    await tester.pumpAndSettle();
+    expect(find.text('Old news'), findsNothing);
+    expect(find.text('Welcome'), findsOneWidget);
+  });
+
+  testWidgets('Mark all read is instant, and undone if the server refuses', (
+    tester,
+  ) async {
+    final service = await open(tester);
+    await tester.tap(find.text('Mark all read'));
+    await tester.pump();
+    expect(service.pendingAll.single.isCompleted, isFalse);
+    expect(find.text('All caught up'), findsOneWidget);
+
+    service.pendingAll.single.completeError(
+      const DataException('Could not mark them read.'),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('1 unread'), findsOneWidget);
+    expect(find.text('Could not mark them read.'), findsOneWidget);
+  });
+
+  group('day labels', () {
+    final now = DateTime(2026, 11, 16, 15); // a Monday
+    test('today, yesterday, this week, then the date', () {
+      expect(notificationDayLabel(DateTime(2026, 11, 16, 0, 1), now), 'Today');
+      expect(notificationDayLabel(null, now), 'Today');
+      expect(
+        notificationDayLabel(DateTime(2026, 11, 15, 23), now),
+        'Yesterday',
+      );
+      expect(notificationDayLabel(DateTime(2026, 11, 12), now), 'Thursday');
+      expect(notificationDayLabel(DateTime(2026, 11, 9), now), 'Mon 9 Nov');
+      expect(
+        notificationDayLabel(DateTime(2025, 12, 31), now),
+        'Wed 31 Dec 2025',
+      );
+    });
+    test('time is 24-hour', () {
+      expect(notificationTime(DateTime(2026, 11, 16, 7, 3)), '07:03');
+      expect(notificationTime(null), 'now');
+    });
   });
 }

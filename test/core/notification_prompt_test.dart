@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:jva_safety/core/services/push_notification_service.dart';
 import 'package:jva_safety/core/widgets/notification_prompt.dart';
 
@@ -32,13 +33,17 @@ class _FakePush extends PushNotificationService {
 }
 
 void main() {
-  setUp(() => NotificationPrompt.closedThisSession = false);
+  setUp(() {
+    NotificationPrompt.closedThisSession = false;
+    SharedPreferences.setMockInitialValues({});
+  });
 
   /// Opens the dashboard (a fresh prompt each time, like coming back to it).
   Future<void> openDashboard(
     WidgetTester tester,
     _FakePush push, {
     bool iosBrowser = false,
+    bool desktop = false,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -47,6 +52,7 @@ void main() {
             key: UniqueKey(),
             service: push,
             isIosBrowser: iosBrowser,
+            isDesktop: desktop,
             child: const Center(child: Text('Dashboard')),
           ),
         ),
@@ -143,5 +149,60 @@ void main() {
     push.prompt!.complete(PushPermission.blocked);
     await tester.pumpAndSettle();
     expect(find.textContaining('blocked on this device'), findsOneWidget);
+  });
+
+  group('on a computer', () {
+    final tip = find.text('Get alerts on this computer');
+
+    testWidgets('once allowed, offers the how-to; Got it hides it for good', (
+      tester,
+    ) async {
+      final push = _FakePush(PushPermission.allowed);
+      await openDashboard(tester, push, desktop: true);
+      expect(tip, findsOneWidget);
+      expect(dashboard, findsOneWidget);
+
+      await tester.tap(find.text('Got it'));
+      await tester.pumpAndSettle();
+      expect(tip, findsNothing);
+
+      // A new session on this computer: still hidden.
+      NotificationPrompt.closedThisSession = false;
+      await openDashboard(tester, push, desktop: true);
+      expect(tip, findsNothing);
+    });
+
+    testWidgets('Show me how opens the steps', (tester) async {
+      await openDashboard(
+        tester,
+        _FakePush(PushPermission.allowed),
+        desktop: true,
+      );
+      await tester.tap(find.text('Show me how'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Let the browser run in the background'),
+        findsOneWidget,
+      );
+      expect(find.text('Let Windows show the pop-ups'), findsOneWidget);
+      await tester.tap(find.text('Done'));
+      await tester.pumpAndSettle();
+      expect(tip, findsNothing);
+    });
+
+    testWidgets('not allowed yet: asks to turn them on first', (tester) async {
+      await openDashboard(
+        tester,
+        _FakePush(PushPermission.notAsked),
+        desktop: true,
+      );
+      expect(turnOn, findsOneWidget);
+      expect(tip, findsNothing);
+    });
+
+    testWidgets('never on a phone or tablet', (tester) async {
+      await openDashboard(tester, _FakePush(PushPermission.allowed));
+      expect(tip, findsNothing);
+    });
   });
 }
