@@ -226,6 +226,7 @@ class SafetyComplianceRepository {
                 if (completedIds.contains(learning.id)) learning,
             ],
             completedAtByLearningId: completedAtByLearningId,
+            quizOutstandingIds: _quizOutstandingIds(workerRecords),
           ),
         );
       }
@@ -282,6 +283,7 @@ class SafetyComplianceRepository {
                 if (completedIds.contains(learning.id)) learning,
             ],
             completedAtByLearningId: completedAtByLearningId,
+            quizOutstandingIds: _quizOutstandingIds(workerRecords),
           ),
         );
       }
@@ -298,4 +300,14 @@ class SafetyComplianceRepository {
 
     return summaries;
   }
+
+  /// Records whose video step is done but which are not complete — only a
+  /// mandatory quiz keeps a record there (see `completeLearning`).
+  static Set<String> _quizOutstandingIds(List<WorkerLearningRecord> records) =>
+      {
+        for (final record in records)
+          if (record.status == WorkerLearningStatus.inProgress &&
+              record.contentCompleted)
+            record.learningId,
+      };
 }

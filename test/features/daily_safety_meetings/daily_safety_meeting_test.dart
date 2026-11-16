@@ -138,6 +138,52 @@ void main() {
     );
   });
 
+  test('parses the suggestion snapshot and concern count', () async {
+    final doc = await seed({
+      'organizationId': 'org-alpha',
+      'projectId': 'project-1',
+      'siteId': 'site-1',
+      'date': '2026-10-28',
+      'foremanId': 'foreman-1',
+      'status': 'inProgress',
+      'meetingPointIds': ['point-ppe'],
+      'suggestedPointIds': ['point-height', 'point-ppe'],
+      'suggestionReasons': {
+        'point-height': ["Today's work: Roofing"],
+        'point-ppe': ['General safety point for any work', 7],
+      },
+      'concernCount': 3,
+    });
+
+    final meeting = DailySafetyMeeting.fromFirestore(doc);
+
+    expect(meeting.suggestedPointIds, ['point-height', 'point-ppe']);
+    expect(meeting.suggestionReasons, {
+      'point-height': ["Today's work: Roofing"],
+      'point-ppe': ['General safety point for any work'],
+    });
+    expect(meeting.concernCount, 3);
+  });
+
+  test('a meeting from before suggestions and counts existed still loads, '
+      'with no snapshot and no count', () async {
+    final doc = await seed({
+      'organizationId': 'org-alpha',
+      'projectId': 'project-1',
+      'siteId': 'site-1',
+      'date': '2026-09-01',
+      'foremanId': 'foreman-1',
+      'status': 'completed',
+      'concerns': <String>[],
+    });
+
+    final meeting = DailySafetyMeeting.fromFirestore(doc);
+
+    expect(meeting.suggestedPointIds, isEmpty);
+    expect(meeting.suggestionReasons, isEmpty);
+    expect(meeting.concernCount, isNull);
+  });
+
   test('every DailySafetyMeetingStatus round-trips through its stored id', () {
     for (final status in DailySafetyMeetingStatus.values) {
       expect(DailySafetyMeetingStatus.tryFromId(status.id), status);

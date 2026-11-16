@@ -83,6 +83,9 @@ class FakeAuthService implements AuthService {
     emitSignedOut();
   }
 
+  @override
+  Future<void> sendPasswordResetEmail(String email) async {}
+
   Future<void> dispose() => _controller.close();
 }
 

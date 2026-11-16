@@ -35,6 +35,7 @@ import '../features/organizations/presentation/sites_screen.dart';
 import '../features/safety_learning/presentation/todays_safety_readiness_screen.dart';
 import '../features/safety_learning/presentation/safety_learning_library_screen.dart';
 import '../features/safety_meeting_points/presentation/my_safety_meeting_points_screen.dart';
+import '../features/safety_videos/presentation/safety_videos_screen.dart';
 import '../features/safety_meeting_points/presentation/safety_meeting_points_screen.dart';
 import '../features/daily_safety_meetings/presentation/admin_daily_safety_meetings_screen.dart';
 import '../features/daily_safety_meetings/presentation/daily_safety_meetings_router_screen.dart';
@@ -47,8 +48,11 @@ import '../features/reports/presentation/reports_screen.dart';
 import '../features/safety_alerts/presentation/safety_alerts_screen.dart';
 import '../features/safety_learning_compliance/presentation/safety_learning_compliance_screen.dart';
 import '../features/safety_requirements/presentation/safety_requirements_screen.dart';
+import '../features/settings/presentation/settings_screen.dart';
 import 'app_routes.dart';
+import '../core/navigation/overlay_history.dart';
 import 'app_shell.dart';
+import 'route_extra_codec.dart';
 
 /// The routes reachable without a signed-in, approved account. Everything
 /// else is operational and requires [AuthStatus.authenticated].
@@ -173,6 +177,10 @@ String? authRedirect(
 GoRouter buildAppRouter(SessionController session) {
   return GoRouter(
     initialLocation: AppRoutes.sessionLoading,
+    // Keeps drill-down context (`extra`) across browser Back/Forward.
+    extraCodec: RouteExtraCodec(),
+    // Browser/Android Back closes a pushed screen or dialog first.
+    observers: [OverlayHistory.instance.observer()],
     refreshListenable: session,
     redirect: (context, state) => authRedirect(
       session.status,
@@ -214,6 +222,7 @@ GoRouter buildAppRouter(SessionController session) {
         builder: (context, state) => const AccessDeniedScreen(),
       ),
       ShellRoute(
+        observers: [OverlayHistory.instance.observer()],
         builder: (context, state, child) => AppShell(child: child),
         routes: [
           GoRoute(
@@ -268,10 +277,9 @@ GoRouter buildAppRouter(SessionController session) {
           ),
           GoRoute(
             path: AppRoutes.safetyVideos,
-            builder: (context, state) => const PlaceholderScreen(
-              featureName: 'Safety Videos',
-              icon: Icons.play_circle_outline,
-            ),
+            // Every role: the video items of the Safety Learning library,
+            // opened in the same lesson screen — see SafetyVideosScreen.
+            builder: (context, state) => const SafetyVideosScreen(),
           ),
           GoRoute(
             path: AppRoutes.safetyMeetingPoints,
@@ -338,6 +346,10 @@ GoRouter buildAppRouter(SessionController session) {
           GoRoute(
             path: AppRoutes.administration,
             builder: (context, state) => const AdministrationScreen(),
+          ),
+          GoRoute(
+            path: AppRoutes.settings,
+            builder: (context, state) => const SettingsScreen(),
           ),
           GoRoute(
             path: AppRoutes.manageSites,

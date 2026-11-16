@@ -58,7 +58,7 @@ enum AccountStatus {
   static AccountStatus fromId(String? id) {
     final status = tryFromId(id);
     if (status == null) {
-      throw ArgumentError.value(id, 'id', 'Unknown JVA Safety account status');
+      throw ArgumentError.value(id, 'id', 'Unknown ALMASAFETY account status');
     }
     return status;
   }

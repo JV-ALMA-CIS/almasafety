@@ -102,6 +102,24 @@ class AuthService {
 
   Future<void> signOut() => _firebaseAuth?.signOut() ?? Future.value();
 
+  /// Emails [email] a Firebase link for choosing a new password — the
+  /// signed-in person's own address (Settings → Change password). Firebase
+  /// sends the email; nothing about the account changes until the link is
+  /// used.
+  Future<void> sendPasswordResetEmail(String email) async {
+    final auth = _requireAuth('Changing the password');
+    try {
+      await auth.sendPasswordResetEmail(email: email);
+    } on FirebaseAuthException catch (e) {
+      throw mapAuthError(e);
+    } on TimeoutException catch (e) {
+      throw NetworkException(
+        'The request timed out. Check your connection and try again.',
+        cause: e,
+      );
+    }
+  }
+
   FirebaseAuth _requireAuth(String operation) {
     final auth = _firebaseAuth;
     if (auth == null) {

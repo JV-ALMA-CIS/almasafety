@@ -50,6 +50,7 @@ class SafetyLearning {
     this.description,
     this.minimumWatchSeconds,
     this.passingScorePercent,
+    this.deletionPending = false,
     this.createdAt,
     this.updatedAt,
     this.createdBy,
@@ -75,6 +76,12 @@ class SafetyLearning {
   /// knowledge check. Only meaningful when at least one question is
   /// configured — see this class's doc comment.
   final int? passingScorePercent;
+
+  /// A deletion was started but could not finish (its uploaded file or
+  /// documents could not be removed yet) — see `deleteSafetyLearning`. The
+  /// item is hidden (inactive) and cannot be edited; choosing Delete again
+  /// finishes it, and the server also retries on a schedule.
+  final bool deletionPending;
 
   final DateTime? createdAt;
   final DateTime? updatedAt;
@@ -127,6 +134,9 @@ class SafetyLearning {
       status: status,
       minimumWatchSeconds: (data['minimumWatchSeconds'] as num?)?.toInt(),
       passingScorePercent: (data['passingScorePercent'] as num?)?.toInt(),
+      deletionPending:
+          data['deletion'] is Map &&
+          (data['deletion'] as Map)['pending'] == true,
       createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
       updatedAt: (data['updatedAt'] as Timestamp?)?.toDate(),
       createdBy: data['createdBy'] as String?,

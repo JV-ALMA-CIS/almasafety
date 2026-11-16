@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../core/utils/meeting_date.dart';
 import '../../../core/widgets/dashboard_grid.dart';
 import '../../corrective_actions/domain/corrective_action_status.dart';
 import 'safety_reports_card.dart';
@@ -113,13 +114,6 @@ class ForemanDashboardScreen extends StatefulWidget {
 }
 
 class _ForemanDashboardScreenState extends State<ForemanDashboardScreen> {
-  static String _today() {
-    final now = DateTime.now();
-    final month = now.month.toString().padLeft(2, '0');
-    final day = now.day.toString().padLeft(2, '0');
-    return '${now.year}-$month-$day';
-  }
-
   late final MeetingAttendanceService _attendanceService =
       widget.meetingAttendanceService ?? MeetingAttendanceService();
   late final PreStartCheckService _preStartService =
@@ -213,7 +207,7 @@ class _ForemanDashboardScreenState extends State<ForemanDashboardScreen> {
     final todaysMeetings = meetingRepository.watchForForemanSiteAndDate(
       foremanId: foremanUid,
       siteId: siteIds.first,
-      date: _today(),
+      date: meetingDate(),
     );
 
     return ListView(
@@ -254,7 +248,12 @@ class _ForemanDashboardScreenState extends State<ForemanDashboardScreen> {
           color: AppColors.meetings,
           icon: Icons.fact_check_outlined,
           child: LiveStreamBuilder<List<DailySafetyMeeting>>(
-            streamKey: (organizationId, foremanUid, siteIds.first, _today()),
+            streamKey: (
+              organizationId,
+              foremanUid,
+              siteIds.first,
+              meetingDate(),
+            ),
             stream: () => todaysMeetings,
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.waiting &&
@@ -358,7 +357,12 @@ class _ForemanDashboardScreenState extends State<ForemanDashboardScreen> {
             child: const Text('Full compliance'),
           ),
           child: LiveStreamBuilder<List<DailySafetyMeeting>>(
-            streamKey: (organizationId, foremanUid, siteIds.first, _today()),
+            streamKey: (
+              organizationId,
+              foremanUid,
+              siteIds.first,
+              meetingDate(),
+            ),
             stream: () => todaysMeetings,
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.waiting &&

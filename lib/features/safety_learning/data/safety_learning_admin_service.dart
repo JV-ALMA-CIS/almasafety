@@ -1,6 +1,7 @@
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_core/firebase_core.dart';
 import '../../../core/errors/app_exception.dart';
+import '../../../core/services/callable_errors.dart';
 import '../../organizations/data/organization_admin_service.dart';
 import '../../organizations/domain/organization_record_status.dart';
 import '../domain/knowledge_check_admin_question.dart';
@@ -179,12 +180,96 @@ class SafetyLearningAdminService {
     'questionId': questionId,
   });
 
-  Future<T> _call<T>(String name, [Map<String, Object?>? data]) async {
+  /// How many quiz questions each video in [organizationId] has, by
+  /// learning id — for video authors (Admin, or a Site Manager of the
+  /// organization). Counts only; never the questions or answers.
+  ///
+  /// A video missing from the result was not counted — it is never treated
+  /// as zero. A malformed response throws rather than returning a partial
+  /// map; a server without this function throws
+  /// [ServerUpdateRequiredException].
+  Future<Map<String, int>> getVideoQuizSummary({
+    required String organizationId,
+  }) async {
+    final result = await _call<Object?>('getVideoQuizSummary', {
+      'organizationId': organizationId,
+    }, feature: 'Quiz counts');
+    final raw = result is Map ? result['questionCounts'] : null;
+    if (raw is! Map) {
+      throw const DataException(
+        'The server sent quiz counts in an unexpected format.',
+      );
+    }
+    final counts = <String, int>{};
+    for (final entry in raw.entries) {
+      final key = entry.key;
+      final value = entry.value;
+      if (key is! String || value is! num || value < 0) {
+        throw const DataException(
+          'The server sent quiz counts in an unexpected format.',
+        );
+      }
+      counts[key] = value.toInt();
+    }
+    return counts;
+  }
+
+  /// Permanently deletes [id] — only when nothing depends on it: no learner
+  /// has a record for it and no Safety Requirement (active or not) lists
+  /// it. Its quiz questions and its own uploaded file go with it. The
+  /// server refuses otherwise, with the reason (deactivate it instead), and
+  /// refuses when it cannot complete the check. See `deleteSafetyLearning`
+  /// (`functions/src/learning_delete_callable.ts`).
+  ///
+  /// Returns whether the uploaded file (if any) was removed as well.
+  Future<bool> deleteSafetyLearning({
+    required String organizationId,
+    required String id,
+  }) async {
+    final result = await _call<Map<Object?, Object?>>('deleteSafetyLearning', {
+      'organizationId': organizationId,
+      'id': id,
+    }, feature: 'Deleting videos');
+    return result['fileDeleted'] != false;
+  }
+
+  /// Moves an upload from the caller's own staging folder
+  /// (`learning_uploads/{uid}/...`) into the organization's library folder,
+  /// after a server-side author check, and returns the download URL to save
+  /// as the item's content reference. No client may write the library
+  /// folder directly — see `publishLearningUpload`
+  /// (`functions/src/learning_upload_callable.ts`).
+  Future<String> publishLearningUpload({
+    required String organizationId,
+    required String uploadPath,
+  }) async {
+    final result = await _call<Map<Object?, Object?>>('publishLearningUpload', {
+      'organizationId': organizationId,
+      'uploadPath': uploadPath,
+    }, feature: 'Uploading files');
+    final url = result['contentReference'];
+    if (url is! String || url.isEmpty) {
+      throw const DataException('The upload could not be published.');
+    }
+    return url;
+  }
+
+  /// [feature] names a recently added server function, so a server without
+  /// it is reported as needing an update — see [missingServerFunction].
+  Future<T> _call<T>(
+    String name,
+    Map<String, Object?>? data, {
+    String? feature,
+  }) async {
     try {
       final callable = _require().httpsCallable(name);
       final result = await callable.call<T>(data);
       return result.data;
     } on FirebaseFunctionsException catch (e) {
+      if (feature != null) {
+        final outdated = missingServerFunction(e, feature);
+        if (outdated != null) throw outdated;
+      }
       throw OrganizationAdminService.mapCallableError(e);
     }
   }

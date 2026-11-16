@@ -520,4 +520,150 @@ void main() {
       expect(find.textContaining('Replace ladder'), findsOneWidget);
     });
   });
+
+  group('AdminDailySafetyMeetingsScreen (concern counts)', () {
+    Future<void> seedConcernDoc(String meetingId, String id) {
+      return firestore
+          .doc(
+            'organizations/org-alpha/daily_safety_meetings/$meetingId/'
+            'concerns/$id',
+          )
+          .set({
+            'meetingId': meetingId,
+            'organizationId': 'org-alpha',
+            'siteId': 'site-1',
+            'description': 'Loose sheet $id',
+            'category': 'safety',
+            'reportedBy': 'O9755kUSpMUZcJWARnsmuCzo8d72',
+            'status': 'open',
+            'createdAt': Timestamp.now(),
+          });
+    }
+
+    testWidgets('the card uses the stored concernCount', (tester) async {
+      await seedSite('site-1');
+      await seedProject('project-1');
+      await seedMeeting('meeting-1');
+      await firestore
+          .doc('organizations/org-alpha/daily_safety_meetings/meeting-1')
+          .update({'concernCount': 4});
+
+      await tester.pumpWidget(wrap(role: AppRole.admin));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('4 concerns'), findsOneWidget);
+    });
+
+    testWidgets('an older meeting without a stored count counts its concerns '
+        'instead of reading the unused text list as 0', (tester) async {
+      await seedSite('site-1');
+      await seedProject('project-1');
+      await seedMeeting('meeting-1');
+      await seedConcernDoc('meeting-1', 'c1');
+      await seedConcernDoc('meeting-1', 'c2');
+
+      await tester.pumpWidget(wrap(role: AppRole.admin));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('2 concerns'), findsOneWidget);
+      expect(find.textContaining('0 concerns'), findsNothing);
+    });
+
+    testWidgets('the summary counts its concerns and shows what was '
+        'suggested next to what was kept', (tester) async {
+      await seedSite('site-1');
+      await seedProject('project-1');
+      await seedMeeting('meeting-1', meetingPointIds: ['point-1', 'point-3']);
+      await firestore
+          .doc('organizations/org-alpha/daily_safety_meetings/meeting-1')
+          .update({
+            'suggestedPointIds': ['point-1', 'point-2'],
+            'suggestionReasons': {
+              'point-1': ["Today's work: Roofing"],
+              'point-2': ['General safety point for any work'],
+            },
+          });
+      for (final (id, title) in [
+        ('point-1', 'Working at Height'),
+        ('point-2', 'PPE'),
+        ('point-3', 'Ladders'),
+      ]) {
+        await firestore
+            .doc('organizations/org-alpha/safety_meeting_points/$id')
+            .set({
+              'organizationId': 'org-alpha',
+              'title': title,
+              'category': 'safety',
+              'status': 'active',
+              'applicableActivities': <String>[],
+              'applicableRisks': <String>[],
+            });
+      }
+      await seedConcernDoc('meeting-1', 'c1');
+
+      await tester.pumpWidget(wrap(role: AppRole.admin));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Test Site · 2026-08-21'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('1 concern'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.textContaining('suggested at the start'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(
+        find.text(
+          '2 suggested at the start, 1 kept. Not covered: PPE. '
+          'Added: Ladders.',
+        ),
+        findsOneWidget,
+      );
+    });
+    testWidgets("the card and summary count the Foreman's own points and "
+        'show them, marked, with what was discussed', (tester) async {
+      await seedSite('site-1');
+      await seedProject('project-1');
+      await firestore.doc('organizations/org-alpha/activities/activity-1').set({
+        'organizationId': 'org-alpha',
+        'projectId': 'project-1',
+        'siteId': 'site-1',
+        'name': 'Roofing',
+        'code': 'ROOF-01',
+        'status': 'active',
+      });
+      await seedMeeting('meeting-1', meetingPointIds: const []);
+      await firestore
+          .doc('organizations/org-alpha/daily_safety_meetings/meeting-1')
+          .update({'foremanPointCount': 1});
+      await firestore
+          .doc(
+            'organizations/org-alpha/daily_safety_meetings/meeting-1/'
+            'foreman_points/pointAbc12345',
+          )
+          .set({
+            'meetingId': 'meeting-1',
+            'organizationId': 'org-alpha',
+            'siteId': 'site-1',
+            'title': 'Wet roof sheets',
+            'note': 'No walking on wet sheets.',
+            'activityId': 'activity-1',
+            'createdAt': Timestamp.now(),
+          });
+
+      await tester.pumpWidget(wrap(role: AppRole.admin));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('1 safety points'), findsOneWidget);
+
+      await tester.tap(find.text('Test Site · 2026-08-21'));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('Wet roof sheets (added by Foreman, about Roofing)'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('No walking on wet sheets.'), findsOneWidget);
+      expect(find.text('No safety points recorded.'), findsNothing);
+    });
+  });
 }

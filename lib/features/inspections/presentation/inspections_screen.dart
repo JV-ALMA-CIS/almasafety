@@ -28,6 +28,7 @@ import 'deficiency_log_screen.dart';
 import 'inspection_run_screen.dart';
 import 'inspection_style.dart';
 import 'inspection_templates_screen.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// The "Inspections" page — the Safety Plan's daily site inspections and
 /// weekly HSE walk-downs (Section 7).
@@ -518,7 +519,7 @@ class _StartInspectionScreenState extends State<_StartInspectionScreen> {
       assignedSiteIds: session.activeMembership?.siteIds ?? const [],
     );
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Start Inspection')),
       body: ListView(
         padding: const EdgeInsets.all(AppSpacing.md),
         children: [
@@ -656,7 +657,7 @@ class _InspectionDetailScreenState extends State<InspectionDetailScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Inspection Details')),
       body: LiveStreamBuilder<Inspection?>(
         streamKey: widget.inspectionId,
         stream: () => widget.repository.watchInspection(widget.inspectionId),

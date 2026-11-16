@@ -127,7 +127,7 @@ class ReportsRepository {
           status: meeting.status,
           foremanId: meeting.foremanId,
           activityCount: meeting.activityIds.length,
-          meetingPointCount: meeting.meetingPointIds.length,
+          meetingPointCount: meeting.totalPointCount,
           presentCount: attendance
               .where((a) => a.status == MeetingAttendanceStatus.present)
               .length,

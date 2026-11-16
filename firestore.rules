@@ -668,6 +668,22 @@ service cloud.firestore {
           allow write: if false;
         }
 
+        // ---- .../daily_safety_meetings/{meetingId}/foreman_points/{pointId} ----
+        // Points the Foreman typed themself (title, what was discussed, an
+        // optional activity), on this meeting only — never the library.
+        // Read follows `point_notes`' exact shape. Written only through
+        // `saveMeetingForemanPoint`/`removeMeetingForemanPoint`
+        // (`daily_safety_meeting_callable.ts`).
+        match /foreman_points/{pointId} {
+          allow read: if isAdmin()
+            || (belongsToOrganization(organizationId)
+              ? membershipDoc(organizationId).role == 'siteManager'
+                || (membershipDoc(organizationId).role == 'foreman'
+                    && get(/databases/$(database)/documents/organizations/$(organizationId)/daily_safety_meetings/$(meetingId)).data.foremanId == request.auth.uid)
+              : false);
+          allow write: if false;
+        }
+
         // ---- .../daily_safety_meetings/{meetingId}/evidence/{evidenceId} ----
         // Supporting proof (a photo of the foreman's handwritten toolbox-
         // talk book, a sign-in sheet, a briefing/site photo, or another

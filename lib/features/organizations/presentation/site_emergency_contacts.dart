@@ -12,6 +12,7 @@ import '../data/organization_admin_service.dart';
 import '../data/site_repository.dart';
 import '../domain/site.dart';
 import '../domain/site_emergency_info.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// Calls [number] with the phone's dialler. Injected in tests.
 typedef PhoneCaller = Future<void> Function(String number);
@@ -377,7 +378,7 @@ class _SiteEmergencyEditorScreenState extends State<SiteEmergencyEditorScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Emergency Contacts')),
       body: ListView(
         padding: const EdgeInsets.all(AppSpacing.md),
         children: [

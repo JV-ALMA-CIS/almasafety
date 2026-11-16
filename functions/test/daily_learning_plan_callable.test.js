@@ -243,7 +243,7 @@ describe("recordMeetingAttendance — Briefed in person", () => {
       organizationId: ORG,
       projectId: "project-1",
       siteId: "site-1",
-      date: new Date().toISOString().slice(0, 10),
+      date: require("../lib/worker_learning_callable").todaysMeetingDate(),
       foremanId: "foreman-1",
       activityIds: ["roofing"],
       meetingPointIds: [],
@@ -285,7 +285,7 @@ describe("recordMeetingAttendance — Briefed in person", () => {
       expect(ids(await outstandingNeededToday(
         ORG,
         "worker-1",
-        new Date().toISOString().slice(0, 10)
+        require("../lib/worker_learning_callable").todaysMeetingDate()
       ))).toEqual(["roof"]);
     });
 

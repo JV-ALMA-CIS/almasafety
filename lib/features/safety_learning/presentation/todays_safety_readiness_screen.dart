@@ -12,11 +12,13 @@ import '../data/worker_learning_repository.dart';
 import '../data/worker_learning_service.dart';
 import '../domain/safety_learning.dart';
 import '../domain/safety_learning_type.dart';
+import '../domain/learning_progress.dart';
 import '../domain/todays_safety_readiness.dart';
 import '../domain/worker_learning_record.dart';
 import '../domain/worker_learning_status.dart';
 import 'learning_detail_screen.dart';
 import 'my_safety_learning_screen.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// Opens the full learning inventory ([MySafetyLearningScreen]) as its own
 /// page — deliberately one step away from Today's Safety Readiness, so the
@@ -166,7 +168,10 @@ class _TodaysSafetyReadinessScreenState
   Widget build(BuildContext context) {
     final content = _content();
     if (!widget.embedded) {
-      return Scaffold(appBar: AppBar(), body: content);
+      return Scaffold(
+        appBar: AppBar(title: const MobileTitle('Safety Learning')),
+        body: content,
+      );
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -312,9 +317,16 @@ class _TodaysSafetyReadinessViewState extends State<TodaysSafetyReadinessView> {
       _ItemTile(
         item: item,
         status: statusById[item.learningId],
+        contentCompleted: _contentDoneIds.contains(item.learningId),
         onOpen: widget.onOpen,
       ),
   ];
+
+  /// Lessons whose video/content step the live records show as done.
+  Set<String> get _contentDoneIds => {
+    for (final record in widget.records)
+      if (record.contentCompleted) record.learningId,
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -692,9 +704,13 @@ class _ItemTile extends StatelessWidget {
     required this.item,
     required this.status,
     required this.onOpen,
+    this.contentCompleted = false,
   });
 
   final ReadinessItem item;
+
+  /// The live record says the content step (the video) is done.
+  final bool contentCompleted;
 
   /// The live record status, when a record exists — fresher than
   /// [ReadinessItem.status], which was captured when readiness was fetched.
@@ -716,6 +732,19 @@ class _ItemTile extends StatelessWidget {
     final inProgress =
         status == WorkerLearningStatus.inProgress ||
         (status == null && item.status == ReadinessItemStatus.inProgress);
+    final progress = LearningProgress.of(
+      status: inProgress
+          ? WorkerLearningStatus.inProgress
+          : WorkerLearningStatus.assigned,
+      contentCompleted: contentCompleted || item.contentCompleted,
+      isVideo: type == SafetyLearningType.video,
+      quizRequired: item.quizRequired,
+    );
+    final quizNote = item.questionCount == 0
+        ? null
+        : item.quizRequired
+        ? 'Video + quiz'
+        : 'Optional quiz';
     return Card(
       margin: EdgeInsets.zero,
       child: ListTile(
@@ -732,15 +761,29 @@ class _ItemTile extends StatelessWidget {
           style: const TextStyle(fontWeight: FontWeight.w600),
         ),
         subtitle: item.canStart
-            ? (type == null ? null : Text(type.label))
+            ? Text(
+                [
+                  ?type?.label,
+                  ?quizNote,
+                  'Next: ${progress.nextActionLabel}',
+                ].join(' · '),
+              )
             : const Text(
                 'Not yet linked to your assigned activities — speak to your '
                 'Foreman.',
               ),
         trailing: item.canStart
             ? StatusBadge(
-                label: inProgress ? 'In progress' : 'Not started',
-                color: inProgress ? AppColors.warning : AppColors.textSecondary,
+                label: progress.stage == LearningStage.notStarted
+                    ? 'Not started'
+                    : progress.stage == LearningStage.quizOutstanding
+                    ? 'Quiz outstanding'
+                    : 'In progress',
+                color: switch (progress.stage) {
+                  LearningStage.quizOutstanding => AppColors.correctiveActions,
+                  LearningStage.inProgress => AppColors.warning,
+                  _ => AppColors.textSecondary,
+                },
               )
             : null,
         onTap: item.canStart ? () => onOpen(item) : null,

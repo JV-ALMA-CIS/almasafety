@@ -9,6 +9,7 @@ import '../data/corrective_action_service.dart';
 import '../domain/corrective_action.dart';
 import '../domain/corrective_action_status.dart';
 import 'submit_corrective_action_screen.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// Where a reviewer verifies submitted work: the task, who did it, what
 /// evidence was required and what was actually submitted (the assignee's
@@ -114,7 +115,7 @@ class _ReviewCorrectiveActionScreenState
     Navigator.of(context, rootNavigator: true).push(
       MaterialPageRoute<void>(
         builder: (_) => Scaffold(
-          appBar: AppBar(),
+          appBar: AppBar(title: const MobileTitle('Review Action')),
           backgroundColor: Colors.black,
           body: InteractiveViewer(
             child: Center(
@@ -138,7 +139,7 @@ class _ReviewCorrectiveActionScreenState
     final awaitingReview =
         action.status == CorrectiveActionStatus.submittedForReview;
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Review Action')),
       body: ListView(
         padding: const EdgeInsets.all(AppSpacing.md),
         children: [

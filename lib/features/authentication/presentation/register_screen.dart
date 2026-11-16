@@ -220,7 +220,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
             const SizedBox(height: AppSpacing.md),
             const Text(
               'New accounts are reviewed and approved by an '
-              'authorized JVA Safety user before you can access site '
+              'authorized ALMASAFETY user before you can access site '
               'data.',
               style: AppTextStyles.bodyMedium,
               textAlign: TextAlign.center,

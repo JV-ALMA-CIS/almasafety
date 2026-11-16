@@ -143,6 +143,12 @@ class SafetyRequirement {
   /// [requiredBeforeWork] fallback.
   bool requiredBeforeWorkFor(String learningId) =>
       learningSettings[learningId]?.requiredBeforeWork ?? requiredBeforeWork;
+
+  /// Whether [learningId]'s quiz (if it has one) must be passed under this
+  /// requirement — unset means yes (see
+  /// [RequirementLearningSetting.quizRequired]).
+  bool quizRequiredFor(String learningId) =>
+      learningSettings[learningId]?.quizRequired ?? true;
   final OrganizationRecordStatus status;
 
   /// When set (and [siteId]/[activityId] are null), this requirement applies
@@ -239,10 +245,16 @@ class RequirementLearningSetting {
   const RequirementLearningSetting({
     this.gatesAttendance,
     this.requiredBeforeWork,
+    this.quizRequired,
   });
 
   final bool? gatesAttendance;
   final bool? requiredBeforeWork;
+
+  /// Whether the lesson's quiz (when it has one) must be passed to complete
+  /// it under this requirement. Null (unset) means yes — every quiz was
+  /// mandatory before this setting existed.
+  final bool? quizRequired;
 
   /// The shape the callables accept: both booleans, [fallback] filling any
   /// unset field.
@@ -252,6 +264,7 @@ class RequirementLearningSetting {
   }) => {
     'gatesAttendance': gatesAttendance ?? gatesAttendanceFallback,
     'requiredBeforeWork': requiredBeforeWork ?? requiredBeforeWorkFallback,
+    'quizRequired': ?quizRequired,
   };
 
   /// Parses a stored `learningSettings` map, ignoring anything malformed —
@@ -270,6 +283,7 @@ class RequirementLearningSetting {
             requiredBeforeWork: _boolOrNull(
               (entry.value as Map)['requiredBeforeWork'],
             ),
+            quizRequired: _boolOrNull((entry.value as Map)['quizRequired']),
           ),
     };
   }

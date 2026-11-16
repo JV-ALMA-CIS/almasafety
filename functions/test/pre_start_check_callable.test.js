@@ -16,7 +16,8 @@ const {getFirestore} = require("firebase-admin/firestore");
 const PROJECT_ID = "jva-safety-rules-test";
 const ORG_A = "org-alpha";
 const ORG_B = "org-beta";
-const TODAY = new Date().toISOString().slice(0, 10);
+// Today in the meeting time zone (Africa/Nairobi), as the callables store it.
+const TODAY = require("../lib/worker_learning_callable").todaysMeetingDate();
 
 let app;
 let db;

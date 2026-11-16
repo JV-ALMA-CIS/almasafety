@@ -7,11 +7,14 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../data/daily_safety_meeting_repository.dart';
+import '../data/meeting_concern_repository.dart';
 import '../domain/daily_safety_meeting.dart';
 import 'daily_safety_meeting_screen.dart';
+import 'meeting_concern_count.dart';
 import '../../pre_start_checks/presentation/pre_start_outcome_style.dart';
 import '../../../core/widgets/accent_card.dart';
 import '../../../core/widgets/feature_header.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// Step 6: the signed-in foreman's own Daily Safety Meeting history — most
 /// recent first.
@@ -28,18 +31,18 @@ import '../../../core/widgets/feature_header.dart';
 /// Foreman needs to be able to find a meeting they forgot to complete on a
 /// past day and resume it. Tapping an in-progress meeting reopens
 /// [DailySafetyMeetingScreen] for that specific meeting — see
-/// [DailySafetyMeetingScreen.resumeMeetingId]. A completed meeting is not
-/// tappable here: it is a closed record (activities/points/attendance are
-/// frozen), reviewed via the same summary a Site Manager sees, not
-/// re-entered as an editable workspace — though a Foreman may still add a
-/// Concern or a meeting-point note to it from that summary, matching
-/// `addMeetingConcern`/`setMeetingPointNote`'s deliberate post-completion
-/// exception.
+/// [DailySafetyMeetingScreen.resumeMeetingId]. Tapping a completed meeting
+/// opens the same screen, which shows a completed meeting as its read-only
+/// record (activities/points/attendance are frozen) with a Print button —
+/// though a Foreman may still add a Concern, a corrective action from a
+/// concern, or a meeting-point note to it there, matching the server's
+/// deliberate post-completion exceptions.
 class DailySafetyMeetingHistoryScreen extends StatefulWidget {
   const DailySafetyMeetingHistoryScreen({
     super.key,
     required this.organizationId,
     this.repository,
+    this.concernRepositoryBuilder,
   });
 
   final String organizationId;
@@ -47,6 +50,11 @@ class DailySafetyMeetingHistoryScreen extends StatefulWidget {
   /// Injected in tests. Production builds pass nothing and the state
   /// constructs the real repository.
   final DailySafetyMeetingRepository? repository;
+
+  /// Injected in tests: counts an older meeting's concerns — see
+  /// [MeetingConcernCountBuilder].
+  final MeetingConcernRepository Function(String meetingId)?
+  concernRepositoryBuilder;
 
   @override
   State<DailySafetyMeetingHistoryScreen> createState() =>
@@ -62,13 +70,21 @@ class _DailySafetyMeetingHistoryScreenState
         organizationId: widget.organizationId,
       );
 
+  MeetingConcernRepository _concernRepositoryFor(String meetingId) =>
+      widget.concernRepositoryBuilder?.call(meetingId) ??
+      MeetingConcernRepository(
+        firestoreService: FirestoreService(),
+        organizationId: widget.organizationId,
+        meetingId: meetingId,
+      );
+
   @override
   Widget build(BuildContext context) {
     final profile = context.watch<SessionController>().profile;
     final foremanId = profile?.uid;
 
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Meeting History')),
       body: foremanId == null
           ? const Center(
               child: Padding(
@@ -142,21 +158,22 @@ class _DailySafetyMeetingHistoryScreenState
                     for (final meeting in meetings) ...[
                       _MeetingHistoryCard(
                         meeting: meeting,
-                        onResume: meeting.isCompleted
-                            ? null
-                            : () => Navigator.of(context, rootNavigator: true)
-                                  .push(
-                                    MaterialPageRoute<void>(
-                                      // Opened full-screen, so it brings its
-                                      // own top bar and back arrow.
-                                      builder: (_) => Scaffold(
-                                        appBar: AppBar(),
-                                        body: DailySafetyMeetingScreen(
-                                          resumeMeetingId: meeting.id,
-                                        ),
-                                      ),
-                                    ),
+                        concernRepositoryFor: _concernRepositoryFor,
+                        onOpen: () =>
+                            Navigator.of(context, rootNavigator: true).push(
+                              MaterialPageRoute<void>(
+                                // Opened full-screen, so it brings its
+                                // own top bar and back arrow.
+                                builder: (_) => Scaffold(
+                                  appBar: AppBar(
+                                    title: const MobileTitle('Meeting Details'),
                                   ),
+                                  body: DailySafetyMeetingScreen(
+                                    resumeMeetingId: meeting.id,
+                                  ),
+                                ),
+                              ),
+                            ),
                       ),
                       const SizedBox(height: AppSpacing.sm),
                     ],
@@ -169,41 +186,51 @@ class _DailySafetyMeetingHistoryScreenState
 }
 
 class _MeetingHistoryCard extends StatelessWidget {
-  const _MeetingHistoryCard({required this.meeting, required this.onResume});
+  const _MeetingHistoryCard({
+    required this.meeting,
+    required this.concernRepositoryFor,
+    required this.onOpen,
+  });
 
   final DailySafetyMeeting meeting;
+  final MeetingConcernRepository Function(String meetingId)
+  concernRepositoryFor;
 
-  /// Null for a completed meeting — nothing to resume, it is a closed
-  /// record. Set for an in-progress one — tapping the card reopens it in
-  /// [DailySafetyMeetingScreen] so the Foreman can finish and complete it.
-  final VoidCallback? onResume;
+  /// Opens the meeting in [DailySafetyMeetingScreen]: an in-progress one to
+  /// finish and complete it, a completed one to view or print its record.
+  final VoidCallback onOpen;
 
   @override
   Widget build(BuildContext context) {
     final color = meeting.isCompleted ? AppColors.success : AppColors.warning;
-    return AccentCard(
-      color: color,
-      icon: meeting.isCompleted ? Icons.task_alt : Icons.pending_actions,
-      title: meeting.date,
-      onTap: onResume,
-      badges: [AccentBadge(label: meeting.status.label, color: color)],
-      trailing: meeting.crewOutcome == null
-          ? null
-          : CrewOutcomeBadge(outcome: meeting.crewOutcome!),
-      details: [
-        AccentDetail(
-          icon: Icons.checklist,
-          text:
-              '${meeting.activityIds.length} activities, '
-              '${meeting.meetingPointIds.length} meeting points, '
-              '${meeting.concerns.length} concerns',
-        ),
-        if (onResume != null)
-          const AccentDetail(
-            icon: Icons.touch_app,
-            text: 'Not yet completed — tap to finish this meeting.',
+    return MeetingConcernCountBuilder(
+      meeting: meeting,
+      concernRepositoryFor: concernRepositoryFor,
+      builder: (context, concernCount) => AccentCard(
+        color: color,
+        icon: meeting.isCompleted ? Icons.task_alt : Icons.pending_actions,
+        title: meeting.date,
+        onTap: onOpen,
+        badges: [AccentBadge(label: meeting.status.label, color: color)],
+        trailing: meeting.crewOutcome == null
+            ? null
+            : CrewOutcomeBadge(outcome: meeting.crewOutcome!),
+        details: [
+          AccentDetail(
+            icon: Icons.checklist,
+            text:
+                '${meeting.activityIds.length} activities, '
+                '${meeting.totalPointCount} meeting points, '
+                '${concernCountLabel(concernCount)}',
           ),
-      ],
+          AccentDetail(
+            icon: Icons.touch_app,
+            text: meeting.isCompleted
+                ? 'Tap to view or print this meeting.'
+                : 'Not yet completed — tap to finish this meeting.',
+          ),
+        ],
+      ),
     );
   }
 }

@@ -24,6 +24,7 @@ import '../../../core/widgets/feature_header.dart';
 import '../../../core/widgets/status_badge.dart';
 import '../../pre_start_checks/presentation/pre_start_visuals.dart';
 import '../../../core/widgets/color_choice_chips.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// The Safety Meeting Point library: lists an organization's meeting points
 /// and lets an authorized manager create, edit, activate or deactivate one.
@@ -704,7 +705,7 @@ class _SafetyMeetingPointFormDialogState
       ),
     ];
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Meeting Point')),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(AppSpacing.md),

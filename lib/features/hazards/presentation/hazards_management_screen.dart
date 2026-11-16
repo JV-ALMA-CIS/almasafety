@@ -31,6 +31,7 @@ import '../../../core/widgets/feature_header.dart';
 import 'hazard_style.dart';
 import '../../corrective_actions/presentation/corrective_action_form_screen.dart';
 import '../../authentication/domain/organization_user.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// The Hazard Management screen for an authorized reviewer — `admin`/
 /// `siteManager`/`foreman`, the same role set [AppRole.canReviewPendingAccounts]
@@ -676,7 +677,7 @@ class _HazardDetailScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Hazard Details')),
       body: ListView(
         padding: const EdgeInsets.all(AppSpacing.md),
         children: [

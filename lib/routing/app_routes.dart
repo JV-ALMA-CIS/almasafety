@@ -149,4 +149,7 @@ class AppRoutes {
   /// [SafetyLearningComplianceScreen]'s own `canManage` getter.
   static const String safetyLearningCompliance = '/safety-learning-compliance';
   static const String administration = '/administration';
+
+  /// Account, appearance, notifications and Sign Out — every role.
+  static const String settings = '/settings';
 }

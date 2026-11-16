@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import '../../../core/offline/outbox.dart';
+import '../../../core/utils/meeting_date.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -75,7 +76,7 @@ class PreStartCheckService {
       if (Outbox.isConnectionError(e)) {
         final remembered = await _remembered(key);
         if (remembered != null &&
-            remembered.date == _today((_now ?? DateTime.now)())) {
+            remembered.date == meetingDate((_now ?? DateTime.now)())) {
           return remembered;
         }
         throw const NetworkException(
@@ -90,11 +91,6 @@ class PreStartCheckService {
       rethrow;
     }
   }
-
-  static String _today(DateTime now) =>
-      '${now.year.toString().padLeft(4, '0')}-'
-      '${now.month.toString().padLeft(2, '0')}-'
-      '${now.day.toString().padLeft(2, '0')}';
 
   String? _uid() {
     if (Firebase.apps.isEmpty) return null;

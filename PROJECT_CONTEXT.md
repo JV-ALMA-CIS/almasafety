@@ -284,7 +284,9 @@ The Foreman should not be required to write a lengthy narrative report.
 
 The Foreman can add an existing active Safety Meeting Point from the organization's library if it was not included in the initial recommendations.
 
-The Foreman cannot create a new permanent Safety Meeting Point Library entry from the Daily Safety Meeting screen.
+The Foreman can also type a point of their own ("Type your own point"): a short title, what was discussed, and optionally which of the meeting's activities it was about. It is recorded on that meeting only, so a meeting can be fully recorded in the app with no paper book or uploaded document. Under each library point there is also a clear "Add what was discussed" box.
+
+The Foreman cannot create a new permanent Safety Meeting Point Library entry from the Daily Safety Meeting screen — a typed point never becomes a library point.
 
 If a new safety topic is identified that should become part of the organization's standard library, it should be raised as a concern or other appropriate structured information and subsequently reviewed by an authorized administrator.
 
@@ -295,7 +297,7 @@ The Foreman confirms completion after the required meeting information has been 
 At minimum, the meeting must contain:
 
 * At least one activity
-* At least one Safety Meeting Point
+* At least one Safety Meeting Point (from the library, or one the Foreman typed)
 
 Additional required information may include attendance depending on the final meeting-completion rules.
 
@@ -496,7 +498,7 @@ JVA Safety uses exactly four platform authorization roles (`platformRole`):
 
 1. **Admin** — company software/office administrator. Platform-level administration: creates/manages organizations, approves and manages Site Managers/Site Superintendents, manages users/permissions/account status, manages the Safety Learning library and Safety Meeting Point library company-wide, views organization-wide safety information/reports/analytics, audits and can intervene in any organization's account. Admin is not responsible for day-to-day worker approval or conducting site safety meetings.
 
-2. **Site Manager / Site Superintendent** (`siteManager`) — a JV ALMA CIS employee working in the field. Can create an organization (becoming its operational manager) and manages the organization(s) they created or are assigned to: creates/manages projects, sites, and activities; manages the site's workforce; approves/manages Foremen/Site Supervisors and assigns them to sites; views the complete worker list for their organization; reviews hazards and corrective actions; monitors safety learning/training; views Daily Safety Meeting summaries completed by Foremen; views site/organization safety dashboards and reports; receives safety alerts.
+2. **Site Manager / Site Superintendent** (`siteManager`) — a JV ALMA CIS employee working in the field. Can create an organization (becoming its operational manager) and manages the organization(s) they created or are assigned to: creates/manages projects, sites, and activities; manages the site's workforce; approves/manages Foremen/Site Supervisors and assigns them to sites; views the complete worker list for their organization; reviews hazards and corrective actions; monitors safety learning/training; views Daily Safety Meeting summaries completed by Foremen; views site/organization safety dashboards and reports; receives safety alerts; adds, edits, deactivates and sets quizzes on **video** learning items (Safety Videos) for the whole organization — every other Safety Learning library type stays Admin-only.
 
 3. **Foreman / Site Supervisor** (`foreman`) — normally subcontracted/field personnel who directly supervise workers. Operates only within their assigned organization/site(s): manages their assigned crew, registers/adds workers, approves workers, assigns workers to trades/activities, views their own workers, conducts and records Daily Safety Meetings, records attendance and meeting concerns, creates/links corrective actions where authorized, views relevant safety learning, monitors worker training, reports/views relevant hazards, receives safety alerts. The Foreman/Site Supervisor is the direct operational supervisor of workers.
 

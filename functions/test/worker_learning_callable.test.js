@@ -23,6 +23,8 @@ let getMyRequiredLearning;
 let startLearning;
 let completeLearning;
 let getKnowledgeCheckQuestions;
+let practiceKnowledgeCheck;
+let getCrewLearningRecords;
 let getMyTodaysSafetyReadiness;
 let resolveRequiredLearningForScope;
 let resolveAttendanceGatingLearningIds;
@@ -42,6 +44,8 @@ beforeAll(() => {
     startLearning,
     completeLearning,
     getKnowledgeCheckQuestions,
+    practiceKnowledgeCheck,
+    getCrewLearningRecords,
     getMyTodaysSafetyReadiness,
     resolveRequiredLearningForScope,
     resolveAttendanceGatingLearningIds,
@@ -1006,19 +1010,24 @@ describe("completeLearning (knowledge check grading)", () => {
     });
   });
 
-  test("a missing selectedAnswers submission is refused when questions " +
-    "exist", async () => {
+  // Changed deliberately: a call without answers used to be refused; it
+  // now records the content step (video watched) and leaves the mandatory
+  // quiz outstanding — it still never completes the item.
+  test("without selectedAnswers, a mandatory quiz keeps the item open and " +
+    "only the content step is recorded", async () => {
     await setUpWorkerWithLearning({passingScorePercent: 100});
     await seedQuestion(ORG_A, "l1", "q1", {correctOptionId: "a"});
 
-    await expect(
-      completeLearning.run(
-        callRequest("worker-1", {organizationId: ORG_A, learningId: "l1"})
-      )
-    ).rejects.toThrow(/selectedAnswers is required/);
+    const result = await completeLearning.run(
+      callRequest("worker-1", {organizationId: ORG_A, learningId: "l1"})
+    );
+    expect(result.status).toBe("inProgress");
+    expect(result.quizOutstanding).toBe(true);
 
     const record = await getRecord(ORG_A, "worker-1", "l1");
     expect(record.status).toBe("inProgress");
+    expect(record.contentCompletedAt).toBeDefined();
+    expect(record.completedAt).toBeUndefined();
   });
 
   test("a knowledgeCheck-type item with ZERO configured questions has no " +
@@ -1252,19 +1261,38 @@ describe("getKnowledgeCheckQuestions", () => {
     expect(result.questions).toEqual([]);
   });
 
-  test("is refused for a learningId not currently required of the caller",
-    async () => {
-      await seedProfile("worker-1");
-      await seedMembership("worker-1", ORG_A, "worker");
-      await seedLearning(ORG_A, "l1");
-      // Not referenced by any requirement.
+  // Changed deliberately: an OPTIONAL (not required) active item's quiz is
+  // now available for practice — still without any answer key.
+  test("an active item not required of the caller returns its questions, " +
+    "flagged not required", async () => {
+    await seedProfile("worker-1");
+    await seedMembership("worker-1", ORG_A, "worker");
+    await seedLearning(ORG_A, "l1");
+    await seedQuestion(ORG_A, "l1", "q1", {correctOptionId: "a"});
+    // Not referenced by any requirement.
 
+    const result = await getKnowledgeCheckQuestions.run(
+      callRequest("worker-1", {organizationId: ORG_A, learningId: "l1"})
+    );
+    expect(result.required).toBe(false);
+    expect(result.quizRequired).toBe(false);
+    expect(result.questions).toHaveLength(1);
+    expect(JSON.stringify(result)).not.toContain("correctOptionId");
+  });
+
+  test("is refused for an inactive or missing item", async () => {
+    await seedProfile("worker-1");
+    await seedMembership("worker-1", ORG_A, "worker");
+    await seedLearning(ORG_A, "l1", {status: "inactive"});
+
+    for (const learningId of ["l1", "missing"]) {
       await expect(
         getKnowledgeCheckQuestions.run(
-          callRequest("worker-1", {organizationId: ORG_A, learningId: "l1"})
+          callRequest("worker-1", {organizationId: ORG_A, learningId})
         )
-      ).rejects.toThrow(/not currently required/);
-    });
+      ).rejects.toThrow(/not available/);
+    }
+  });
 
   test("an unauthenticated caller is refused", async () => {
     await expect(
@@ -1281,8 +1309,8 @@ describe("getKnowledgeCheckQuestions", () => {
 
 const ORG_B = "org-beta";
 
-function todayUtc() {
-  return new Date().toISOString().slice(0, 10);
+function meetingToday() {
+  return require("../lib/worker_learning_callable").todaysMeetingDate();
 }
 
 async function seedMeeting(organizationId, id, overrides = {}) {
@@ -1292,7 +1320,7 @@ async function seedMeeting(organizationId, id, overrides = {}) {
       organizationId,
       projectId: "project-1",
       siteId: "site-1",
-      date: todayUtc(),
+      date: meetingToday(),
       startTime: new Date(),
       endTime: null,
       foremanId: "foreman-1",
@@ -2102,4 +2130,413 @@ describe("per-lesson learningSettings: Today's Safety Readiness", () => {
         additional: [],
       });
     });
+});
+
+describe("required video and quiz components (scenarios A-E)", () => {
+  const PASS = [{questionId: "q1", optionId: "a"}];
+  const FAIL = [{questionId: "q1", optionId: "b"}];
+
+  /**
+   * A worker, a required video `v1` (optionally with a quiz question and a
+   * minimum watch time) and a started record.
+   */
+  async function setUp({
+    withQuiz = true,
+    setting = undefined,
+    minimumWatchSeconds = undefined,
+  } = {}) {
+    await seedProfile("worker-1");
+    await seedMembership("worker-1", ORG_A, "worker");
+    await seedLearning(ORG_A, "v1", {
+      type: "video",
+      contentReference: "https://www.youtube.com/watch?v=jfKfPfyJRdk",
+      ...(minimumWatchSeconds !== undefined ? {minimumWatchSeconds} : {}),
+    });
+    await seedRequirement(ORG_A, "r1", {
+      requiredLearningIds: ["v1"],
+      ...(setting !== undefined ? {learningSettings: {v1: setting}} : {}),
+    });
+    if (withQuiz) await seedQuestion(ORG_A, "v1", "q1");
+    await getMyRequiredLearning.run(
+      callRequest("worker-1", {organizationId: ORG_A})
+    );
+    await startLearning.run(
+      callRequest("worker-1", {organizationId: ORG_A, learningId: "v1"})
+    );
+  }
+
+  const complete = (data = {}) => completeLearning.run(
+    callRequest("worker-1", {organizationId: ORG_A, learningId: "v1", ...data})
+  );
+
+  test("A: a required video without a quiz completes in one step", async () => {
+    await setUp({withQuiz: false});
+    const result = await complete();
+    expect(result.status).toBe("completed");
+    const record = await getRecord(ORG_A, "worker-1", "v1");
+    expect(record.status).toBe("completed");
+    expect(record.contentCompletedAt).toBeDefined();
+    expect(record.completedAt).toBeDefined();
+  });
+
+  test("B: watching the video alone does not complete a required quiz " +
+    "item; passing the quiz afterwards does", async () => {
+    await setUp();
+    const watched = await complete();
+    expect(watched.status).toBe("inProgress");
+    expect(watched.contentCompleted).toBe(true);
+    expect(watched.quizOutstanding).toBe(true);
+    let record = await getRecord(ORG_A, "worker-1", "v1");
+    expect(record.status).toBe("inProgress");
+    const watchedAt = record.contentCompletedAt;
+
+    const failed = await complete({selectedAnswers: FAIL});
+    expect(failed.status).toBe("inProgress");
+    expect(failed.knowledgeCheckResult.passed).toBe(false);
+    record = await getRecord(ORG_A, "worker-1", "v1");
+    expect(record.status).toBe("inProgress");
+    expect(record.knowledgeCheckResult).toBeUndefined();
+
+    const passed = await complete({selectedAnswers: PASS});
+    expect(passed.status).toBe("completed");
+    record = await getRecord(ORG_A, "worker-1", "v1");
+    expect(record.status).toBe("completed");
+    expect(record.knowledgeCheckResult.passed).toBe(true);
+    // The video step keeps its original time.
+    expect(record.contentCompletedAt.isEqual(watchedAt)).toBe(true);
+  });
+
+  test("B: the quiz alone cannot complete it — the video's watch time " +
+    "still applies", async () => {
+    await setUp({minimumWatchSeconds: 600});
+    await expect(complete({selectedAnswers: PASS}))
+      .rejects.toThrow(/Keep this item open/);
+    const record = await getRecord(ORG_A, "worker-1", "v1");
+    expect(record.status).toBe("inProgress");
+    expect(record.contentCompletedAt).toBeUndefined();
+    expect(record.knowledgeCheckResult).toBeUndefined();
+  });
+
+  test("B: an explicit quizRequired:true setting behaves the same",
+    async () => {
+      await setUp({
+        setting: {gatesAttendance: false, requiredBeforeWork: false,
+          quizRequired: true},
+      });
+      expect((await complete()).status).toBe("inProgress");
+    });
+
+  test("C: with an optional quiz, the required video completes without " +
+    "it, and the quiz can still be taken afterwards", async () => {
+    await setUp({
+      setting: {gatesAttendance: false, requiredBeforeWork: false,
+        quizRequired: false},
+    });
+    const done = await complete();
+    expect(done.status).toBe("completed");
+    let record = await getRecord(ORG_A, "worker-1", "v1");
+    const completedAt = record.completedAt;
+
+    const quiz = await complete({selectedAnswers: FAIL});
+    expect(quiz.status).toBe("completed");
+    expect(quiz.knowledgeCheckResult.passed).toBe(false);
+    record = await getRecord(ORG_A, "worker-1", "v1");
+    expect(record.status).toBe("completed");
+    expect(record.completedAt.isEqual(completedAt)).toBe(true);
+    expect(record.knowledgeCheckResult.passed).toBe(false);
+
+    // A completed item with an optional quiz still can't be "completed"
+    // again without answers.
+    await expect(complete()).rejects.toThrow(/current state/);
+  });
+
+  test("C: a failed optional quiz submitted with the video still " +
+    "completes the video requirement", async () => {
+    await setUp({
+      setting: {gatesAttendance: false, requiredBeforeWork: false,
+        quizRequired: false},
+    });
+    const result = await complete({selectedAnswers: FAIL});
+    expect(result.status).toBe("completed");
+  });
+
+  test("the quiz stays mandatory while ANY applicable requirement needs " +
+    "it", async () => {
+    await setUp({
+      setting: {gatesAttendance: false, requiredBeforeWork: false,
+        quizRequired: false},
+    });
+    await seedRequirement(ORG_A, "r2", {requiredLearningIds: ["v1"]});
+    expect((await complete()).status).toBe("inProgress");
+  });
+
+  test("a mandatory quiz cannot be re-taken once completed", async () => {
+    await setUp();
+    await complete({selectedAnswers: PASS});
+    await expect(complete({selectedAnswers: FAIL}))
+      .rejects.toThrow(/current state/);
+  });
+
+  test("repeated calls never create a second record", async () => {
+    await setUp({withQuiz: false});
+    await complete();
+    await expect(complete()).rejects.toThrow(/current state/);
+    const records = await db
+      .collection(`organizations/${ORG_A}/worker_learning_records`)
+      .where("learningId", "==", "v1")
+      .get();
+    expect(records.size).toBe(1);
+  });
+
+  test("D: an optional video (no requirement) cannot be completed, but " +
+    "its quiz can be practised without recording anything", async () => {
+    await seedProfile("worker-1");
+    await seedMembership("worker-1", ORG_A, "worker");
+    await seedLearning(ORG_A, "v1", {type: "video"});
+    await seedQuestion(ORG_A, "v1", "q1");
+
+    await expect(complete()).rejects.toThrow(/not currently required/);
+    const result = await practiceKnowledgeCheck.run(
+      callRequest("worker-1", {organizationId: ORG_A, learningId: "v1",
+        selectedAnswers: PASS})
+    );
+    expect(result.knowledgeCheckResult).toEqual({
+      passed: true, score: 1, totalQuestions: 1,
+    });
+    expect(JSON.stringify(result)).not.toContain("correctOptionId");
+    expect(await getRecord(ORG_A, "worker-1", "v1")).toBeNull();
+  });
+
+  test("a practice attempt is refused for required training", async () => {
+    await setUp();
+    await expect(
+      practiceKnowledgeCheck.run(
+        callRequest("worker-1", {organizationId: ORG_A, learningId: "v1",
+          selectedAnswers: PASS})
+      )
+    ).rejects.toThrow(/required training/);
+  });
+
+  test("E: deactivating a video removes the obligation but keeps the " +
+    "completion record", async () => {
+    await setUp({withQuiz: false});
+    await complete();
+    await db.doc(`organizations/${ORG_A}/safety_learning/v1`)
+      .update({status: "inactive"});
+
+    const required = await resolveRequiredLearningForScope(ORG_A, SCOPE);
+    expect(ids(required)).not.toContain("v1");
+    await expect(complete()).rejects.toThrow(/not currently required/);
+    const record = await getRecord(ORG_A, "worker-1", "v1");
+    expect(record.status).toBe("completed");
+  });
+
+  test("readiness reports each item's quiz and video progress", async () => {
+    await setUp();
+    await complete();
+    const readiness = await getMyTodaysSafetyReadiness.run(
+      callRequest("worker-1", {organizationId: ORG_A})
+    );
+    const item = [
+      ...readiness.beforeMeeting,
+      ...readiness.beforeWork,
+      ...readiness.additional,
+    ].find((i) => i.learningId === "v1");
+    expect(item).toMatchObject({
+      questionCount: 1,
+      quizRequired: true,
+      contentCompleted: true,
+      status: "inProgress",
+    });
+  });
+
+  test("a supervising Foreman sees video progress, never quiz results",
+    async () => {
+      await setUp();
+      await db.doc(`users/worker-1/memberships/${ORG_A}`)
+        .update({siteIds: ["site-1"]});
+      await complete();
+      await seedProfile("foreman-1");
+      await seedMembership("foreman-1", ORG_A, "foreman", ["site-1"]);
+
+      const result = await getCrewLearningRecords.run(
+        callRequest("foreman-1", {organizationId: ORG_A,
+          workerUids: ["worker-1"]})
+      );
+      expect(result.records).toHaveLength(1);
+      expect(result.records[0].contentCompleted).toBe(true);
+      expect(result.records[0].status).toBe("inProgress");
+      expect(JSON.stringify(result)).not.toContain("knowledgeCheckResult");
+    });
+});
+
+describe("general learning — quizzes of lessons not required of the " +
+  "caller", () => {
+  const PASS = [{questionId: "q1", optionId: "a"}];
+
+  /** Every learning record in [organizationId], by document id. */
+  async function allRecords(organizationId) {
+    const snapshot = await db
+      .collection(`organizations/${organizationId}/worker_learning_records`)
+      .get();
+    return Object.fromEntries(snapshot.docs.map((d) => [d.id, d.data()]));
+  }
+
+  const practise = (uid, learningId, organizationId = ORG_A) =>
+    practiceKnowledgeCheck.run(
+      callRequest(uid, {organizationId, learningId, selectedAnswers: PASS})
+    );
+
+  for (const role of ["worker", "foreman"]) {
+    test(`a ${role} with no applicable requirement can open and practise ` +
+      "an active video's quiz; nothing is written", async () => {
+      await seedProfile("learner-1");
+      await seedMembership("learner-1", ORG_A, role, ["site-1"]);
+      await seedLearning(ORG_A, "v1", {type: "video"});
+      await seedQuestion(ORG_A, "v1", "q1");
+
+      const quiz = await getKnowledgeCheckQuestions.run(
+        callRequest("learner-1", {organizationId: ORG_A, learningId: "v1"})
+      );
+      expect(quiz.required).toBe(false);
+      expect(quiz.quizRequired).toBe(false);
+      expect(quiz.questions).toHaveLength(1);
+      expect(JSON.stringify(quiz)).not.toContain("correctOptionId");
+
+      const result = await practise("learner-1", "v1");
+      expect(result.knowledgeCheckResult.passed).toBe(true);
+      expect(JSON.stringify(result)).not.toContain("correctOptionId");
+      expect(await allRecords(ORG_A)).toEqual({});
+    });
+  }
+
+  test("a stale record (requirement deactivated) reads as not required; " +
+    "practising changes neither it nor readiness, and it still cannot be " +
+    "completed", async () => {
+    await seedProfile("worker-1");
+    await seedMembership("worker-1", ORG_A, "worker");
+    await seedLearning(ORG_A, "v1", {type: "video"});
+    await seedQuestion(ORG_A, "v1", "q1");
+    await seedRequirement(ORG_A, "r1", {requiredLearningIds: ["v1"]});
+    await getMyRequiredLearning.run(
+      callRequest("worker-1", {organizationId: ORG_A})
+    );
+    await startLearning.run(
+      callRequest("worker-1", {organizationId: ORG_A, learningId: "v1"})
+    );
+    await db.doc(`organizations/${ORG_A}/safety_requirements/r1`)
+      .update({status: "inactive"});
+    const before = await allRecords(ORG_A);
+
+    const quiz = await getKnowledgeCheckQuestions.run(
+      callRequest("worker-1", {organizationId: ORG_A, learningId: "v1"})
+    );
+    expect(quiz.required).toBe(false);
+    await practise("worker-1", "v1");
+
+    expect(await allRecords(ORG_A)).toEqual(before);
+    const readiness = await getMyTodaysSafetyReadiness.run(
+      callRequest("worker-1", {organizationId: ORG_A})
+    );
+    const listed = [
+      ...readiness.beforeMeeting,
+      ...readiness.beforeWork,
+      ...readiness.additional,
+    ].map((item) => item.learningId);
+    expect(listed).not.toContain("v1");
+    await expect(
+      completeLearning.run(callRequest("worker-1", {
+        organizationId: ORG_A, learningId: "v1", selectedAnswers: PASS,
+      }))
+    ).rejects.toThrow(/not currently required/);
+    expect(await allRecords(ORG_A)).toEqual(before);
+  });
+
+  test("practising after a completed, no-longer-required lesson leaves " +
+    "the completion evidence untouched", async () => {
+    await seedProfile("worker-1");
+    await seedMembership("worker-1", ORG_A, "worker");
+    await seedLearning(ORG_A, "v1", {type: "video"});
+    await seedQuestion(ORG_A, "v1", "q1");
+    await seedCompleted(ORG_A, "worker-1", "v1");
+    const before = await allRecords(ORG_A);
+
+    await practise("worker-1", "v1");
+    expect(await allRecords(ORG_A)).toEqual(before);
+  });
+
+  test("another organization's lesson cannot be reached by guessing its " +
+    "id", async () => {
+    await seedProfile("outsider");
+    await seedMembership("outsider", ORG_B, "worker");
+    await seedLearning(ORG_A, "v1", {type: "video"});
+    await seedQuestion(ORG_A, "v1", "q1");
+
+    // Naming the other organization: not a member there.
+    await expect(
+      getKnowledgeCheckQuestions.run(
+        callRequest("outsider", {organizationId: ORG_A, learningId: "v1"})
+      )
+    ).rejects.toThrow(/permission/);
+    await expect(practise("outsider", "v1")).rejects.toThrow(/permission/);
+    // Naming their own organization: the id does not exist there.
+    await expect(
+      getKnowledgeCheckQuestions.run(
+        callRequest("outsider", {organizationId: ORG_B, learningId: "v1"})
+      )
+    ).rejects.toThrow(/not available/);
+    await expect(practise("outsider", "v1", ORG_B))
+      .rejects.toThrow(/not available/);
+  });
+
+  test("a video required only for a project the worker is not on is " +
+    "general learning for them: its quiz opens and practises", async () => {
+    await seedSiteWorker("worker-1");
+    await seedLearning(ORG_A, "v1", {type: "video"});
+    await seedQuestion(ORG_A, "v1", "q1");
+    await seedRequirement(ORG_A, "r-future", {
+      requiredLearningIds: ["v1"],
+      projectId: "project-future",
+    });
+
+    const quiz = await getKnowledgeCheckQuestions.run(
+      callRequest("worker-1", {organizationId: ORG_A, learningId: "v1"})
+    );
+    expect(quiz.required).toBe(false);
+    expect(quiz.questions).toHaveLength(1);
+    const result = await practise("worker-1", "v1");
+    expect(result.knowledgeCheckResult.passed).toBe(true);
+    expect(await allRecords(ORG_A)).toEqual({});
+  });
+
+  test("an inactive video's quiz cannot be opened or practised", async () => {
+    await seedProfile("worker-1");
+    await seedMembership("worker-1", ORG_A, "worker");
+    await seedLearning(ORG_A, "v1", {type: "video", status: "inactive"});
+    await seedQuestion(ORG_A, "v1", "q1");
+
+    await expect(
+      getKnowledgeCheckQuestions.run(
+        callRequest("worker-1", {organizationId: ORG_A, learningId: "v1"})
+      )
+    ).rejects.toThrow(/not available/);
+    await expect(practise("worker-1", "v1")).rejects.toThrow(/not available/);
+  });
+
+  test("a suspended learner is refused", async () => {
+    await seedProfile("worker-1", {accountStatus: "suspended"});
+    await seedMembership("worker-1", ORG_A, "worker");
+    await seedLearning(ORG_A, "v1", {type: "video"});
+    await seedQuestion(ORG_A, "v1", "q1");
+
+    await expect(practise("worker-1", "v1")).rejects.toThrow(/permission/);
+  });
+
+  test("practising a lesson with no quiz is refused, not graded", async () => {
+    await seedProfile("worker-1");
+    await seedMembership("worker-1", ORG_A, "worker");
+    await seedLearning(ORG_A, "v1", {type: "video"});
+
+    await expect(practise("worker-1", "v1")).rejects.toThrow(/has no quiz/);
+  });
 });

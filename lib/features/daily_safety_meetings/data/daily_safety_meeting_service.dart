@@ -1,9 +1,11 @@
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_core/firebase_core.dart';
 import '../../../core/constants/firestore_paths.dart';
 import '../../../core/errors/app_exception.dart';
+import '../../../core/offline/outbox.dart';
 import '../../../core/services/firestore_service.dart';
 import '../../../core/services/storage_service.dart';
 import '../../organizations/data/organization_admin_service.dart';
@@ -29,11 +31,13 @@ class DailySafetyMeetingService {
     FirebaseFunctions? functions,
     FirestoreService? firestoreService,
     StorageService? storageService,
+    this._outbox,
   }) : _injected = functions,
        _firestoreService = firestoreService ?? FirestoreService(),
        _storageService = storageService ?? StorageService();
 
   final FirebaseFunctions? _injected;
+  final Outbox? _outbox;
   final FirestoreService _firestoreService;
   final StorageService _storageService;
 
@@ -96,7 +100,8 @@ class DailySafetyMeetingService {
   });
 
   /// Completes the meeting: the server requires at least one activity and
-  /// one meeting point already recorded, then sets `status` to `completed`
+  /// one meeting point (from the library or the Foreman's own) already
+  /// recorded, then sets `status` to `completed`
   /// and records the Foreman's [crewOutcome] for the crew (with
   /// [crewOutcomeNote], required unless the outcome is GO). A crew STOP
   /// notifies the organization's Site Managers.
@@ -142,6 +147,40 @@ class DailySafetyMeetingService {
     ];
   }
 
+  /// The meeting points suggested for a meeting at [siteId] covering
+  /// [activityIds], best first, each with the reasons it is suggested —
+  /// the same list `createDailySafetyMeeting` records on the meeting as its
+  /// suggestion snapshot.
+  Future<List<({String pointId, List<String> reasons})>>
+  getMeetingPointSuggestions({
+    required String organizationId,
+    required String siteId,
+    required List<String> activityIds,
+  }) async {
+    final result = await _call<Map<Object?, Object?>>(
+      'getMeetingPointSuggestions',
+      {
+        'organizationId': organizationId,
+        'siteId': siteId,
+        'activityIds': activityIds,
+      },
+    );
+    final suggestions = result['suggestions'];
+    return [
+      if (suggestions is List)
+        for (final entry in suggestions.whereType<Map<Object?, Object?>>())
+          if (entry['pointId'] is String)
+            (
+              pointId: entry['pointId']! as String,
+              reasons: [
+                if (entry['reasons'] is List)
+                  for (final reason in entry['reasons']! as List)
+                    if (reason is String) reason,
+              ],
+            ),
+    ];
+  }
+
   /// Sets (creates or overwrites) the discussion note for one meeting point
   /// on an in-progress meeting — what was actually explained/discussed
   /// about it, kept deliberately separate from Concerns (see
@@ -175,6 +214,72 @@ class DailySafetyMeetingService {
     'meetingId': meetingId,
     'meetingPointId': meetingPointId,
   });
+
+  /// A new id for one of the Foreman's own points — chosen on the phone so
+  /// a point saved with no signal and sent twice is stored only once.
+  static String newForemanPointId() {
+    const chars =
+        'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    final random = Random.secure();
+    return String.fromCharCodes(
+      List.generate(20, (_) => chars.codeUnitAt(random.nextInt(chars.length))),
+    );
+  }
+
+  /// Adds or edits one of the Foreman's own points on [meetingId] — a
+  /// [title], an optional [note] on what was discussed and an optional
+  /// [activityId] from the meeting's activities. Adding works after the
+  /// meeting is completed; editing does not. See [MeetingForemanPoint].
+  ///
+  /// With no signal the point is saved on this phone (throwing
+  /// [SavedOfflineException]) and sent when the connection comes back.
+  Future<void> saveMeetingForemanPoint({
+    required String organizationId,
+    required String meetingId,
+    required String pointId,
+    required String title,
+    String? note,
+    String? activityId,
+  }) => _send('saveMeetingForemanPoint', "Meeting point - $title", {
+    'organizationId': organizationId,
+    'meetingId': meetingId,
+    'pointId': pointId,
+    'title': title,
+    'note': ?note,
+    'activityId': ?activityId,
+  });
+
+  /// Removes one of the Foreman's own points from an in-progress meeting.
+  /// With no signal the removal is saved on this phone and sent later.
+  Future<void> removeMeetingForemanPoint({
+    required String organizationId,
+    required String meetingId,
+    required String pointId,
+  }) => _send('removeMeetingForemanPoint', 'Remove meeting point', {
+    'organizationId': organizationId,
+    'meetingId': meetingId,
+    'pointId': pointId,
+  });
+
+  /// Sends [name] through the [Outbox], mirroring
+  /// [MeetingAttendanceService.recordMeetingAttendance].
+  Future<void> _send(
+    String name,
+    String label,
+    Map<String, Object?> data,
+  ) async {
+    try {
+      await (_outbox ?? Outbox.instance).send(
+        callable: name,
+        data: data,
+        label: label,
+        caller: (name, data) async =>
+            (await _require().httpsCallable(name).call<Object?>(data)).data,
+      );
+    } on FirebaseFunctionsException catch (e) {
+      throw OrganizationAdminService.mapCallableError(e);
+    }
+  }
 
   /// Pre-allocates an evidence document id, without writing anything — the
   /// first step of [uploadMeetingEvidence], mirroring

@@ -34,9 +34,11 @@ class ThemeController extends ChangeNotifier {
   }
 
   static const _key = 'themeMode';
+  static const _textSizeKey = 'textSize';
 
   final Future<SharedPreferences> _sharedPreferences;
   ThemeMode _mode = ThemeMode.system;
+  AppTextSize _textSize = AppTextSize.normal;
   bool _disposed = false;
 
   /// The current preference. Starts as [ThemeMode.system] until the
@@ -45,6 +47,10 @@ class ThemeController extends ChangeNotifier {
   /// takes effect.
   ThemeMode get mode => _mode;
 
+  /// How large text is drawn on this device — on top of the device's own
+  /// text-size setting. See [AppTextSize].
+  AppTextSize get textSize => _textSize;
+
   Future<void> _load() async {
     final prefs = await _sharedPreferences;
     final stored = prefs.getString(_key);
@@ -52,8 +58,14 @@ class ThemeController extends ChangeNotifier {
       (m) => m.name == stored,
       orElse: () => ThemeMode.system,
     );
-    if (resolved == _mode) return;
+    final storedSize = prefs.getString(_textSizeKey);
+    final size = AppTextSize.values.firstWhere(
+      (s) => s.name == storedSize,
+      orElse: () => AppTextSize.normal,
+    );
+    if (resolved == _mode && size == _textSize) return;
     _mode = resolved;
+    _textSize = size;
     _safeNotify();
   }
 
@@ -69,6 +81,16 @@ class ThemeController extends ChangeNotifier {
     _sharedPreferences.then((prefs) => prefs.setString(_key, mode.name));
   }
 
+  void setTextSize(AppTextSize size) {
+    if (size == _textSize) return;
+    _textSize = size;
+    _safeNotify();
+    // ignore: discarded_futures
+    _sharedPreferences.then(
+      (prefs) => prefs.setString(_textSizeKey, size.name),
+    );
+  }
+
   void _safeNotify() {
     if (!_disposed) notifyListeners();
   }
@@ -78,4 +100,16 @@ class ThemeController extends ChangeNotifier {
     _disposed = true;
     super.dispose();
   }
+}
+
+/// The app's own text-size choice (Settings → Appearance), for reading on
+/// site in bright light. Multiplies the device's own text size.
+enum AppTextSize {
+  normal(1.0, 'Normal'),
+  large(1.15, 'Large');
+
+  const AppTextSize(this.factor, this.label);
+
+  final double factor;
+  final String label;
 }

@@ -21,6 +21,7 @@ import '../../../core/widgets/feature_header.dart';
 import '../../../core/widgets/person_avatar.dart';
 import '../../../core/widgets/status_badge.dart';
 import '../../pre_start_checks/presentation/pre_start_visuals.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// Admin/Site Manager/Foreman oversight screen answering "which workers are
 /// ready for the work happening at my site, and what learning are they
@@ -683,7 +684,7 @@ class _WorkerComplianceDetailScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Worker Compliance')),
       body: ListView(
         padding: const EdgeInsets.all(AppSpacing.md),
         children: [
@@ -719,7 +720,9 @@ class _WorkerComplianceDetailScreen extends StatelessWidget {
               color: AppColors.danger,
               icon: Icons.warning_amber,
               title: learning.title,
-              subtitle: learning.type.label,
+              subtitle: row.quizOutstandingIds.contains(learning.id)
+                  ? '${learning.type.label} · video watched, quiz outstanding'
+                  : learning.type.label,
             ),
           const SizedBox(height: AppSpacing.lg),
           FeatureSectionTitle(

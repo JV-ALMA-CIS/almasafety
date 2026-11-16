@@ -2,7 +2,7 @@
 class AppConstants {
   AppConstants._();
 
-  static const String appName = 'JVA Safety';
+  static const String appName = 'ALMASAFETY';
 
   /// Breakpoints used by responsive layout helpers.
   static const double mobileBreakpoint = 600;

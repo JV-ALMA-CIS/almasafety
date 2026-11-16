@@ -34,7 +34,19 @@ class ReadinessItem {
     required this.status,
     required this.canStart,
     this.type,
+    this.questionCount = 0,
+    this.quizRequired = false,
+    this.contentCompleted = false,
   });
+
+  /// How many quiz questions the item has (0 = no quiz).
+  final int questionCount;
+
+  /// Whether passing that quiz is part of this requirement.
+  final bool quizRequired;
+
+  /// Whether the content step (watching the video) is already recorded.
+  final bool contentCompleted;
 
   final String learningId;
   final String title;
@@ -58,6 +70,11 @@ class ReadinessItem {
       type: type is String ? type : null,
       status: ReadinessItemStatus.fromId(map['status']),
       canStart: map['canStart'] != false,
+      questionCount: map['questionCount'] is num
+          ? (map['questionCount'] as num).toInt()
+          : 0,
+      quizRequired: map['quizRequired'] == true,
+      contentCompleted: map['contentCompleted'] == true,
     );
   }
 }

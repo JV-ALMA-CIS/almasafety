@@ -1986,6 +1986,43 @@ describe("the Daily Safety Meeting foundation", () => {
     await assertSucceeds(db.doc(meetingPath(ORG_A, "meeting-1")).get());
   });
 
+  test("the meeting's own foreman cannot forge its suggestion snapshot, " +
+    "concern count or corrective-action links", async () => {
+    const db = actor("foreman-a", "foreman-a@example.com");
+    const ref = db.doc(meetingPath(ORG_A, "meeting-1"));
+
+    await assertFails(ref.update({suggestedPointIds: ["forged"]}));
+    await assertFails(ref.update({suggestionReasons: {forged: ["x"]}}));
+    await assertFails(ref.update({concernCount: 0}));
+    await assertFails(ref.update({correctiveActionIds: ["forged"]}));
+  });
+
+  test("a meeting's audit entries are readable by no client — not its own " +
+    "foreman, nor a Site Manager", async () => {
+    await seed(async (db) => {
+      await db.doc("audit_logs/meeting-log-1").set({
+        organizationId: ORG_A,
+        actorUid: "foreman-a",
+        action: "meeting.updated",
+        targetCollection: "daily_safety_meetings",
+        targetDocId: "meeting-1",
+        metadata: {},
+        createdAt: new Date(),
+      });
+    });
+
+    for (const uid of ["foreman-a", "active-a"]) {
+      const db = actor(uid, `${uid}@example.com`);
+      await assertFails(db.doc("audit_logs/meeting-log-1").get());
+      await assertFails(
+        db.collection("audit_logs")
+          .where("targetDocId", "==", "meeting-1")
+          .get()
+      );
+      await assertFails(db.doc("audit_logs/meeting-log-1").delete());
+    }
+  });
+
   test("a foreman cannot read another foreman's meeting", async () => {
     const db = actor("foreman-b", "foreman-b@example.com");
 
@@ -2569,6 +2606,95 @@ describe("the Daily Safety Meeting foundation", () => {
         actor("foreman-a", "foreman-a@example.com")
           .doc(pointNotePath(ORG_A, "meeting-1", "point-1"))
           .delete()
+      );
+    });
+  });
+
+  describe("foreman_points", () => {
+    // The Foreman's own typed points. Written only through
+    // `saveMeetingForemanPoint`/`removeMeetingForemanPoint`; read follows
+    // `point_notes`' exact shape.
+
+    function foremanPointPath(organizationId, meetingId, pointId) {
+      return `${meetingPath(organizationId, meetingId)}/foreman_points/` +
+        pointId;
+    }
+
+    const stored = {
+      meetingId: "meeting-1",
+      organizationId: ORG_A,
+      siteId: "site-1",
+      title: "Wet roof sheets",
+      note: "No walking on wet sheets.",
+      activityId: null,
+      recordedBy: "foreman-a",
+    };
+
+    beforeEach(async () => {
+      await seed(async (db) => {
+        await db.doc(foremanPointPath(ORG_A, "meeting-1", "pointAbc12345"))
+          .set({...stored, createdAt: new Date(), updatedAt: new Date()});
+      });
+    });
+
+    test("an org member, an Admin and the meeting's own foreman can read " +
+      "them", async () => {
+      for (const [uid, email] of [
+        ["active-a", "active-a@example.com"],
+        ["sysadmin-a", "sysadmin-a@example.com"],
+        ["foreman-a", "foreman-a@example.com"],
+      ]) {
+        await assertSucceeds(
+          actor(uid, email)
+            .doc(foremanPointPath(ORG_A, "meeting-1", "pointAbc12345"))
+            .get()
+        );
+      }
+    });
+
+    test("another organization, a different foreman and a worker cannot " +
+      "read them", async () => {
+      await seed(async (db) => {
+        await db
+          .doc(`users/worker-a/memberships/${ORG_A}`)
+          .set(membership("worker-a", ORG_A, {
+            role: "worker",
+            siteIds: ["site-1"],
+          }));
+      });
+      await assertFails(
+        actor("active-a", "active-a@example.com")
+          .collection(
+            `organizations/${ORG_B}/daily_safety_meetings/meeting-1/` +
+              "foreman_points"
+          )
+          .get()
+      );
+      for (const [uid, email] of [
+        ["foreman-b", "foreman-b@example.com"],
+        ["worker-a", "worker-a@example.com"],
+      ]) {
+        await assertFails(
+          actor(uid, email)
+            .doc(foremanPointPath(ORG_A, "meeting-1", "pointAbc12345"))
+            .get()
+        );
+      }
+    });
+
+    test("no client, including the meeting's own foreman, can create, " +
+      "update or delete one directly", async () => {
+      const db = actor("foreman-a", "foreman-a@example.com");
+      await assertFails(
+        db.doc(foremanPointPath(ORG_A, "meeting-1", "pointNew123456"))
+          .set({...stored, createdAt: new Date(), updatedAt: new Date()})
+      );
+      await assertFails(
+        db.doc(foremanPointPath(ORG_A, "meeting-1", "pointAbc12345"))
+          .update({note: "Tampered"})
+      );
+      await assertFails(
+        db.doc(foremanPointPath(ORG_A, "meeting-1", "pointAbc12345")).delete()
       );
     });
   });

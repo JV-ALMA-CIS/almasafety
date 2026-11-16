@@ -48,7 +48,8 @@ class FeatureHeader extends StatelessWidget {
   final Widget? footer;
 
   @override
-  Widget build(BuildContext context) => _buildFull();
+  Widget build(BuildContext context) =>
+      _buildFull(stackTrailing: MediaQuery.sizeOf(context).width < 480);
 
   Widget _chipWrap(Color foreground) {
     return Wrap(
@@ -81,7 +82,7 @@ class FeatureHeader extends StatelessWidget {
     );
   }
 
-  Widget _buildFull() {
+  Widget _buildFull({required bool stackTrailing}) {
     final foreground = AppColors.onColor(color);
     return Container(
       decoration: BoxDecoration(
@@ -161,12 +162,18 @@ class FeatureHeader extends StatelessWidget {
                         ],
                       ),
                     ),
-                    if (trailing != null) ...[
+                    if (trailing != null && !stackTrailing) ...[
                       const SizedBox(width: AppSpacing.sm),
                       trailing!,
                     ],
                   ],
                 ),
+                // On a phone the badge goes under the title, so the title
+                // keeps the full width.
+                if (trailing != null && stackTrailing) ...[
+                  const SizedBox(height: AppSpacing.sm),
+                  trailing!,
+                ],
                 if (chips.isNotEmpty) ...[
                   const SizedBox(height: AppSpacing.md),
                   _chipWrap(foreground),
@@ -205,7 +212,8 @@ class FeatureSectionTitle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
+    final stackTrailing = MediaQuery.sizeOf(context).width < 480;
+    final heading = Row(
       children: [
         Container(
           padding: const EdgeInsets.all(6),
@@ -231,7 +239,16 @@ class FeatureSectionTitle extends StatelessWidget {
               ),
             ),
           ),
-        ?trailing,
+        if (!stackTrailing) ?trailing,
+      ],
+    );
+    if (trailing == null || !stackTrailing) return heading;
+    // On a phone the action goes under the heading, so neither is squeezed.
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        heading,
+        Align(alignment: Alignment.centerRight, child: trailing),
       ],
     );
   }

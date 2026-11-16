@@ -17,8 +17,12 @@ import '../../safety_requirements/domain/safety_requirement.dart';
 import '../data/safety_learning_repository.dart';
 import '../data/worker_learning_repository.dart';
 import '../data/worker_learning_service.dart';
+import '../../organizations/domain/organization_record_status.dart';
+import '../domain/no_longer_required.dart';
 import '../domain/safety_learning.dart';
+import '../domain/todays_safety_readiness.dart';
 import '../domain/worker_learning_record.dart';
+import '../domain/safety_learning_type.dart';
 import '../domain/worker_learning_status.dart';
 import 'learning_detail_screen.dart';
 
@@ -31,6 +35,14 @@ import 'learning_detail_screen.dart';
 /// required-learning view (real [WorkerLearningRecord] documents,
 /// materialized lazily server-side) exists before the list stream is read —
 /// see [WorkerLearningService.getMyRequiredLearning]'s doc comment.
+///
+/// Records are never deleted, so the list can include lessons that are no
+/// longer required of the learner. The server's readiness answer says which
+/// ([noLongerRequiredLearningIds]); those are labelled "No longer required
+/// — general learning" and open as general learning (see
+/// [LearningDetailScreen.generalLearning]). A record for an INACTIVE lesson
+/// is labelled so and opens to its history only — the lesson screen offers
+/// no player, quiz or learning action for it.
 class MySafetyLearningScreen extends StatefulWidget {
   const MySafetyLearningScreen({
     super.key,
@@ -66,6 +78,26 @@ class _MySafetyLearningScreenState extends State<MySafetyLearningScreen> {
 
   String? _organizationId;
   bool _requestedRequiredLearning = false;
+
+  /// The server's view of what is still required — null until loaded, or
+  /// when it failed (then nothing is labelled; the lesson screen still
+  /// asks the server when it opens).
+  TodaysSafetyReadiness? _readiness;
+  int _readinessRequest = 0;
+
+  Future<void> _loadReadiness(String organizationId) async {
+    final request = ++_readinessRequest;
+    try {
+      final readiness = await _workerLearningService.getMyTodaysSafetyReadiness(
+        organizationId: organizationId,
+      );
+      if (mounted && request == _readinessRequest) {
+        setState(() => _readiness = readiness);
+      }
+    } on Object catch (e) {
+      debugPrint('My Safety Learning: could not load readiness: $e');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -113,6 +145,8 @@ class _MySafetyLearningScreenState extends State<MySafetyLearningScreen> {
           organizationId: organizationId,
         ),
       );
+      _readiness = null;
+      unawaited(_loadReadiness(organizationId));
     }
 
     final workerLearningRepository =
@@ -200,6 +234,10 @@ class _MySafetyLearningScreenState extends State<MySafetyLearningScreen> {
                           workerLearningRepository.watchMine(workerUid),
                       builder: (context, snapshot) {
                         final records = snapshot.data ?? const [];
+                        final readiness = _readiness;
+                        final noLongerRequired = readiness == null
+                            ? const <String>{}
+                            : noLongerRequiredLearningIds(records, readiness);
                         final isLoading =
                             snapshot.connectionState ==
                                 ConnectionState.waiting &&
@@ -259,6 +297,9 @@ class _MySafetyLearningScreenState extends State<MySafetyLearningScreen> {
                                 record: record,
                                 learning: learningById[record.learningId],
                                 reason: reasonsByLearningId[record.learningId],
+                                noLongerRequired: noLongerRequired.contains(
+                                  record.learningId,
+                                ),
                                 onTap: () async {
                                   final learning =
                                       learningById[record.learningId];
@@ -272,9 +313,18 @@ class _MySafetyLearningScreenState extends State<MySafetyLearningScreen> {
                                         organizationId: organizationId,
                                         learning: learning,
                                         record: record,
+                                        generalLearning: noLongerRequired
+                                            .contains(record.learningId),
+                                        workerLearningService:
+                                            _workerLearningService,
                                       ),
                                     ),
                                   );
+                                  // Progress may have changed what is
+                                  // still required.
+                                  if (mounted) {
+                                    unawaited(_loadReadiness(organizationId));
+                                  }
                                 },
                               ),
                               const SizedBox(height: AppSpacing.sm),
@@ -292,6 +342,10 @@ class _MySafetyLearningScreenState extends State<MySafetyLearningScreen> {
       },
     );
   }
+
+  /// The lesson has been deactivated: its record opens as history only.
+  static bool _isInactive(SafetyLearning learning) =>
+      learning.status != OrganizationRecordStatus.active;
 
   /// Every activity across [siteIds], fetched via [ActivityAdminService
   /// .getSiteActivities] once per site and merged — the per-document-safe
@@ -347,10 +401,14 @@ class _LearningRecordTile extends StatelessWidget {
     required this.learning,
     required this.onTap,
     this.reason,
+    this.noLongerRequired = false,
   });
 
   final WorkerLearningRecord record;
   final SafetyLearning? learning;
+
+  /// Unfinished, but no longer required of the learner.
+  final bool noLongerRequired;
 
   /// Why this item is required — e.g. "Required for East Site" — shown
   /// beneath the type so the worker understands the obligation, not just
@@ -360,7 +418,26 @@ class _LearningRecordTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final subtitleParts = [?learning?.type.label, ?reason];
+    // In progress with the content step recorded can only mean a mandatory
+    // quiz is still to pass (see `completeLearning`).
+    final quizOutstanding =
+        record.status == WorkerLearningStatus.inProgress &&
+        record.contentCompleted;
+    final unavailable =
+        learning != null && _MySafetyLearningScreenState._isInactive(learning!);
+    final subtitleParts = [
+      ?learning?.type.label,
+      if (unavailable)
+        'No longer active — your record is kept'
+      else if (noLongerRequired)
+        'No longer required — general learning'
+      else
+        ?reason,
+      if (quizOutstanding && !noLongerRequired && !unavailable)
+        learning?.type == SafetyLearningType.video
+            ? 'Video watched · quiz outstanding'
+            : 'Quiz outstanding',
+    ];
     return Card(
       margin: EdgeInsets.zero,
       child: ListTile(

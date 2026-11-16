@@ -159,7 +159,7 @@ createdAt, createdBy, updatedAt, updatedBy
 ```
 
 ### `audit_logs/{logId}`
-Append-only, Admin-SDK-only writes (which bypass rules). Captures privileged actions — currently account approvals, rejections, suspensions and reinstatements; later record closures and deletions. Client reads are denied outright until roles exist to identify an administrator.
+Append-only, Admin-SDK-only writes (which bypass rules). Captures privileged actions — account approvals, rejections, suspensions and reinstatements, and every Daily Safety Meeting event (§6 "Audit trail"); later record closures and deletions. Client reads are denied outright until roles exist to identify an administrator.
 
 ```
 organizationId: string
@@ -253,7 +253,9 @@ participation — see `daily_safety_meeting_callable.ts` (unmodified).
 
 ### `organizations/{orgId}/safety_learning/{itemId}`
 The learning library (videos, courses, visual guides, documents, knowledge
-checks) — admin-authored.
+checks) — admin-authored; a `siteManager` of the organization may also
+author `video` items (and their knowledge checks) — see
+`requireLibraryAuthor` in `safety_learning_callable.ts`.
 
 ```
 title: string
@@ -268,7 +270,7 @@ createdAt, createdBy, updatedAt, updatedBy
 ```
 
 **Minimum engagement-time gate.** ANY learning item (not just `video`) with
-a positive `minimumWatchSeconds` cannot be completed until that many
+a positive `minimumWatchSeconds` cannot pass its content step until that many
 seconds have elapsed, server-side, between the worker's own `startLearning`
 call (a real `FieldValue.serverTimestamp()`) and their `completeLearning`
 call. This is an honest elapsed-time signal, not verified playback/reading:
@@ -281,9 +283,88 @@ single, callable-only authority on this — a worker can never write
 `worker_learning_records.status = "completed"` directly (see
 `firestore.rules`' denial below).
 
+**Files are published server-side only.** No client may write under
+`organizations/{orgId}/safety_learning/` in Storage. An author uploads to
+their own staging folder `learning_uploads/{uid}/{uploadId}/{fileName}`
+(`storage.rules`: creator-only, size and content-type limited), then calls
+`publishLearningUpload` (`learning_upload_callable.ts`), which re-checks the
+author (`requireLibraryAuthor`; a `siteManager` may publish video files
+only), size and type, copies the file to
+`organizations/{orgId}/safety_learning/{uploadId}/{fileName}` (refusing to
+overwrite), deletes the staged copy and returns the download URL. This
+keeps the Storage rules free of Firestore lookups.
+
+**Deploy together.** The current app needs the Cloud Functions
+(`publishLearningUpload`, `getVideoQuizSummary`, `practiceKnowledgeCheck`
+and the updated `getKnowledgeCheckQuestions`/`completeLearning`), the
+Storage rules (the `learning_uploads` staging folder) and the web build
+deployed as one release. With the new rules but an older app, direct
+uploads into `safety_learning` are refused; with the new app but older
+functions or rules, uploads fail, quiz counts and practice quizzes are
+reported as needing a server update, and quizzes of lessons not required of
+the learner cannot open. The app reports these as "needs the latest server
+update" (`ServerUpdateRequiredException`), never as a permission problem.
+
+**Deactivating a video.** `updateSafetyLearning` refuses to set a `video`
+item `inactive` while any ACTIVE `safety_requirements` document in the same
+organization lists it in `requiredLearningIds` (`failed-precondition`,
+naming those requirements) — they must be updated first. Inactive
+requirements do not block it; the check reads the requirement documents
+themselves, and a failed read fails the call. Reactivating is always
+allowed. Records are never touched.
+
+**Deleting a learning item** (`deleteSafetyLearning`,
+`learning_delete_callable.ts`; library authors — a `siteManager` for videos
+only). Permanent, so only for an item nothing depends on:
+- any `worker_learning_records` document for it (any status) refuses it —
+  that is training evidence; deactivate instead;
+- any `safety_requirements` document listing it (active OR inactive)
+  refuses it, naming the requirements;
+- its `knowledge_check_questions` are deleted with it, and its uploaded
+  library file (`organizations/{org}/safety_learning/...`, this
+  organization only) when no other item uses the same file;
+- `daily_learning_plans` are a self-healing per-day cache (they discard ids
+  that are no longer active items) and do not block it.
+
+**Not atomic across Firestore and Storage** (separate systems), so it
+runs in recoverable steps, with the item document as the durable marker:
+1. one transaction checks dependencies and MARKS the item —
+   `status: inactive`, `deletion: {pending: true, previousStatus,
+   requestedAt, requestedBy}`. From then on no requirement can newly list it
+   (inactive items are refused), no learning record can be created for it,
+   and `updateSafetyLearning` and every quiz-authoring callable refuse it;
+2. dependencies are re-checked — if one appeared, the item is restored to
+   its previous status and nothing is deleted — then the uploaded file is
+   deleted unless another item uses it;
+3. one transaction checks a last time and deletes the questions and item.
+
+If step 2 or 3 fails, the item stays hidden with its marker and the manager
+card shows "Deletion not finished" with Finish deleting; the scheduled
+`finishPendingLearningDeletions` (every 6 hours) retries every marked item
+the same way. An inconclusive check never deletes anything. Residual risk:
+a requirement edit that read the item as active before step 1 and commits
+only after step 3 would list a missing id — the resolvers already skip
+missing items (`resolveLearningItemsById`), so it requires nothing.
+
+**An inactive item is not learnable from anywhere.** It is left out of
+every learner list; opened through an old record or link, the lesson
+screen shows only a "no longer active" message and the learner's existing
+record (status, dates, recorded quiz result) — no player, link, quiz or
+practice, and no learning callable is made. The item and all records stay
+as they are.
+
+**Safety Videos is a view of this collection, not a second one.** Its
+learner library lists every ACTIVE `type == "video"` item of the person's
+organization (a direct read, allowed by `belongsToOrganization`) — no
+Safety Requirement is needed to find, watch or practise one. A requirement
+only decides whether the video is REQUIRED (and so formally completed and
+counted for readiness/compliance); otherwise it is shown as General
+learning and opens watch-only with an unrecorded practice quiz. Manager and
+learner screens open the same item id in the same lesson screen.
+
 ### `organizations/{orgId}/safety_learning/{itemId}/knowledge_check_questions/{questionId}`
 Multiple-choice knowledge-check questions for one learning item —
-admin-authored, `admin`-only, via `addKnowledgeCheckQuestion`/
+`admin`-authored (or `siteManager` for `video` items), via `addKnowledgeCheckQuestion`/
 `updateKnowledgeCheckQuestion`/`removeKnowledgeCheckQuestion`
 (`safety_learning_callable.ts`).
 
@@ -298,7 +379,16 @@ createdAt, updatedAt
 **A knowledge check is NOT confined to `type == "knowledgeCheck"`** — any
 learning item (including a `video`) may have questions configured, and a
 video with both `minimumWatchSeconds` and questions requires BOTH gates to
-pass independently. **A knowledge-check item with ZERO configured
+pass independently — **when the quiz is required** (see `quizRequired`
+under `safety_requirements`). Having questions never by itself makes a quiz
+mandatory: a quiz on a non-required item, or one switched off by every
+applicable requirement, is optional — `getKnowledgeCheckQuestions` serves it
+for any active item, and `practiceKnowledgeCheck` grades a non-required
+item's quiz without writing anything. The same applies to a lesson the
+learner holds an unfinished record for but which is no longer required of
+them (requirement removed, or they moved site): the record is kept, the app
+labels it "No longer required — general learning" and offers only the
+unrecorded practice quiz; a completed record stays as completion evidence. **A knowledge-check item with ZERO configured
 questions has no knowledge-check gate at all** — it completes exactly like
 any other item, keeping every item that predates this feature (or simply
 has no quiz) unaffected.
@@ -334,11 +424,21 @@ requiredLearningIds: string[] // -> safety_learning
 status: string                 // active | inactive
 gatesAttendance: bool?         // missing = true. FALLBACK for lessons with no learningSettings entry
 requiredBeforeWork: bool?      // missing = false. FALLBACK for lessons with no learningSettings entry
-learningSettings: map?         // { [learningId]: { gatesAttendance: bool, requiredBeforeWork: bool } } — per selected lesson, within THIS requirement only
+learningSettings: map?         // { [learningId]: { gatesAttendance: bool, requiredBeforeWork: bool, quizRequired: bool? } } — per selected lesson, within THIS requirement only
+quizRequired: bool?            // missing = true. FALLBACK for lessons whose learningSettings entry has no quizRequired
 siteId: string?                // scopes this requirement to one site — mutually exclusive with activityId
 activityId: string?            // scopes this requirement to one activity (implicitly that activity's own site too)
 createdAt, createdBy, updatedAt, updatedBy
 ```
+
+**Terminology: `gatesAttendance` is "blocks attendance".** Product
+documents may call this setting `blocksAttendance` / "Blocks attendance"
+(the label the Safety Requirements screen shows). The stored field is, and
+stays, `gatesAttendance` — no rename or migration. Behaviour: a lesson
+whose applicable requirement has `gatesAttendance != false` must be
+completed before the person can be marked present at (or, for a Foreman,
+start and complete) the Daily Safety Meeting; see "Required vs. pre-work
+vs. attendance-gating" below.
 
 **Scope resolution rule.** A requirement applies to a worker when:
 - both `siteId` and `activityId` are absent (organization-wide — the
@@ -389,6 +489,11 @@ list without resending settings, removed lessons' entries are dropped and
 added lessons default to `{false, false}`. Flags are resolved per lesson,
 per requirement, before ids are aggregated, so a lesson that is gating (or
 pre-work) under ANY applicable requirement stays gating (or pre-work).
+`quizRequired` follows the same rule: a lesson's quiz is mandatory if ANY
+applicable requirement leaves it on (missing = on), so existing requirements
+keep today's behaviour. Inactive learning items cannot be newly added to a
+requirement; one already listed stays listed but is not required while
+inactive.
 `getMyTodaysSafetyReadiness` (worker, own data only) and
 `getSiteCrewReadiness` (Foreman, own authorized site only, gating learning
 only) are read-only callables built on these resolvers.
@@ -407,6 +512,7 @@ status: string                  // assigned | inProgress | completed
 assignedAt: Timestamp
 startedAt: Timestamp?
 completedAt: Timestamp?
+contentCompletedAt: Timestamp?  // the content (video) step passed; the record may still await a mandatory quiz
 knowledgeCheckResult: { passed: boolean, score: number?, totalQuestions: number? }?
 ```
 
@@ -428,11 +534,22 @@ doesn't match a real question for that item is silently ignored — it
 affects neither the numerator nor the denominator, so it can neither
 inflate a score nor shrink the pass threshold's denominator.
 
+**Two-step completion.** `completeLearning` first checks the content step
+(the `minimumWatchSeconds` gate, skipped once `contentCompletedAt` is set)
+and records `contentCompletedAt`. If the item's quiz is required and no
+passing answers came with the call, the record stays `inProgress` and the
+call returns `{contentCompleted: true, quizOutstanding: true}`; the worker's
+next action is the quiz. `status = "completed"` is written only when every
+mandatory part is done. A completed record is final, except that an
+optional quiz may be retaken (only `knowledgeCheckResult` changes). Sending
+answers with the content step in one call still works for older clients.
+
 **A failed knowledge check is an expected outcome, not an error.**
 `completeLearning` does not throw when grading concludes `passed: false` —
 it returns `{status: <unchanged>, knowledgeCheckResult: {passed: false,
-score, totalQuestions}}`, the record stays `assigned`/`inProgress`, and the
-worker may resubmit (no retry limit in this phase).
+score, totalQuestions}}`, the record stays `assigned`/`inProgress`, failed
+attempts are not stored, and the worker may resubmit (no retry limit in
+this phase). An unset `passingScorePercent` means 100%.
 
 `score`/`totalQuestions` are absent on a record completed before this
 phase (the old self-attested `{passed: true}` shape, written before any
@@ -512,7 +629,7 @@ foremanUid: string             // the conducting Foreman/Site Supervisor (implem
 meetingPointsCovered: [
   { pointId: string, title: string, covered: boolean }
 ]
-siteSpecificPoints: string[]  // free-text points added by foreman, kept short
+foremanPointCount: number      // size of the foreman_points subcollection, kept by the server (0/absent on meetings without any)
 concerns: [
   { description: string, raisedBy: string? }
 ]
@@ -523,8 +640,59 @@ crewOutcome: string?           // go | goCorrected | stop — the Foreman's crew
 crewOutcomeNote: string?       // required for goCorrected / stop
 ahaIds: string[]               // accepted risk_assessments (§7D) covered with the crew
 ahasCovered: [{ id, featureOfWork, revision }]  // snapshot of ahaIds when recorded
+suggestedPointIds: string[]    // meeting points suggested at the start, best first — written once by createDailySafetyMeeting, never changed (absent on older meetings)
+suggestionReasons: map         // pointId -> string[] — why each suggested point was suggested
+concernCount: number?          // size of the concerns subcollection, kept by the server (absent on older meetings until a concern is next added/removed)
 createdAt, createdBy, updatedAt, updatedBy
 ```
+
+**Meeting date.** `date` is the calendar day in **Africa/Nairobi** (UTC+3)
+— `todaysMeetingDate()` on the server and `meetingDate()` in the app agree on
+it whatever time zone the phone is set to. Meetings created before this used
+the UTC day and keep their stored dates.
+
+**Suggestion snapshot.** `getMeetingPointSuggestions` and
+`createDailySafetyMeeting` both rank the active meeting points with
+`meeting_point_suggestions.ts`: a point naming one of today's activities;
+a point whose free-text `applicableRisks` matches the name/category of an
+active Safety Requirement scoped to one of today's activities, or a hazard /
+feature of work of an accepted risk assessment for the site that covers one
+of today's activities (or the whole site); and points tied to no activity at
+all ("general"). Each suggestion carries plain-language reasons. The set
+at creation is stored as `suggestedPointIds`/`suggestionReasons` and no
+other callable writes them, so accepting, removing or adding points only
+changes `meetingPointIds` — the record always shows suggested vs. kept.
+
+**Concern count.** `concernCount` is written in the same transaction as
+every concern added or removed (`addMeetingConcern`, `removeMeetingConcern`,
+a Pre-Start STOP becoming a concern — `meeting_concern_count.ts`). On a
+meeting with no count yet, that transaction counts the existing concerns
+first. The app counts the subcollection itself for meetings that still have
+no count. The legacy `concerns` string list is no longer written.
+
+**The Foreman's own points.** `foreman_points/{pointId}` under the meeting
+holds points the Foreman typed for what the library does not cover:
+`{ meetingId, organizationId, siteId, title (≤120), note? (≤500, what was
+discussed), activityId? (one of the meeting's activities), recordedBy,
+createdAt, updatedAt }`. They stay on that meeting and never become library
+points. Written only by `saveMeetingForemanPoint` (add, or edit while
+`inProgress`; adding still works after completion) and
+`removeMeetingForemanPoint` (`inProgress` only), each keeping
+`foremanPointCount` in step in the same transaction. `pointId` is chosen by
+the app, so a point saved with no signal and sent twice is stored once.
+`completeDailySafetyMeeting` needs at least one activity and at least one
+point of either kind. Read access matches `point_notes`.
+
+**Audit trail.** Meeting events are appended to `audit_logs` (§2) in the same
+batch/transaction as the change: `meeting.created`, `meeting.updated`
+(before/after of the changed fields only), `meeting.completed`,
+`meeting.attendanceRecorded` (before/after status), `meeting.concernAdded`,
+`meeting.concernUpdated`, `meeting.concernRemoved`,
+`meeting.foremanPointAdded`, `meeting.foremanPointUpdated`,
+`meeting.foremanPointRemoved` and `meeting.correctiveActionRaised`, each with `targetCollection:
+"daily_safety_meetings"` and `targetDocId` the meeting id. Free text the
+Foreman typed (concern descriptions, notes, their own points) is not copied
+into the trail.
 
 **Crew result.** `completeDailySafetyMeeting` takes an optional
 `crewOutcome` (the app always sends one) using the same three values as a
@@ -722,9 +890,17 @@ createdAt, createdBy, updatedAt, updatedBy
 `corrective_actions.hazardId` on the new document AND
 `hazards.correctiveActionId` + `hazards.status = "correctiveActionCreated"`
 on the originating hazard, in the same write path — matching how
-`daily_safety_meetings.correctiveActionIds` is kept in sync when a meeting
-concern produces one. A corrective action names at most one origin
-(`meetingId`+`concernId`, or `hazardId`) — never both.
+`daily_safety_meetings.correctiveActionIds` is kept in sync (`arrayUnion`,
+same batch) when a meeting produces one. A corrective action names at most
+one origin (`meetingId`+`concernId`, or `hazardId`) — never both. Actions
+raised from a meeting before that link was kept are found through their own
+`meetingId`.
+
+**From a completed meeting.** A concern can still be added to a completed
+meeting, so `createCorrectiveAction` accepts a completed meeting when — and
+only when — it names one of that meeting's own concerns (`concernId`).
+Without a concern, a completed meeting is refused as before. Only the
+meeting's own Foreman may raise either.
 
 **Auditability rule:** once `status == "completed"`, immutable to clients — reopening (if ever needed) happens via a new action referencing the old one, not by editing the closed record.
 
@@ -1048,8 +1224,9 @@ callable enforces server-side — the actual security boundary — using the
 | `organizations` | members; `admin` for any | create: `siteManager` (creating their own organization) or `admin`. update: `siteManager` for the organization(s) they manage; `admin` for any — Admin retains platform-level intervention rights (reassign, suspend, manage) over every organization |
 | `projects`, `sites`, `activities` | org members | `siteManager` for the organization(s) they manage; `admin` for any |
 | `workers` *(not yet implemented)* | org members | create/approve: `foreman` for their own assigned site(s); `siteManager`/`admin` for any worker in an organization they manage/any organization respectively |
-| `safety_learning` (library), `safety_requirements` | org members | `admin` only — platform-level, company-wide library, not delegated to Site Managers |
-| `safety_learning/*/knowledge_check_questions` | **no client, admin included** (`allow read, write: if false`) | `admin` only, and ONLY via callables — `addKnowledgeCheckQuestion`/`updateKnowledgeCheckQuestion`/`removeKnowledgeCheckQuestion` to write, `listKnowledgeCheckQuestions` (full, including `correctOptionId`) or `getKnowledgeCheckQuestions` (worker-safe, `correctOptionId` stripped) to read — never a direct Firestore read/write by any client, ever |
+| `safety_learning` (library) | org members | `admin` for every type; `siteManager` of the organization for `video` items only (create/edit/activate/deactivate), checked against the stored type — via callables |
+| `safety_requirements` | org members | `siteManager` for the organization(s) they manage; `admin` for any — via callables |
+| `safety_learning/*/knowledge_check_questions` | **no client, admin included** (`allow read, write: if false`) | `admin`, or a `siteManager` of the organization for a `video` item's questions — and ONLY via callables — `addKnowledgeCheckQuestion`/`updateKnowledgeCheckQuestion`/`removeKnowledgeCheckQuestion` to write, `listKnowledgeCheckQuestions` (full, including `correctOptionId`) or `getKnowledgeCheckQuestions` (worker-safe, `correctOptionId` stripped) to read, `getVideoQuizSummary` (question counts only: every video for an author; ACTIVE videos only for any other active member, for the learner library's quiz badge) and `practiceKnowledgeCheck` (grades a non-required quiz; returns score only, writes nothing) — never a direct Firestore read/write by any client, ever |
 | `worker_learning_records` | the owning worker (`workerUid == uid`), `siteManager`, `admin` — deliberately NOT `foreman` (compliance-viewing across the whole organization is a `siteManager`/`admin` responsibility) | the worker themself, and only their own record, via `startLearning`/`completeLearning`/`getMyRequiredLearning` (no `workerUid` argument exists on any of them) |
 | `safety_meeting_points` (library) | org members | `admin` only — platform-level, company-wide library |
 | `pre_start_checks` | the owning worker, a `foreman` whose `siteIds` include the check's site, `siteManager`, `admin` | the worker themself, and only their own check for today, via `submitPreStartCheck` (no `workerUid` argument); **no client writes, no updates, no delete** |

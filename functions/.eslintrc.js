@@ -37,6 +37,7 @@ module.exports = {
       // apply to src/ are not meaningful here.
       files: [
         "test/**/*.js",
+        "scripts/**/*.js",
         "jest.rules.config.js",
         "jest.callables.config.js",
       ],

@@ -43,6 +43,10 @@ class DailySafetyMeeting {
     this.crewOutcomeNote,
     this.ahaIds = const [],
     this.ahasCovered = const [],
+    this.suggestedPointIds = const [],
+    this.suggestionReasons = const {},
+    this.concernCount,
+    this.foremanPointCount = 0,
   });
 
   final String id;
@@ -62,9 +66,11 @@ class DailySafetyMeeting {
   final DailySafetyMeetingStatus status;
   final List<String> concerns;
 
-  /// Ids of corrective actions raised from this meeting. Always empty at
-  /// this stage — Corrective Actions is a later feature — but the field is
-  /// modeled now so that feature does not need a migration to attach here.
+  /// Ids of corrective actions raised from this meeting, added by
+  /// `createCorrectiveAction` alongside each action's own `meetingId`.
+  /// Actions raised before this link was kept are missing here — the
+  /// action's `meetingId` stays the complete source
+  /// (`CorrectiveActionRepository.watchForMeeting`).
   final List<String> correctiveActionIds;
   final DateTime? createdAt;
   final DateTime? completedAt;
@@ -85,6 +91,32 @@ class DailySafetyMeeting {
   /// [ahaIds] as recorded at the time (name and revision), so a completed
   /// meeting still says what was covered after the AHA is revised.
   final List<CoveredAha> ahasCovered;
+
+  /// The meeting points suggested when the meeting was started, best
+  /// first — a snapshot the server writes once and never changes, so the
+  /// record shows what was suggested next to what the Foreman kept
+  /// ([meetingPointIds]). Empty for meetings started before suggestions
+  /// were recorded.
+  final List<String> suggestedPointIds;
+
+  /// Why each of [suggestedPointIds] was suggested, by point id.
+  final Map<String, List<String>> suggestionReasons;
+
+  /// How many structured concerns (the `concerns` subcollection) this
+  /// meeting has, kept by the server. Null for a meeting started before
+  /// the count existed and not touched since — count the subcollection
+  /// instead (see `MeetingConcernRepository.count`). Not to be confused
+  /// with the legacy [concerns] text list, which is no longer written.
+  final int? concernCount;
+
+  /// How many points the Foreman typed themself (the `foreman_points`
+  /// subcollection), kept by the server. 0 for a meeting from before they
+  /// existed — correctly, as it could have none.
+  final int foremanPointCount;
+
+  /// Every safety point on the meeting: library points and the Foreman's
+  /// own.
+  int get totalPointCount => meetingPointIds.length + foremanPointCount;
 
   bool get isCompleted => status == DailySafetyMeetingStatus.completed;
 
@@ -172,6 +204,21 @@ class DailySafetyMeeting {
               revision: (raw['revision'] as num?)?.toInt() ?? 1,
             ),
       ],
+      suggestedPointIds:
+          (data['suggestedPointIds'] as List<dynamic>?)
+              ?.whereType<String>()
+              .toList() ??
+          const [],
+      suggestionReasons: {
+        for (final entry
+            in ((data['suggestionReasons'] as Map?) ?? const {}).entries)
+          if (entry.key is String && entry.value is List)
+            entry.key as String: (entry.value as List)
+                .whereType<String>()
+                .toList(),
+      },
+      concernCount: (data['concernCount'] as num?)?.toInt(),
+      foremanPointCount: (data['foremanPointCount'] as num?)?.toInt() ?? 0,
     );
   }
 }

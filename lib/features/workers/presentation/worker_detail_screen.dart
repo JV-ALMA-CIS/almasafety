@@ -14,6 +14,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/widgets/dashboard_header.dart';
 import '../../../core/widgets/feature_header.dart';
 import '../../pre_start_checks/presentation/pre_start_visuals.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// Shows one worker's name, email, role, assigned sites and assigned
 /// activities.
@@ -69,7 +70,7 @@ class WorkerDetailScreen extends StatelessWidget {
         );
 
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Worker Details')),
       body: ListView(
         padding: const EdgeInsets.all(AppSpacing.md),
         children: [

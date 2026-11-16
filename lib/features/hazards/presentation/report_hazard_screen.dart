@@ -19,6 +19,7 @@ import '../../organizations/presentation/report_site_picker.dart';
 import '../../../core/widgets/color_choice_chips.dart';
 import '../../../core/widgets/feature_header.dart';
 import 'hazard_style.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// The worker-facing "Report a Hazard" flow — PROJECT_CONTEXT.md §24.
 ///
@@ -254,7 +255,7 @@ class _ReportHazardScreenState extends State<ReportHazardScreen> {
     }
 
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Report a Hazard')),
       body: _ReportForm(
         siteSection: ReportSitePicker(
           organizationId: organizationId,

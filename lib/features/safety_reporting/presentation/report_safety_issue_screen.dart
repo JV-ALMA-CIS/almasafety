@@ -6,6 +6,7 @@ import '../../../core/widgets/feature_header.dart';
 import '../../hazards/domain/hazard_kind.dart';
 import '../../hazards/presentation/report_hazard_screen.dart';
 import '../../incidents/presentation/report_incident_screen.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// The single way in for anyone reporting something on site: **⚠️ Report
 /// a Safety Issue**. Instead of making a worker know the difference between
@@ -103,7 +104,10 @@ class ReportSafetyIssueScreen extends StatelessWidget {
       ],
     );
     if (embedded) return content;
-    return Scaffold(appBar: AppBar(), body: content);
+    return Scaffold(
+      appBar: AppBar(title: const MobileTitle('Report a Safety Issue')),
+      body: content,
+    );
   }
 }
 

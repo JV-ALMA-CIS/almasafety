@@ -44,6 +44,8 @@ import {FieldValue, getFirestore} from "firebase-admin/firestore";
 import {CallableRequest, HttpsError, onCall} from "firebase-functions/v2/https";
 import {createNotification} from "./notification_callable";
 import {resolveTodaysContext} from "./daily_learning_plan";
+import {meetingAuditEntry} from "./meeting_audit";
+import {changeConcerns} from "./meeting_concern_count";
 import {
   readMembership,
   requirementApplies,
@@ -439,19 +441,35 @@ async function createStopConcern(
         "/concerns"
     )
     .doc();
-  await concernRef.set({
-    meetingId,
+  // The worker raised it, so the audit entry names them as the actor.
+  const audit = meetingAuditEntry({
     organizationId,
-    siteId: check.siteId,
-    description: stopConcernText(String(check.workerName ?? ""), stops),
-    category: "safety",
-    reportedBy: check.workerUid,
-    status: "open",
-    source: "preStartCheck",
-    preStartCheckId: checkRef.id,
-    createdAt: FieldValue.serverTimestamp(),
+    meetingId,
+    actorUid: String(check.workerUid ?? ""),
+    action: "meeting.concernAdded",
+    metadata: {
+      concernId: concernRef.id,
+      category: "safety",
+      source: "preStartCheck",
+      preStartCheckId: checkRef.id,
+    },
   });
-  await checkRef.update({meetingId, concernId: concernRef.id});
+  await changeConcerns(organizationId, meetingId, 1, (transaction) => {
+    transaction.set(concernRef, {
+      meetingId,
+      organizationId,
+      siteId: check.siteId,
+      description: stopConcernText(String(check.workerName ?? ""), stops),
+      category: "safety",
+      reportedBy: check.workerUid,
+      status: "open",
+      source: "preStartCheck",
+      preStartCheckId: checkRef.id,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    transaction.update(checkRef, {meetingId, concernId: concernRef.id});
+    transaction.set(audit.ref, audit.data);
+  });
   return concernRef.id;
 }
 

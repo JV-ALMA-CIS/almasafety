@@ -383,22 +383,55 @@ class _OrganizationUserCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Row(
-              children: [
-                PersonAvatar(name: user.name),
-                const SizedBox(width: AppSpacing.sm),
-                Expanded(
-                  child: Text(
-                    user.name.isEmpty ? 'Unnamed account' : user.name,
-                    style: AppTextStyles.titleLarge,
-                  ),
-                ),
-                _StatusChip(status: user.accountStatus),
-                if (user.membershipStatus != null) ...[
-                  const SizedBox(width: AppSpacing.xs),
-                  _MembershipStatusChip(status: user.membershipStatus!),
-                ],
-              ],
+            // On a narrow card the status chips move under the name
+            // instead of squeezing it off the edge.
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final chips = [
+                  _StatusChip(status: user.accountStatus),
+                  if (user.membershipStatus != null)
+                    _MembershipStatusChip(status: user.membershipStatus!),
+                ];
+                final name = Text(
+                  user.name.isEmpty ? 'Unnamed account' : user.name,
+                  style: AppTextStyles.titleLarge,
+                );
+                if (constraints.maxWidth >= 480) {
+                  return Row(
+                    children: [
+                      PersonAvatar(name: user.name),
+                      const SizedBox(width: AppSpacing.sm),
+                      Expanded(child: name),
+                      chips.first,
+                      if (chips.length > 1) ...[
+                        const SizedBox(width: AppSpacing.xs),
+                        chips.last,
+                      ],
+                    ],
+                  );
+                }
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    PersonAvatar(name: user.name),
+                    const SizedBox(width: AppSpacing.sm),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          name,
+                          const SizedBox(height: AppSpacing.xs),
+                          Wrap(
+                            spacing: AppSpacing.xs,
+                            runSpacing: AppSpacing.xs,
+                            children: chips,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              },
             ),
             const SizedBox(height: AppSpacing.xs),
             _DetailRow(icon: Icons.mail_outline, value: user.email),

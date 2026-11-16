@@ -367,12 +367,21 @@ class ChoiceTile extends StatelessWidget {
 
     Widget badgeChild;
     if (badge != null && badge!.isNotEmpty) {
-      badgeChild = Text(
-        badge!,
-        maxLines: 1,
-        style: AppTextStyles.label.copyWith(
-          color: badgeForeground,
-          fontWeight: FontWeight.w800,
+      // A long badge (a code) is cut short rather than squeezing the title
+      // on a phone. The limit is on the text: the badge itself still
+      // shrinks to fit.
+      badgeChild = ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.sizeOf(context).width * 0.3,
+        ),
+        child: Text(
+          badge!,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: AppTextStyles.label.copyWith(
+            color: badgeForeground,
+            fontWeight: FontWeight.w800,
+          ),
         ),
       );
     } else if (icon != null) {
@@ -467,7 +476,15 @@ class ChoiceTile extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: AppSpacing.sm),
-                  trailing,
+                  // At most 30% of the screen, so the title keeps room on a
+                  // phone. (Not a LayoutBuilder: these lists also sit in
+                  // dialogs, which measure intrinsic sizes.)
+                  ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxWidth: MediaQuery.sizeOf(context).width * 0.3,
+                    ),
+                    child: trailing,
+                  ),
                 ],
               ),
             ),

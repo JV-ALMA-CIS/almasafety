@@ -99,13 +99,21 @@ export {
   updateKnowledgeCheckQuestion,
   removeKnowledgeCheckQuestion,
   listKnowledgeCheckQuestions,
+  getVideoQuizSummary,
 } from "./safety_learning_callable";
+
+export {publishLearningUpload} from "./learning_upload_callable";
+export {
+  deleteSafetyLearning,
+  finishPendingLearningDeletions,
+} from "./learning_delete_callable";
 
 export {
   getMyRequiredLearning,
   startLearning,
   completeLearning,
   getKnowledgeCheckQuestions,
+  practiceKnowledgeCheck,
   getCrewLearningRecords,
   getMyTodaysSafetyReadiness,
 } from "./worker_learning_callable";
@@ -124,12 +132,15 @@ export {
   recordMeetingAttendance,
   getMeetingAttendeeLearningStatus,
   getSiteCrewReadiness,
+  getMeetingPointSuggestions,
   getMyMeetingLearningGate,
   addMeetingConcern,
   updateMeetingConcern,
   removeMeetingConcern,
   setMeetingPointNote,
   removeMeetingPointNote,
+  saveMeetingForemanPoint,
+  removeMeetingForemanPoint,
   addMeetingEvidence,
   removeMeetingEvidence,
 } from "./daily_safety_meeting_callable";

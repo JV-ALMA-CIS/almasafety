@@ -215,6 +215,13 @@ class FirestorePaths {
   ) =>
       '${meetingPointNotesCollection(organizationId, meetingId)}/$meetingPointId';
 
+  /// `organizations/{organizationId}/daily_safety_meetings/{meetingId}/foreman_points`
+  /// — points the Foreman typed themself, on this meeting only.
+  static String meetingForemanPointsCollection(
+    String organizationId,
+    String meetingId,
+  ) => '${dailySafetyMeeting(organizationId, meetingId)}/foreman_points';
+
   /// `organizations/{organizationId}/daily_safety_meetings/{meetingId}/evidence`
   /// — a subcollection of one meeting, not a single document. Auto-id,
   /// mirroring [meetingConcernsCollection]'s shape (many items, no natural

@@ -48,6 +48,7 @@ class _FakeAdminService extends SafetyRequirementAdminService {
       'name': name,
       'requiredLearningIds': requiredLearningIds,
       'learningSettings': _flatten(learningSettings),
+      'quizRequired': _quizRequired(learningSettings),
       'projectId': projectId,
       'siteId': siteId,
       'activityId': activityId,
@@ -81,6 +82,7 @@ class _FakeAdminService extends SafetyRequirementAdminService {
       'gatesAttendance': gatesAttendance,
       'requiredBeforeWork': requiredBeforeWork,
       'learningSettings': _flatten(learningSettings),
+      'quizRequired': _quizRequired(learningSettings),
     });
   }
 
@@ -95,6 +97,16 @@ class _FakeAdminService extends SafetyRequirementAdminService {
               entry.value.gatesAttendance,
               entry.value.requiredBeforeWork,
             ],
+        };
+
+  /// `{id: quizRequired}`.
+  static Map<String, bool?>? _quizRequired(
+    Map<String, RequirementLearningSetting>? settings,
+  ) => settings == null
+      ? null
+      : {
+          for (final entry in settings.entries)
+            entry.key: entry.value.quizRequired,
         };
 }
 
@@ -519,6 +531,89 @@ void main() {
       expect(call['learningSettings'], {
         'l1': [false, true],
       });
+    });
+
+    testWidgets('a newly ticked lesson keeps its quiz required (the default); '
+        'switching it off makes the quiz optional', (tester) async {
+      await seedLesson('l1');
+      await seedLesson('l2');
+      await openCreate(tester);
+      await tick(tester, 'l1');
+      await tick(tester, 'l2');
+      expect(switchValue(tester, 'quiz-required-l1'), isTrue);
+      expect(switchValue(tester, 'quiz-required-l2'), isTrue);
+
+      await tapVisible(tester, find.byKey(const Key('quiz-required-l2')));
+      await tapVisible(tester, find.text('Create'));
+
+      expect(adminService.createCalls.single['quizRequired'], {
+        'l1': true,
+        'l2': false,
+      });
+    });
+
+    testWidgets('an existing requirement shows each lesson\'s quiz setting; '
+        'an older one (no setting) reads as required', (tester) async {
+      await seedLesson('l1');
+      await seedLesson('l2');
+      await seedRequirement(
+        lessons: ['l1', 'l2'],
+        learningSettings: {
+          'l1': {
+            'gatesAttendance': false,
+            'requiredBeforeWork': false,
+            'quizRequired': false,
+          },
+          'l2': {'gatesAttendance': false, 'requiredBeforeWork': false},
+        },
+      );
+      await openEdit(tester);
+      expect(switchValue(tester, 'quiz-required-l1'), isFalse);
+      expect(switchValue(tester, 'quiz-required-l2'), isTrue);
+
+      await tapVisible(tester, find.text('Save'));
+      expect(adminService.updateCalls.single['quizRequired'], {
+        'l1': false,
+        'l2': true,
+      });
+    });
+
+    testWidgets('an inactive lesson is not offered for a new requirement', (
+      tester,
+    ) async {
+      await seedLesson('l1');
+      await firestore.doc('organizations/org-alpha/safety_learning/l2').set({
+        'organizationId': 'org-alpha',
+        'title': 'Lesson l2',
+        'type': 'video',
+        'contentReference': 'https://youtu.be/dQw4w9WgXcQ',
+        'status': 'inactive',
+      });
+      await openCreate(tester);
+      expect(find.widgetWithText(ChoiceTile, 'Lesson l1'), findsOneWidget);
+      expect(find.widgetWithText(ChoiceTile, 'Lesson l2'), findsNothing);
+    });
+
+    testWidgets('an inactive lesson already on a requirement still shows, '
+        'marked inactive, so saving keeps it', (tester) async {
+      await firestore.doc('organizations/org-alpha/safety_learning/l2').set({
+        'organizationId': 'org-alpha',
+        'title': 'Lesson l2',
+        'type': 'video',
+        'contentReference': 'https://youtu.be/dQw4w9WgXcQ',
+        'status': 'inactive',
+      });
+      await seedRequirement(lessons: ['l2']);
+      await openEdit(tester);
+      expect(
+        find.textContaining('not required while inactive'),
+        findsOneWidget,
+      );
+      await tapVisible(tester, find.text('Save'));
+      expect(
+        adminService.updateCalls.single['learningSettings'],
+        contains('l2'),
+      );
     });
 
     testWidgets('the requirement card summarizes per-lesson urgency', (

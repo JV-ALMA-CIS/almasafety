@@ -23,6 +23,7 @@ import '../domain/site.dart';
 import '../../../core/widgets/accent_card.dart';
 import '../../../core/widgets/feature_header.dart';
 import '../../../core/widgets/color_choice_chips.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// Lists the sites belonging to one project. A System Administrator (any
 /// organization) or an [AppRole.siteManager] of THIS organization may
@@ -428,7 +429,7 @@ class _SiteFormDialogState extends State<_SiteFormDialog> {
       ),
     ];
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Site')),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(AppSpacing.md),

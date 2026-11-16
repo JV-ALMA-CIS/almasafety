@@ -73,6 +73,14 @@ class NavSection {
 /// [header] renders above the navigation items in the drawer/rail — e.g. app
 /// branding plus an organization switcher — and is ignored in the flat
 /// [destinations] mode, matching how that mode never had a header slot.
+///
+/// MOBILE (sectioned mode, below [AppConstants.mobileBreakpoint]): the top
+/// bar shows [mobileTitle] and, on a drill-down page, [mobileLeading] (a
+/// back arrow; otherwise the menu button). With [mobileTabs] there is also a
+/// bottom bar of the role's main destinations — shortcuts only; the menu at
+/// the top stays the one full navigation. [selectedTabRoute] picks the
+/// highlighted tab (none when it matches no tab). Tablet and desktop ignore
+/// all of these.
 class ResponsiveScaffold extends StatelessWidget {
   const ResponsiveScaffold({
     super.key,
@@ -86,6 +94,10 @@ class ResponsiveScaffold extends StatelessWidget {
     this.header,
     this.title,
     this.actions,
+    this.mobileTitle,
+    this.mobileLeading,
+    this.mobileTabs,
+    this.selectedTabRoute,
     this.floatingActionButton,
   }) : assert(
          (destinations != null &&
@@ -116,6 +128,13 @@ class ResponsiveScaffold extends StatelessWidget {
 
   final String? title;
   final List<Widget>? actions;
+
+  /// Sectioned mode, mobile width only — see this class's doc comment.
+  final String? mobileTitle;
+  final Widget? mobileLeading;
+  final List<NavSectionEntry>? mobileTabs;
+  final String? selectedTabRoute;
+
   final Widget? floatingActionButton;
 
   @override
@@ -213,8 +232,22 @@ class ResponsiveScaffold extends StatelessWidget {
       ),
     );
 
+    final isMobile = screenSize == ScreenSize.mobile;
+    final tabs = isMobile ? mobileTabs : null;
+    final barTitle = isMobile && mobileTitle != null ? mobileTitle : title;
     final appBar = AppBar(
-      title: title != null ? Text(title!) : null,
+      title: barTitle != null
+          ? Semantics(
+              header: true,
+              child: Text(
+                barTitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            )
+          : null,
+      titleSpacing: isMobile && mobileLeading != null ? 0 : null,
+      leading: isMobile ? mobileLeading : null,
       actions: actions,
       // The drawer icon is supplied automatically by Scaffold whenever a
       // `drawer` is set and the layout isn't already showing it persistently
@@ -254,6 +287,64 @@ class ResponsiveScaffold extends StatelessWidget {
       drawer: Drawer(child: drawerContent),
       body: body,
       floatingActionButton: floatingActionButton,
+      bottomNavigationBar: tabs == null
+          ? null
+          : _BottomTabs(
+              tabs: tabs,
+              selectedRoute: selectedTabRoute,
+              onSelected: onNavSelected!,
+            ),
+    );
+  }
+}
+
+/// The phone's bottom bar of [tabs]. A page that is none of them (reached
+/// from the menu) highlights no tab.
+class _BottomTabs extends StatelessWidget {
+  const _BottomTabs({
+    required this.tabs,
+    required this.selectedRoute,
+    required this.onSelected,
+  });
+
+  final List<NavSectionEntry> tabs;
+  final String? selectedRoute;
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final index = tabs.indexWhere((tab) => tab.route == selectedRoute);
+    final none = index == -1;
+    final theme = Theme.of(context);
+    final brightness = theme.brightness;
+    // NavigationBar always has a selected index; with no matching tab the
+    // first one is "selected" but drawn exactly like the others.
+    final unselectedLabel = theme.textTheme.labelMedium?.copyWith(
+      color: theme.colorScheme.onSurfaceVariant,
+    );
+    return NavigationBar(
+      selectedIndex: none ? 0 : index,
+      indicatorColor: none ? Colors.transparent : null,
+      labelTextStyle: none ? WidgetStatePropertyAll(unselectedLabel) : null,
+      onDestinationSelected: (i) {
+        if (none || tabs[i].route != selectedRoute) onSelected(tabs[i].route);
+      },
+      destinations: [
+        for (final tab in tabs)
+          NavigationDestination(
+            icon: Icon(tab.icon),
+            selectedIcon: none
+                ? Icon(tab.icon, color: theme.colorScheme.onSurfaceVariant)
+                : Icon(
+                    tab.selectedIcon,
+                    color: AppColors.readable(
+                      tab.color ?? AppColors.primaryBright,
+                      brightness,
+                    ),
+                  ),
+            label: tab.label,
+          ),
+      ],
     );
   }
 }

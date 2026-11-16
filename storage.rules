@@ -25,7 +25,11 @@ rules_version = '2';
 // should not need) direct IAM console access just to keep file uploads
 // working. Rather than depend on that fragile, hard-to-diagnose cross-
 // service call for a check that is REDUNDANT with real enforcement anyway,
-// this file now only requires the caller to be signed in.
+// this file now only requires the caller to be signed in — EXCEPT the
+// Safety Learning library folder, which no client may write at all: files
+// are published into it server-side by `publishLearningUpload` after an
+// author check, from the uploader's own `learning_uploads/{uid}/...`
+// staging folder (see those `match` blocks below).
 //
 // THIS IS SAFE because every write that matters is already independently
 // authorized server-side, in the Cloud Functions Admin SDK (which bypasses
@@ -58,14 +62,23 @@ service firebase.storage {
       return request.auth != null;
     }
 
+    // The upload limit — mirrored client-side by `maxLearningUploadBytes`
+    // (lib/features/safety_learning/domain/video_source.dart).
+    function isUnderSizeLimit() {
+      return request.resource.size < 25 * 1024 * 1024;
+    }
+
     match /{allPaths=**} {
       allow read, write: if false;
     }
 
-    match /organizations/{organizationId}/{allPaths=**} {
+    // Every organization folder EXCEPT `safety_learning` (below).
+    match /organizations/{organizationId}/{folder}/{rest=**} {
       // Any signed-in user may read/write here — see this file's header
       // note for why organization isolation is enforced by the callables'
       // Firestore metadata writes, not by a Storage-level membership check.
+      // Rewrites stay allowed: e.g. the offline outbox may re-upload to the
+      // same path after a retry.
       allow read: if isSignedIn();
       // `allow write` covers create/update AND delete — `request.resource`
       // is null on a delete (there is no new resource to size-check), so
@@ -73,8 +86,45 @@ service firebase.storage {
       // null` rather than being evaluated against a null `.size`, which
       // errors rather than returning false.
       allow write: if isSignedIn()
-        && (request.resource == null
-          || request.resource.size < 25 * 1024 * 1024);
+        && folder != 'safety_learning'
+        && (request.resource == null || isUnderSizeLimit());
+    }
+
+    // The Safety Learning library's own files (JVA videos, documents):
+    //   organizations/{organizationId}/safety_learning/{uploadId}/{fileName}
+    //
+    // READ-ONLY for every client. Storage Rules here cannot tell an Admin
+    // or Site Manager from any other signed-in user (no Firestore lookup —
+    // see this file's header — and no custom claims), so files reach this
+    // folder ONLY through `publishLearningUpload`
+    // (`learning_upload_callable.ts`), which checks the caller is a library
+    // author for the organization and copies their staged upload in with
+    // the Admin SDK. No client can create, overwrite or delete a training
+    // file here.
+    match /organizations/{organizationId}/safety_learning/{uploadId}/{fileName} {
+      allow read: if isSignedIn();
+    }
+
+    // A library author's own staging area for an upload awaiting
+    // `publishLearningUpload`:
+    //   learning_uploads/{uid}/{uploadId}/{fileName}
+    // Scoped to the uploader by `request.auth.uid` alone (no Firestore
+    // lookup needed): only they can create, read or delete their staged
+    // files. Same size limit and file types as the library; never an
+    // overwrite. Anything left here is visible to no one else and is
+    // deleted when published.
+    match /learning_uploads/{uid}/{uploadId}/{fileName} {
+      function isUploader() {
+        return request.auth != null && request.auth.uid == uid;
+      }
+      allow read, delete: if isUploader();
+      allow create: if isUploader()
+        && resource == null
+        && isUnderSizeLimit()
+        && request.resource.contentType.matches(
+          'video/.*|image/(png|jpeg)|application/pdf|application/msword|'
+          + 'application/vnd[.]ms-(powerpoint|excel)|'
+          + 'application/vnd[.]openxmlformats-officedocument[.].*');
     }
   }
 }

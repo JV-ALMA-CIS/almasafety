@@ -17,6 +17,7 @@ import '../domain/project.dart';
 import '../domain/site.dart';
 import '../../../core/widgets/feature_header.dart';
 import '../../../core/widgets/person_avatar.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// Shows this site's workforce grouped by the real operational hierarchy —
 /// **Foreman -> Crew** — rather than one flat list of names, and lets an
@@ -507,7 +508,7 @@ class _CrewScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Crew')),
       body: ListView(
         padding: const EdgeInsets.all(AppSpacing.md),
         children: [

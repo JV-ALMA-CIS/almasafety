@@ -127,14 +127,16 @@ class FormSection extends StatelessWidget {
               children: [
                 Icon(icon, size: 20, color: color),
                 const SizedBox(width: AppSpacing.sm),
-                Text(
-                  title,
-                  style: AppTextStyles.label.copyWith(
-                    color: AppColors.readable(
-                      color,
-                      Theme.of(context).brightness,
+                Flexible(
+                  child: Text(
+                    title,
+                    style: AppTextStyles.label.copyWith(
+                      color: AppColors.readable(
+                        color,
+                        Theme.of(context).brightness,
+                      ),
+                      fontSize: 14,
                     ),
-                    fontSize: 14,
                   ),
                 ),
               ],

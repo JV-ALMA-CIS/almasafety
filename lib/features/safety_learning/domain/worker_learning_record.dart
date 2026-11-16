@@ -37,7 +37,9 @@ class WorkerLearningRecord {
     this.assignedAt,
     this.startedAt,
     this.completedAt,
+    this.contentCompletedAt,
     this.knowledgeCheckResult,
+    this.contentCompletedFlag = false,
   });
 
   final String id;
@@ -48,6 +50,23 @@ class WorkerLearningRecord {
   final DateTime? assignedAt;
   final DateTime? startedAt;
   final DateTime? completedAt;
+
+  /// When the content step — watching the video, reading the document —
+  /// was recorded as done (the minimum engagement time had passed). Set
+  /// before [completedAt] when the item also has a mandatory quiz, so
+  /// "video watched, quiz outstanding" is a real, persisted state. Absent
+  /// on records written before this existed.
+  final DateTime? contentCompletedAt;
+
+  /// Whether the content step is done: recorded, or the whole item is.
+  bool get contentCompleted =>
+      contentCompletedAt != null ||
+      contentCompletedFlag ||
+      status == WorkerLearningStatus.completed;
+
+  /// Set for a crew row, where the server reports only a yes/no instead of
+  /// [contentCompletedAt].
+  final bool contentCompletedFlag;
 
   /// Only present when the associated [SafetyLearning.type] is
   /// [SafetyLearningType.knowledgeCheck] and the worker has completed it.
@@ -97,6 +116,8 @@ class WorkerLearningRecord {
       assignedAt: (data['assignedAt'] as Timestamp?)?.toDate(),
       startedAt: (data['startedAt'] as Timestamp?)?.toDate(),
       completedAt: (data['completedAt'] as Timestamp?)?.toDate(),
+      contentCompletedAt: (data['contentCompletedAt'] as Timestamp?)?.toDate(),
+      contentCompletedFlag: data['contentCompleted'] == true,
       knowledgeCheckResult: rawKnowledgeCheckResult is Map<String, dynamic>
           ? KnowledgeCheckResult.fromMap(rawKnowledgeCheckResult)
           : null,

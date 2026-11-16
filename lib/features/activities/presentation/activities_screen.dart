@@ -23,6 +23,7 @@ import '../../../core/widgets/feature_header.dart';
 import '../../../core/widgets/accent_card.dart';
 import '../../../core/widgets/status_badge.dart';
 import '../../pre_start_checks/presentation/pre_start_visuals.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// Lists the activities belonging to one site and lets an authorized admin
 /// create or edit one.
@@ -386,7 +387,7 @@ class _ActivityFormDialogState extends State<_ActivityFormDialog> {
       ),
     ];
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Activity')),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(AppSpacing.md),

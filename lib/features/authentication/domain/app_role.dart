@@ -120,6 +120,18 @@ enum AppRole {
   /// (PROJECT_CONTEXT.md §4, §12).
   bool get canManageSafetyLearningLibrary => this == AppRole.admin;
 
+  /// Whether this role may add, edit, deactivate and set quizzes on VIDEO
+  /// learning items (Safety Videos) — organization-wide, not just their own
+  /// sites. Every other learning type stays [canManageSafetyLearningLibrary]
+  /// only. Mirrors `requireLibraryAuthor` in `safety_learning_callable.ts`,
+  /// which is the real authority: this only decides what the UI offers.
+  bool get canAuthorSafetyVideos => switch (this) {
+    AppRole.admin => true,
+    AppRole.siteManager => true,
+    AppRole.foreman => false,
+    AppRole.worker => false,
+  };
+
   /// Whether this role manages the company-wide Safety Meeting Point
   /// library — [admin] only; deliberately not delegated to [siteManager]
   /// (PROJECT_CONTEXT.md §4).

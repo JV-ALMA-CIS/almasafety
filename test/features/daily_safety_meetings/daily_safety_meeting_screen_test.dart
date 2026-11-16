@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:jva_safety/core/errors/app_exception.dart';
+import 'package:jva_safety/core/reports/pdf_report.dart';
+import 'package:jva_safety/core/reports/print_report_button.dart';
 import 'package:jva_safety/core/widgets/choice_list.dart';
 import 'package:jva_safety/core/services/firestore_service.dart';
 import 'package:jva_safety/core/services/session_controller.dart';
@@ -26,6 +28,7 @@ import 'package:jva_safety/features/daily_safety_meetings/data/meeting_attendanc
 import 'package:jva_safety/features/daily_safety_meetings/data/meeting_concern_repository.dart';
 import 'package:jva_safety/features/daily_safety_meetings/data/meeting_concern_service.dart';
 import 'package:jva_safety/features/daily_safety_meetings/data/meeting_evidence_repository.dart';
+import 'package:jva_safety/features/daily_safety_meetings/data/meeting_foreman_point_repository.dart';
 import 'package:jva_safety/features/daily_safety_meetings/data/meeting_point_note_repository.dart';
 import 'package:jva_safety/features/daily_safety_meetings/presentation/daily_safety_meeting_screen.dart';
 import 'package:jva_safety/features/organizations/data/site_repository.dart';
@@ -80,9 +83,61 @@ class _FakeMeetingService extends DailySafetyMeetingService {
   final List<({PreStartOutcome? outcome, String? note})> crewOutcomes = [];
   AppException? completeError;
 
+  /// Every `saveMeetingForemanPoint` / `removeMeetingForemanPoint` call.
+  final List<Map<String, String?>> foremanPointSaves = [];
+  final List<String> foremanPointRemovals = [];
+
+  @override
+  Future<void> saveMeetingForemanPoint({
+    required String organizationId,
+    required String meetingId,
+    required String pointId,
+    required String title,
+    String? note,
+    String? activityId,
+  }) async {
+    foremanPointSaves.add({
+      'meetingId': meetingId,
+      'pointId': pointId,
+      'title': title,
+      'note': note,
+      'activityId': activityId,
+    });
+  }
+
+  @override
+  Future<void> removeMeetingForemanPoint({
+    required String organizationId,
+    required String meetingId,
+    required String pointId,
+  }) async {
+    foremanPointRemovals.add(pointId);
+  }
+
   /// What `getMyMeetingLearningGate` reports as the Foreman's own
   /// outstanding "Needed today" lessons.
   List<({String learningId, String title})> gateOutstanding = const [];
+
+  /// What `getMeetingPointSuggestions` returns. Null (the default) behaves
+  /// as if the server could not be reached, so the screen falls back to
+  /// matching today's activities only.
+  List<({String pointId, List<String> reasons})>? suggestions;
+  final List<String> suggestionSites = [];
+
+  @override
+  Future<List<({String pointId, List<String> reasons})>>
+  getMeetingPointSuggestions({
+    required String organizationId,
+    required String siteId,
+    required List<String> activityIds,
+  }) async {
+    suggestionSites.add(siteId);
+    final result = suggestions;
+    if (result == null) {
+      throw const DataException('Cannot reach the safety service.');
+    }
+    return result;
+  }
 
   @override
   Future<List<({String learningId, String title})>> getMyMeetingLearningGate({
@@ -261,6 +316,13 @@ void main() {
 
   setUp(() {
     firestore = FakeFirebaseFirestore();
+    // A tall screen, so the whole meeting (which now also lists what is
+    // still open from earlier) is built without scrolling in most tests.
+    final view =
+        TestWidgetsFlutterBinding.instance.platformDispatcher.implicitView!;
+    view.physicalSize = const Size(1000, 3200);
+    view.devicePixelRatio = 1;
+    addTearDown(view.reset);
   });
 
   Future<void> seedSite(String id, {String name = 'Test Site'}) async {
@@ -382,6 +444,7 @@ void main() {
     _FakeConcernService? concernService,
     _FakeAttendanceService? attendanceService,
     _FakeApprovalService? approvalService,
+    ReportPrinter? printReport,
   }) {
     return ChangeNotifierProvider<SessionController>(
       create: (_) => _FakeSession(role: role, siteIds: siteIds),
@@ -435,6 +498,12 @@ void main() {
                   organizationId: 'org-alpha',
                   meetingId: meetingId,
                 ),
+            foremanPointRepositoryBuilder: (meetingId) =>
+                MeetingForemanPointRepository(
+                  firestoreService: FirestoreService(firestore: firestore),
+                  organizationId: 'org-alpha',
+                  meetingId: meetingId,
+                ),
             evidenceRepositoryBuilder: (meetingId) => MeetingEvidenceRepository(
               firestoreService: FirestoreService(firestore: firestore),
               organizationId: 'org-alpha',
@@ -449,6 +518,7 @@ void main() {
               organizationId: 'org-alpha',
             ),
             approvalService: approvalService ?? _FakeApprovalService(),
+            printReport: printReport,
           ),
         ),
       ),
@@ -574,14 +644,15 @@ void main() {
     ) async {
       await seedSite('site-1');
       await seedActivity('activity-1');
-      for (var i = 1; i <= 12; i++) {
+      // Enough points to run well past the bottom of the (tall) test screen.
+      for (var i = 1; i <= 60; i++) {
         await seedMeetingPoint('point-$i', title: 'Point $i');
       }
 
       await tester.pumpWidget(wrap(role: AppRole.foreman));
       await tester.pumpAndSettle();
 
-      final point = find.widgetWithText(ChoiceTile, 'Point 9');
+      final point = find.widgetWithText(ChoiceTile, 'Point 55');
       await tester.scrollUntilVisible(
         point,
         300,
@@ -1268,7 +1339,8 @@ void main() {
       (tester) async {
         await seedSite('site-1');
         await seedActivity('activity-1');
-        await seedMeetingPoint('point-1');
+        // Titled apart from the lesson, which is what must disappear.
+        await seedMeetingPoint('point-1', title: 'PPE');
         // The server still lists l1 (fetched before completion); the
         // Foreman's completed record drops it live.
         await seedWorkerLearningRecord(foremanUid, 'l1', status: 'completed');
@@ -1373,6 +1445,565 @@ void main() {
       // No in-progress meeting workspace should render for the org-alpha
       // foreman — they should still see the Start view.
       expect(find.text("Start Today's Meeting"), findsOneWidget);
+    });
+  });
+
+  // ---- Milestone 1: a meeting record you can trust ----
+
+  Future<void> seedConcern(String meetingId, String id, String text) {
+    return firestore
+        .doc(
+          'organizations/org-alpha/daily_safety_meetings/$meetingId/'
+          'concerns/$id',
+        )
+        .set({
+          'meetingId': meetingId,
+          'organizationId': 'org-alpha',
+          'siteId': 'site-1',
+          'description': text,
+          'category': 'equipment',
+          'reportedBy': 'O9755kUSpMUZcJWARnsmuCzo8d72',
+          'status': 'open',
+          'createdAt': Timestamp.now(),
+        });
+  }
+
+  Future<void> seedCorrectiveAction(
+    String id, {
+    required String title,
+    String status = 'open',
+    String siteId = 'site-1',
+  }) {
+    return firestore.doc('organizations/org-alpha/corrective_actions/$id').set({
+      'organizationId': 'org-alpha',
+      'projectId': 'project-1',
+      'siteId': siteId,
+      'meetingId': 'old-meeting',
+      'concernId': null,
+      'hazardId': null,
+      'incidentId': null,
+      'title': title,
+      'description': 'Fix it',
+      'assignedTo': 'worker-a',
+      'assignedBy': 'O9755kUSpMUZcJWARnsmuCzo8d72',
+      'dueDate': Timestamp.fromDate(DateTime(2026, 11, 2)),
+      'status': status,
+      'createdAt': Timestamp.now(),
+    });
+  }
+
+  group('DailySafetyMeetingScreen (site picker)', () {
+    testWidgets('a foreman at one site sees no site picker', (tester) async {
+      await seedSite('site-1');
+      await seedActivity('activity-1');
+
+      await tester.pumpWidget(wrap(role: AppRole.foreman));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('tap to change'), findsNothing);
+    });
+
+    testWidgets('a foreman at several sites picks which site the meeting is '
+        'for, and starts it there', (tester) async {
+      await seedSite('site-1', name: 'Rosslyn Ridge');
+      await seedSite('site-2', name: 'Gigiri Residence');
+      await seedActivity('activity-1', name: 'Roofing');
+      await seedActivity('activity-2', siteId: 'site-2', name: 'Plastering');
+      final service = _FakeMeetingService();
+
+      await tester.pumpWidget(
+        wrap(
+          role: AppRole.foreman,
+          siteIds: const ['site-1', 'site-2'],
+          meetingService: service,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Starts on the first site.
+      expect(find.text('Roofing'), findsOneWidget);
+      expect(find.text('Plastering'), findsNothing);
+
+      await tester.tap(find.textContaining('tap to change'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Gigiri Residence'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Plastering'), findsOneWidget);
+      expect(find.text('Roofing'), findsNothing);
+
+      await scrollAndTap(tester, find.text("Start Today's Meeting"));
+      await tester.pumpAndSettle();
+      expect(service.createCalls.single['siteId'], 'site-2');
+      expect(service.createCalls.single['activityIds'], ['activity-2']);
+      expect(service.suggestionSites.last, 'site-2');
+    });
+  });
+
+  group('DailySafetyMeetingScreen (suggested points)', () {
+    testWidgets("shows the server's suggestions in its order, with the "
+        'reasons, and leaves out points it did not suggest', (tester) async {
+      await seedSite('site-1');
+      await seedActivity('activity-1');
+      await seedMeetingPoint('point-ppe', title: 'PPE');
+      await seedMeetingPoint('point-height', title: 'Working at Height');
+      await seedMeetingPoint('point-dig', title: 'Excavation');
+      final service = _FakeMeetingService()
+        ..suggestions = const [
+          (pointId: 'point-height', reasons: ["Today's work: Roofing"]),
+          (
+            pointId: 'point-ppe',
+            reasons: ['General safety point for any work'],
+          ),
+        ];
+
+      await tester.pumpWidget(
+        wrap(role: AppRole.foreman, meetingService: service),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining("Today's work: Roofing"), findsOneWidget);
+      expect(
+        find.textContaining('General safety point for any work'),
+        findsOneWidget,
+      );
+      expect(find.text('Excavation'), findsNothing);
+      final height = tester.getTopLeft(find.text('Working at Height')).dy;
+      final ppe = tester.getTopLeft(find.text('PPE')).dy;
+      expect(height, lessThan(ppe));
+    });
+  });
+
+  group('DailySafetyMeetingScreen (attendance — adding a site worker)', () {
+    testWidgets("a worker from the same site who is not on today's "
+        'activities can be added to the roster', (tester) async {
+      await seedActivity('activity-1');
+      await seedAssignment('activity-1', 'worker-a');
+      await seedMeeting('meeting-1', activityIds: ['activity-1']);
+
+      await tester.pumpWidget(
+        wrap(
+          role: AppRole.foreman,
+          approvalService: _FakeApprovalService(
+            users: const [
+              OrganizationUser(
+                uid: 'worker-a',
+                name: 'Alex Worker',
+                email: 'a@example.com',
+                accountStatus: AccountStatus.active,
+                role: AppRole.worker,
+                siteIds: ['site-1'],
+              ),
+              OrganizationUser(
+                uid: 'worker-b',
+                name: 'Baraka Mason',
+                email: 'b@example.com',
+                accountStatus: AccountStatus.active,
+                role: AppRole.worker,
+                siteIds: ['site-1'],
+              ),
+              // Another site: never offered.
+              OrganizationUser(
+                uid: 'worker-c',
+                name: 'Chebet Elsewhere',
+                email: 'c@example.com',
+                accountStatus: AccountStatus.active,
+                role: AppRole.worker,
+                siteIds: ['site-2'],
+              ),
+            ],
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Baraka Mason'), findsNothing);
+      await scrollAndTap(
+        tester,
+        find.text('Add another worker from this site'),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Chebet Elsewhere'), findsNothing);
+      // Alex is already on the roster, so only Baraka is offered.
+      expect(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.text('Alex Worker'),
+        ),
+        findsNothing,
+      );
+      await tester.tap(find.text('Baraka Mason'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(find.text('Baraka Mason'), findsOneWidget);
+      expect(find.text('0 of 2 recorded'), findsOneWidget);
+    });
+
+    testWidgets('a site worker already marked stays on the roster after a '
+        "reload, though not assigned to today's activities", (tester) async {
+      await seedActivity('activity-1');
+      await seedAssignment('activity-1', 'worker-a');
+      await seedMeeting('meeting-1', activityIds: ['activity-1']);
+      await firestore
+          .doc(
+            'organizations/org-alpha/daily_safety_meetings/meeting-1/'
+            'attendance/worker-b',
+          )
+          .set({
+            'meetingId': 'meeting-1',
+            'organizationId': 'org-alpha',
+            'siteId': 'site-1',
+            'workerId': 'worker-b',
+            'status': 'present',
+            'recordedAt': Timestamp.now(),
+          });
+
+      await tester.pumpWidget(wrap(role: AppRole.foreman));
+      await tester.pumpAndSettle();
+
+      expect(find.text('worker-b'), findsOneWidget);
+      expect(find.text('1 of 2 recorded'), findsOneWidget);
+    });
+  });
+
+  group('DailySafetyMeetingScreen (completed meeting)', () {
+    testWidgets('a concern on a completed meeting can still get a corrective '
+        'action, but cannot be edited or removed', (tester) async {
+      await seedMeeting(
+        'meeting-1',
+        activityIds: ['activity-1'],
+        status: 'completed',
+      );
+      await seedConcern('meeting-1', 'c1', 'Ladder feet worn');
+
+      await tester.pumpWidget(wrap(role: AppRole.foreman));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('Ladder feet worn'),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Create Corrective Action'), findsOneWidget);
+      expect(find.widgetWithText(OutlinedButton, 'Edit'), findsNothing);
+      expect(find.widgetWithText(OutlinedButton, 'Remove'), findsNothing);
+    });
+
+    testWidgets('the Foreman can print their own completed meeting', (
+      tester,
+    ) async {
+      await seedSite('site-1');
+      await seedActivity('activity-1');
+      await seedMeeting(
+        'meeting-1',
+        activityIds: ['activity-1'],
+        status: 'completed',
+      );
+      String? printedName;
+
+      await tester.pumpWidget(
+        wrap(
+          role: AppRole.foreman,
+          printReport: ({required name, required build}) async {
+            printedName = name;
+          },
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Print / PDF'));
+      await tester.pumpAndSettle();
+
+      expect(printedName, startsWith('Daily safety meeting - Test Site'));
+    });
+
+    testWidgets('an in-progress meeting has no print button', (tester) async {
+      await seedMeeting('meeting-1', activityIds: ['activity-1']);
+
+      await tester.pumpWidget(wrap(role: AppRole.foreman));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(PrintReportButton), findsNothing);
+    });
+  });
+
+  group('DailySafetyMeetingScreen (still open from earlier)', () {
+    testWidgets("lists open concerns from the Foreman's earlier meetings at "
+        "the site and the site's unfinished corrective actions", (
+      tester,
+    ) async {
+      await seedSite('site-1');
+      await seedActivity('activity-1');
+      await seedMeeting(
+        'old-meeting',
+        activityIds: ['activity-1'],
+        status: 'completed',
+        date: '2026-10-20',
+      );
+      await seedConcern('old-meeting', 'c1', 'Scaffold tag missing');
+      // Another site's meeting never counts.
+      await seedMeeting(
+        'other-site',
+        siteId: 'site-2',
+        status: 'completed',
+        date: '2026-10-21',
+      );
+      await seedConcern('other-site', 'c2', 'Elsewhere issue');
+      await seedCorrectiveAction('ca-open', title: 'Replace ladder');
+      await seedCorrectiveAction(
+        'ca-done',
+        title: 'Old finished job',
+        status: 'completed',
+      );
+      await seedCorrectiveAction(
+        'ca-far',
+        title: 'Other site job',
+        siteId: 'site-2',
+      );
+
+      await tester.pumpWidget(wrap(role: AppRole.foreman));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Still open from earlier (2)'), findsOneWidget);
+      await tester.tap(find.text('Still open from earlier (2)'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Equipment: Scaffold tag missing'), findsOneWidget);
+      expect(find.text('Raised at your meeting on 2026-10-20'), findsOneWidget);
+      expect(find.text('Replace ladder'), findsOneWidget);
+      expect(find.textContaining('Elsewhere issue'), findsNothing);
+      expect(find.text('Old finished job'), findsNothing);
+      expect(find.text('Other site job'), findsNothing);
+    });
+
+    testWidgets('says so when nothing is open', (tester) async {
+      await seedSite('site-1');
+      await seedActivity('activity-1');
+
+      await tester.pumpWidget(wrap(role: AppRole.foreman));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Nothing open from earlier meetings at this site.'),
+        findsOneWidget,
+      );
+    });
+  });
+  group("DailySafetyMeetingScreen (the Foreman's own points)", () {
+    Future<void> seedForemanPoint(
+      String id, {
+      String title = 'Wet roof sheets',
+      String? note = 'No walking on wet sheets.',
+      String? activityId = 'activity-1',
+    }) {
+      return firestore
+          .doc(
+            'organizations/org-alpha/daily_safety_meetings/meeting-1/'
+            'foreman_points/$id',
+          )
+          .set({
+            'meetingId': 'meeting-1',
+            'organizationId': 'org-alpha',
+            'siteId': 'site-1',
+            'title': title,
+            'note': note,
+            'activityId': activityId,
+            'recordedBy': 'O9755kUSpMUZcJWARnsmuCzo8d72',
+            'createdAt': Timestamp.now(),
+          });
+    }
+
+    testWidgets('the Foreman types a point of their own with what was '
+        'discussed, about one of today\'s activities', (tester) async {
+      await seedSite('site-1');
+      await seedActivity('activity-1');
+      await seedMeeting('meeting-1', activityIds: ['activity-1']);
+      final service = _FakeMeetingService();
+
+      await tester.pumpWidget(
+        wrap(role: AppRole.foreman, meetingService: service),
+      );
+      await tester.pumpAndSettle();
+
+      await tapVisible(tester, find.text('Type your own point'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.widgetWithText(TextFormField, 'Safety point'),
+        '  Wet roof sheets after rain  ',
+      );
+      await tester.enterText(
+        find.widgetWithText(TextFormField, 'What was discussed (optional)'),
+        'Crew waits until the sheets are dry.',
+      );
+      await tester.tap(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.text('Roofing'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Save point'));
+      await tester.pumpAndSettle();
+
+      final saved = service.foremanPointSaves.single;
+      expect(saved['meetingId'], 'meeting-1');
+      expect(saved['title'], 'Wet roof sheets after rain');
+      expect(saved['note'], 'Crew waits until the sheets are dry.');
+      expect(saved['activityId'], 'activity-1');
+      // A fresh id chosen on the phone, safe to send twice.
+      expect(saved['pointId'], matches(RegExp(r'^[A-Za-z0-9]{20}$')));
+    });
+
+    testWidgets('the point needs a title; what was discussed is optional', (
+      tester,
+    ) async {
+      await seedSite('site-1');
+      await seedActivity('activity-1');
+      await seedMeeting('meeting-1', activityIds: ['activity-1']);
+      final service = _FakeMeetingService();
+
+      await tester.pumpWidget(
+        wrap(role: AppRole.foreman, meetingService: service),
+      );
+      await tester.pumpAndSettle();
+
+      await tapVisible(tester, find.text('Type your own point'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Save point'));
+      await tester.pumpAndSettle();
+      expect(find.text('Type the safety point.'), findsOneWidget);
+      expect(service.foremanPointSaves, isEmpty);
+
+      await tester.enterText(
+        find.widgetWithText(TextFormField, 'Safety point'),
+        'Housekeeping',
+      );
+      await tester.tap(find.text('Save point'));
+      await tester.pumpAndSettle();
+      expect(service.foremanPointSaves.single['note'], isNull);
+      expect(service.foremanPointSaves.single['activityId'], isNull);
+    });
+
+    testWidgets('shows the point with its activity and note, counts it, and '
+        'lets the meeting complete with no library point', (tester) async {
+      await seedSite('site-1');
+      await seedActivity('activity-1');
+      await seedMeeting('meeting-1', activityIds: ['activity-1']);
+      await seedForemanPoint('pointAbc12345');
+      final service = _FakeMeetingService();
+
+      await tester.pumpWidget(
+        wrap(role: AppRole.foreman, meetingService: service),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Wet roof sheets'), findsOneWidget);
+      expect(find.text('Your own point · Roofing'), findsOneWidget);
+      expect(find.text('No walking on wet sheets.'), findsOneWidget);
+      expect(find.text('1 meeting point'), findsOneWidget);
+      expect(
+        find.textContaining('1 point of your own is about this'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('At least one activity and one meeting point'),
+        findsNothing,
+      );
+
+      await tapVisible(
+        tester,
+        find.widgetWithText(ElevatedButton, 'Complete Meeting'),
+      );
+      await tester.pumpAndSettle();
+      await chooseCrewResult(tester, 'GO');
+      expect(service.completeCalls, ['meeting-1']);
+    });
+
+    testWidgets('editing keeps the same point; removing sends its id', (
+      tester,
+    ) async {
+      await seedSite('site-1');
+      await seedActivity('activity-1');
+      await seedMeeting('meeting-1', activityIds: ['activity-1']);
+      await seedForemanPoint('pointAbc12345');
+      final service = _FakeMeetingService();
+
+      await tester.pumpWidget(
+        wrap(role: AppRole.foreman, meetingService: service),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('Edit'));
+      await tester.pumpAndSettle();
+      expect(find.text('Edit your point'), findsOneWidget);
+      await tester.enterText(
+        find.widgetWithText(TextFormField, 'What was discussed (optional)'),
+        'Sheets checked dry at 10:00.',
+      );
+      await tester.tap(find.text('Save point'));
+      await tester.pumpAndSettle();
+      expect(service.foremanPointSaves.single, {
+        'meetingId': 'meeting-1',
+        'pointId': 'pointAbc12345',
+        'title': 'Wet roof sheets',
+        'note': 'Sheets checked dry at 10:00.',
+        'activityId': 'activity-1',
+      });
+
+      final remove = find.descendant(
+        of: find.ancestor(
+          of: find.text('Wet roof sheets'),
+          matching: find.byType(Card),
+        ),
+        matching: find.byTooltip('Remove'),
+      );
+      await tester.tap(remove);
+      await tester.pumpAndSettle();
+      expect(service.foremanPointRemovals, ['pointAbc12345']);
+    });
+
+    testWidgets('once completed, the point is read-only but a new one can '
+        'still be added', (tester) async {
+      await seedSite('site-1');
+      await seedActivity('activity-1');
+      await seedMeeting(
+        'meeting-1',
+        activityIds: ['activity-1'],
+        status: 'completed',
+      );
+      await seedForemanPoint('pointAbc12345');
+
+      await tester.pumpWidget(wrap(role: AppRole.foreman));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Wet roof sheets'), findsOneWidget);
+      expect(find.byTooltip('Edit'), findsNothing);
+      expect(find.text('Type your own point'), findsOneWidget);
+    });
+
+    testWidgets('a library point shows an obvious box for what was '
+        'discussed', (tester) async {
+      await seedSite('site-1');
+      await seedActivity('activity-1');
+      await seedMeetingPoint('point-1');
+      await seedMeeting(
+        'meeting-1',
+        activityIds: ['activity-1'],
+        meetingPointIds: ['point-1'],
+      );
+
+      await tester.pumpWidget(wrap(role: AppRole.foreman));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Add what was discussed'));
+      await tester.pumpAndSettle();
+      expect(
+        find.widgetWithText(TextField, 'What was discussed'),
+        findsOneWidget,
+      );
     });
   });
 }

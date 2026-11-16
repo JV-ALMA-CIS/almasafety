@@ -19,6 +19,7 @@ import '../data/inspection_service.dart';
 import '../domain/checklist_text.dart';
 import '../domain/inspection.dart';
 import 'inspection_style.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// The inspection checklists (Site Manager/Admin): install the standard
 /// ones from the Safety Plan, switch any on or off, edit them, choose which
@@ -101,7 +102,7 @@ class _InspectionTemplatesScreenState extends State<InspectionTemplatesScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Checklists')),
       body: LiveStreamBuilder<List<InspectionTemplate>>(
         streamKey: widget.organizationId,
         stream: () => widget.repository.watchTemplates(),
@@ -767,7 +768,7 @@ class _ChecklistLibraryScreenState extends State<ChecklistLibraryScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Checklist Library')),
       body: FutureBuilder<List<StandardChecklist>>(
         future: _library,
         builder: (context, snapshot) {

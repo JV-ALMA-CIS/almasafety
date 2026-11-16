@@ -5,15 +5,19 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../core/services/firestore_service.dart';
 import '../core/services/session_controller.dart';
-import '../core/services/theme_controller.dart';
 import '../core/theme/app_colors.dart';
 import '../core/widgets/dashboard_header.dart';
 import '../core/widgets/responsive_scaffold.dart';
+import '../features/activities/domain/activity.dart';
 import '../features/authentication/domain/app_role.dart';
 import '../features/daily_safety_meetings/presentation/daily_safety_meeting_history_screen.dart';
 import '../features/notifications/data/notification_repository.dart';
 import '../features/notifications/domain/app_notification.dart';
+import '../features/organizations/domain/organization.dart';
+import '../features/organizations/domain/project.dart';
+import '../features/organizations/domain/site.dart';
 import 'app_routes.dart';
+import '../core/constants/app_constants.dart';
 
 /// Wraps the currently routed screen with the responsive navigation shell.
 ///
@@ -39,6 +43,15 @@ import 'app_routes.dart';
 /// its own (the sidebar already names the app) — just a drawer toggle where
 /// needed and the global actions (Meeting History where relevant,
 /// Notifications, Appearance, Sign Out).
+///
+/// The top bar carries only Notifications (plus, for a Foreman on Daily
+/// Safety Meetings, Meeting History). Appearance and Sign Out live in
+/// Settings, the last entry of the menu.
+///
+/// MOBILE (below the 600px breakpoint) the top bar also names the page
+/// ([titleFor]) and shows a back arrow on a drill-down page ([parentOf]) —
+/// the menu button otherwise — and a bottom bar holds the role's main
+/// destinations ([tabsFor]). Tablet and desktop keep the drawer / sidebar.
 class AppShell extends StatelessWidget {
   const AppShell({super.key, required this.child});
 
@@ -46,7 +59,9 @@ class AppShell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final location = GoRouterState.of(context).uri.toString();
+    final routerState = GoRouterState.of(context);
+    final location = routerState.uri.toString();
+    final matchedLocation = routerState.matchedLocation;
     final sessionController = context.watch<SessionController>();
     final profile = sessionController.profile;
     final isPlatformAdministrator = profile?.isPlatformAdministrator ?? false;
@@ -82,7 +97,43 @@ class AppShell extends StatelessWidget {
       isForeman: membershipRole == AppRole.foreman,
     );
 
+    final parent = parentOf(matchedLocation, routerState.extra);
+    final tabs = tabsFor(
+      canManageOrgContent: canManageOrgContent,
+      isForeman: membershipRole == AppRole.foreman,
+    );
+    final showMeetingHistory =
+        location == AppRoutes.dailySafetyMeetings &&
+        membershipRole == AppRole.foreman &&
+        sessionController.activeOrganizationId != null;
+    final meetingHistory = IconButton(
+      tooltip: 'Meeting History',
+      icon: const Icon(Icons.history_outlined),
+      onPressed: () => Navigator.of(context, rootNavigator: true).push(
+        MaterialPageRoute<void>(
+          builder: (_) => DailySafetyMeetingHistoryScreen(
+            organizationId: sessionController.activeOrganizationId!,
+          ),
+        ),
+      ),
+    );
+    final notificationBell =
+        sessionController.activeOrganizationId != null && profile?.uid != null
+        ? _NotificationBellAction(
+            organizationId: sessionController.activeOrganizationId!,
+            uid: profile!.uid,
+          )
+        : null;
+
     return ResponsiveScaffold(
+      mobileTitle: titleFor(matchedLocation),
+      mobileLeading: parent == null
+          ? null
+          : BackButton(
+              onPressed: () => context.go(parent.route, extra: parent.extra),
+            ),
+      mobileTabs: tabs,
+      selectedTabRoute: tabRouteFor(matchedLocation),
       header: _SidebarHeader(
         userName: profile?.name,
         role: isPlatformAdministrator
@@ -105,50 +156,185 @@ class AppShell extends StatelessWidget {
         // role a Foreman actually sees — [AppRoutes.dailySafetyMeetings]
         // also serves [AdminDailySafetyMeetingsScreen] to a Site Manager,
         // which has no foreman-workspace history concept to jump to.
-        if (location == AppRoutes.dailySafetyMeetings &&
-            membershipRole == AppRole.foreman &&
-            sessionController.activeOrganizationId != null)
-          IconButton(
-            tooltip: 'Meeting History',
-            icon: const Icon(Icons.history_outlined),
-            onPressed: () => Navigator.of(context, rootNavigator: true).push(
-              MaterialPageRoute<void>(
-                builder: (_) => DailySafetyMeetingHistoryScreen(
-                  organizationId: sessionController.activeOrganizationId!,
-                ),
-              ),
-            ),
-          ),
-        if (sessionController.activeOrganizationId != null &&
-            profile?.uid != null)
-          _NotificationBellAction(
-            organizationId: sessionController.activeOrganizationId!,
-            uid: profile!.uid,
-          ),
-        // Lets a user override the app's light/dark appearance in-app,
-        // independent of their device's own OS/browser setting — see
-        // ThemeController's doc comment for why this exists (desktop
-        // Firefox in particular does not forward its own "Theme" setting
-        // to prefers-color-scheme, only the OS-wide setting does, so users
-        // sharing one device with varying OS themes had no in-app way to
-        // pick dark mode for just this app).
-        const _ThemeModeAction(),
-        // The only way out of a signed-in session anywhere in the normal
-        // app shell — previously `SessionController.signOut` was reachable
-        // only from the pending-approval/access-denied screens, so a
-        // successfully signed-in user (e.g. testing multiple accounts in
-        // the same browser) had no way to switch accounts short of clearing
-        // browser storage. Always shown, regardless of role/organization.
-        IconButton(
-          tooltip: 'Sign Out',
-          icon: const Icon(Icons.logout_outlined),
-          onPressed: () => sessionController.signOut(),
-        ),
+        if (showMeetingHistory) meetingHistory,
+        ?notificationBell,
       ],
       // Shows "no signal" / "saved on this phone" only when it applies.
       body: OutboxStatusBar(child: child),
     );
   }
+
+  /// The page title the mobile top bar shows for [matchedLocation] — the
+  /// same names the navigation menu uses.
+  static String titleFor(String matchedLocation) => switch (matchedLocation) {
+    AppRoutes.dashboard => 'Dashboard',
+    AppRoutes.projects => 'Projects',
+    AppRoutes.manageSites => 'Sites',
+    AppRoutes.manageActivities => 'Activities',
+    AppRoutes.manageActivityWorkers => 'Activity Workers',
+    AppRoutes.manageSiteWorkers => 'Site Workers',
+    AppRoutes.sites => 'Sites',
+    AppRoutes.activities => 'Activities',
+    AppRoutes.reportSafetyIssue => 'Report a Safety Issue',
+    AppRoutes.hazards => 'Hazards',
+    AppRoutes.incidents => 'Incidents',
+    AppRoutes.inspections => 'Inspections',
+    AppRoutes.riskAssessments => 'Risk Assessments',
+    AppRoutes.manHours => 'Monthly Man-Hours',
+    AppRoutes.correctiveActions => 'Corrective Actions',
+    AppRoutes.safetyAlerts => 'Safety Alerts',
+    AppRoutes.notifications => 'Notifications',
+    AppRoutes.dailySafetyMeetings => 'Daily Safety Meetings',
+    AppRoutes.manageDailySafetyMeetings => 'Daily Safety Meetings',
+    AppRoutes.safetyMeetings => 'Weekly & Monthly Meetings',
+    AppRoutes.safetyLearning => 'Safety Learning',
+    AppRoutes.safetyVideos => 'Safety Videos',
+    AppRoutes.safetyMeetingPoints => 'Safety Meeting Points',
+    AppRoutes.manageSafetyMeetingPoints => 'Safety Meeting Points',
+    AppRoutes.safetyLearningCompliance => 'Learning Compliance',
+    AppRoutes.analytics => 'Analytics',
+    AppRoutes.reports => 'Reports',
+    AppRoutes.administration => 'Administration',
+    AppRoutes.pendingApprovals => 'Pending Approvals',
+    AppRoutes.activeUsers => 'Active Users',
+    AppRoutes.suspendedUsers => 'Suspended Users',
+    AppRoutes.workers => 'My Workers',
+    AppRoutes.manageSafetyLearning => 'Safety Learning Library',
+    AppRoutes.manageSafetyRequirements => 'Safety Requirements',
+    AppRoutes.settings => 'Settings',
+    _ => AppConstants.appName,
+  };
+
+  /// Where a drill-down page's back arrow goes: the page it was opened from,
+  /// with the context that page needs — or null for a top-level page (the
+  /// drawer button shows instead). These pages are reached with
+  /// `context.go`, so there is no route stack to pop.
+  static ({String route, Object? extra})? parentOf(
+    String matchedLocation,
+    Object? extra,
+  ) {
+    switch (matchedLocation) {
+      case AppRoutes.manageSites:
+        return (route: AppRoutes.projects, extra: null);
+      case AppRoutes.manageActivities || AppRoutes.manageSiteWorkers:
+        if (extra case (
+          organization: final Organization organization,
+          project: final Project project,
+          site: Site _,
+        )) {
+          return (
+            route: AppRoutes.manageSites,
+            extra: (organization: organization, project: project),
+          );
+        }
+        return (route: AppRoutes.projects, extra: null);
+      case AppRoutes.manageActivityWorkers:
+        if (extra case (
+          organization: final Organization organization,
+          project: final Project project,
+          site: final Site site,
+          activity: Activity _,
+        )) {
+          return (
+            route: AppRoutes.manageActivities,
+            extra: (organization: organization, project: project, site: site),
+          );
+        }
+        return (route: AppRoutes.projects, extra: null);
+      case AppRoutes.activeUsers || AppRoutes.suspendedUsers:
+        return (route: AppRoutes.administration, extra: null);
+    }
+    return null;
+  }
+
+  /// The phone's bottom-bar tabs for a role — its few main destinations;
+  /// everything else is in the menu. Only destinations the role's menu
+  /// already offers.
+  static List<NavSectionEntry> tabsFor({
+    required bool canManageOrgContent,
+    required bool isForeman,
+  }) {
+    const home = NavSectionEntry(
+      icon: Icons.home_outlined,
+      selectedIcon: Icons.home,
+      label: 'Home',
+      route: AppRoutes.dashboard,
+      color: AppColors.dashboard,
+    );
+    const reportIssue = NavSectionEntry(
+      icon: Icons.campaign_outlined,
+      selectedIcon: Icons.campaign,
+      label: 'Report Issue',
+      route: AppRoutes.reportSafetyIssue,
+      color: AppColors.stop,
+    );
+    const meetings = NavSectionEntry(
+      icon: Icons.fact_check_outlined,
+      selectedIcon: Icons.fact_check,
+      label: 'Meetings',
+      route: AppRoutes.dailySafetyMeetings,
+      color: AppColors.meetings,
+    );
+    if (canManageOrgContent) {
+      return const [
+        home,
+        NavSectionEntry(
+          icon: Icons.apartment_outlined,
+          selectedIcon: Icons.apartment,
+          label: 'Projects',
+          route: AppRoutes.projects,
+          color: AppColors.projects,
+        ),
+        reportIssue,
+        NavSectionEntry(
+          icon: Icons.bar_chart_outlined,
+          selectedIcon: Icons.bar_chart,
+          label: 'Insights',
+          route: AppRoutes.analytics,
+          color: AppColors.analytics,
+        ),
+      ];
+    }
+    if (isForeman) {
+      return const [
+        home,
+        meetings,
+        reportIssue,
+        NavSectionEntry(
+          icon: Icons.verified_user_outlined,
+          selectedIcon: Icons.verified_user,
+          label: 'Crew',
+          route: AppRoutes.safetyLearningCompliance,
+          color: AppColors.compliance,
+        ),
+      ];
+    }
+    return const [
+      home,
+      reportIssue,
+      NavSectionEntry(
+        icon: Icons.school_outlined,
+        selectedIcon: Icons.school,
+        label: 'Learning',
+        route: AppRoutes.safetyLearning,
+        color: AppColors.learning,
+      ),
+      meetings,
+    ];
+  }
+
+  /// Which tab a page belongs to: a Projects drill-down page keeps Projects
+  /// highlighted, and Reports keeps Insights. Anything else is matched
+  /// exactly (no tab is highlighted when none has it).
+  static String tabRouteFor(String matchedLocation) =>
+      switch (matchedLocation) {
+        AppRoutes.manageSites ||
+        AppRoutes.manageActivities ||
+        AppRoutes.manageActivityWorkers ||
+        AppRoutes.manageSiteWorkers => AppRoutes.projects,
+        AppRoutes.reports => AppRoutes.analytics,
+        _ => matchedLocation,
+      };
 
   /// The one place nav visibility per role is decided. Every entry maps to
   /// an existing route; see AppRoutes for what each one requires.
@@ -458,6 +644,18 @@ class AppShell extends StatelessWidget {
               ),
           ],
         ),
+      // Account, appearance, notifications and Sign Out — everyone.
+      const NavSection(
+        entries: [
+          NavSectionEntry(
+            icon: Icons.settings_outlined,
+            selectedIcon: Icons.settings,
+            label: 'Settings',
+            route: AppRoutes.settings,
+            color: AppColors.primaryBright,
+          ),
+        ],
+      ),
     ];
   }
 }
@@ -512,7 +710,7 @@ class _SidebarHeader extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'JVA Safety',
+                  AppConstants.appName,
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
                     fontWeight: FontWeight.w700,
                     color: Colors.white,
@@ -562,42 +760,6 @@ class _SidebarHeader extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-/// Lets the user pick System/Light/Dark for this app specifically — see
-/// [ThemeController]'s doc comment for why an in-app override exists
-/// alongside following the OS setting. A checkmark on the entry matching
-/// [ThemeController.mode] shows the current choice; the icon itself reflects
-/// which theme is ACTUALLY being rendered right now (relevant when the
-/// choice is System, where the rendered theme depends on the OS/browser
-/// signal, not a fixed icon).
-class _ThemeModeAction extends StatelessWidget {
-  const _ThemeModeAction();
-
-  @override
-  Widget build(BuildContext context) {
-    final controller = context.watch<ThemeController>();
-    final isDarkNow = Theme.of(context).brightness == Brightness.dark;
-    return PopupMenuButton<ThemeMode>(
-      tooltip: 'Appearance',
-      icon: Icon(
-        isDarkNow ? Icons.dark_mode_outlined : Icons.light_mode_outlined,
-      ),
-      onSelected: controller.setMode,
-      itemBuilder: (context) => [
-        for (final mode in ThemeMode.values)
-          CheckedPopupMenuItem(
-            value: mode,
-            checked: controller.mode == mode,
-            child: Text(switch (mode) {
-              ThemeMode.system => 'System',
-              ThemeMode.light => 'Light',
-              ThemeMode.dark => 'Dark',
-            }),
-          ),
-      ],
     );
   }
 }

@@ -8,7 +8,7 @@
  * meeting in one collection. `firestore.rules` denies every client write to
  * that collection outright, so these two callables are the only path that
  * can create one or transition its status. Creation imports and reuses
- * `daily_safety_meeting_callable.ts`'s own `requireInProgressOwnMeeting`
+ * `daily_safety_meeting_callable.ts`'s own `requireOwnMeeting`
  * directly (see WHAT AUTHORIZES CREATION below), and status updates reuse
  * `account_approval.ts`'s existing reviewer-role authority
  * (`canReviewPendingAccounts`) rather than inventing a third authorization
@@ -38,9 +38,11 @@
  *
  * WHAT AUTHORIZES CREATION
  *
- * `requireInProgressOwnMeeting`, IMPORTED from
- * `daily_safety_meeting_callable.ts` rather than duplicated: the caller must
- * be the meeting's own foreman, and the meeting must still be `inProgress`.
+ * `requireOwnMeeting`, IMPORTED from `daily_safety_meeting_callable.ts`
+ * rather than duplicated: the caller must be the meeting's own foreman. The
+ * meeting must still be `inProgress`, unless the action is raised from one
+ * of its concerns (a concern may be added to a completed meeting — see
+ * `createCorrectiveAction`).
  * `organizationId`, `projectId` and `siteId` are always copied from the
  * freshly-fetched meeting document, never accepted from the request, so a
  * corrective action can never be created for an organization/project/site
@@ -76,8 +78,9 @@
  * WHAT A CALLER CANNOT DO
  *
  * - Create a corrective action for a meeting they are not the foreman of, or
- *   for one that is no longer `inProgress` — completed meetings remain
- *   historically auditable, never retroactively editable.
+ *   for one that is no longer `inProgress` without naming one of its
+ *   concerns — completed meetings remain historically auditable, never
+ *   retroactively editable.
  * - Assign a corrective action to themselves (see above).
  * - Assign a corrective action to a worker outside the meeting's own
  *   organization.
@@ -96,7 +99,8 @@
 import {FieldValue, getFirestore} from "firebase-admin/firestore";
 import {CallableRequest, HttpsError, onCall} from "firebase-functions/v2/https";
 import {AppRole, canReviewPendingAccounts, isAppRole} from "./account_approval";
-import {requireInProgressOwnMeeting} from "./daily_safety_meeting_callable";
+import {requireOwnMeeting} from "./daily_safety_meeting_callable";
+import {meetingAuditEntry} from "./meeting_audit";
 
 /**
  * The single refusal returned for every authorization failure. Mirrors
@@ -687,10 +691,17 @@ export async function createCorrectiveActionForIncident(
  * incident branch delegates to `createCorrectiveActionForIncident`.
  *
  * MEETING-ORIGINATED (`meetingId` given): only the meeting's own foreman may
- * call this (see `requireInProgressOwnMeeting`). `organizationId`,
- * `projectId` and `siteId` are always copied from the freshly-fetched
- * meeting, never accepted from the request. `concernId`, when given, must
- * belong to the same meeting.
+ * call this (see `requireOwnMeeting`). `organizationId`, `projectId` and
+ * `siteId` are always copied from the freshly-fetched meeting, never
+ * accepted from the request. `concernId`, when given, must belong to the
+ * same meeting. While the meeting is in progress `concernId` is optional;
+ * once it is COMPLETED a `concernId` is REQUIRED — a concern may still be
+ * added to a completed meeting (`addMeetingConcern`), and this is how it
+ * gets its corrective action, but nothing else about a completed meeting
+ * reopens. The new action's id is added to the meeting's own
+ * `correctiveActionIds` (`arrayUnion`, so a retry never duplicates it) in
+ * the same batch as the action and its `audit_logs` entry, so the link
+ * holds in both directions.
  *
  * HAZARD-ORIGINATED (`hazardId` given, `concernId` forbidden): delegates
  * entirely to `createCorrectiveActionForHazard` above — same authorization,
@@ -766,22 +777,47 @@ export const createCorrectiveAction = onCall(async (request) => {
     );
   }
 
-  const meeting = await requireInProgressOwnMeeting(
-    organizationId,
-    meetingId,
-    foremanId
-  );
+  const meeting = await requireOwnMeeting(organizationId, meetingId, foremanId);
+  const afterCompletion = meeting.status !== "inProgress";
+  if (afterCompletion && concernId === null) {
+    throw new HttpsError(
+      "failed-precondition",
+      "That meeting has already been completed. A corrective action can " +
+        "only be raised from one of its concerns."
+    );
+  }
 
   if (concernId !== null) {
     await requireMeetingConcern(organizationId, meetingId, concernId);
   }
   await requireActiveOrganizationMember(organizationId, assignedTo);
 
-  const ref = getFirestore()
+  const db = getFirestore();
+  const ref = db
     .collection(`organizations/${organizationId}/corrective_actions`)
     .doc();
   const now = FieldValue.serverTimestamp();
-  await ref.set({
+  const audit = meetingAuditEntry({
+    organizationId,
+    meetingId,
+    actorUid: foremanId,
+    action: "meeting.correctiveActionRaised",
+    metadata: {
+      correctiveActionId: ref.id,
+      concernId,
+      assignedTo,
+      afterCompletion,
+    },
+  });
+  const batch = db.batch();
+  batch.update(
+    db.doc(
+      `organizations/${organizationId}/daily_safety_meetings/${meetingId}`
+    ),
+    {correctiveActionIds: FieldValue.arrayUnion(ref.id)}
+  );
+  batch.set(audit.ref, audit.data);
+  batch.set(ref, {
     organizationId,
     projectId: meeting.projectId,
     siteId: meeting.siteId,
@@ -806,6 +842,7 @@ export const createCorrectiveAction = onCall(async (request) => {
     updatedAt: now,
     completedAt: null,
   });
+  await batch.commit();
 
   return {id: ref.id, organizationId, meetingId};
 });

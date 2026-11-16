@@ -4,6 +4,7 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
+import '../constants/app_constants.dart';
 
 /// Prints a document (or saves it as PDF): [name] is the file name, and
 /// [build] makes the PDF for the chosen page format.
@@ -163,7 +164,7 @@ class PdfReport {
               ],
             ),
           ),
-          text('JVA Safety', size: 8, color: muted),
+          text(AppConstants.appName, size: 8, color: muted),
         ],
       ),
     );
@@ -177,7 +178,7 @@ class PdfReport {
         children: [
           pw.Expanded(
             child: text(
-              'Generated ${date(generatedAt)} from the JVA Safety app — '
+              'Generated ${date(generatedAt)} from the ALMASAFETY app — '
               'the app holds the live record.',
               size: 7,
               color: muted,

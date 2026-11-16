@@ -114,9 +114,9 @@ void main() {
             return session;
           },
         ),
-        // AppShell's app-bar appearance action requires this provider —
-        // ThemeController is deliberately independent of SessionController
-        // (see its own doc comment), so it needs its own entry here.
+        // The app reads its theme from this provider — ThemeController is
+        // deliberately independent of SessionController (see its own doc
+        // comment), so it needs its own entry here.
         ChangeNotifierProvider<ThemeController>(
           create: (_) => ThemeController(),
         ),
@@ -159,9 +159,23 @@ void main() {
         await tester.pumpAndSettle();
       }
 
-      expect(find.text('Dashboard'), findsOneWidget);
+      // The drawer's entry; on a phone the top bar names the page too.
+      expect(
+        find.descendant(
+          of: find.byType(Drawer),
+          matching: find.text('Dashboard'),
+        ),
+        findsOneWidget,
+      );
       expect(find.text('OPERATIONS'), findsOneWidget);
-      expect(find.text('Projects'), findsOneWidget);
+      // The menu's entry; a phone's bottom bar has a Projects tab too.
+      expect(
+        find.descendant(
+          of: find.byType(Drawer),
+          matching: find.text('Projects'),
+        ),
+        findsOneWidget,
+      );
       expect(find.text('SAFETY'), findsOneWidget);
       expect(find.text('Hazards'), findsOneWidget);
       await reveal('Risk Assessments (AHA)');
@@ -227,7 +241,14 @@ void main() {
       await openDrawer(tester);
 
       expect(find.text('OPERATIONS'), findsOneWidget);
-      expect(find.text('Projects'), findsOneWidget);
+      // The menu's entry; a phone's bottom bar has a Projects tab too.
+      expect(
+        find.descendant(
+          of: find.byType(Drawer),
+          matching: find.text('Projects'),
+        ),
+        findsOneWidget,
+      );
       await tester.dragUntilVisible(
         find.text('INSIGHTS'),
         find.byType(ListView),
@@ -387,7 +408,14 @@ void main() {
         await tester.pumpAndSettle();
         await openDrawer(tester);
 
-        expect(find.text('Dashboard'), findsOneWidget);
+        // The drawer's entry; on a phone the top bar names the page too.
+        expect(
+          find.descendant(
+            of: find.byType(Drawer),
+            matching: find.text('Dashboard'),
+          ),
+          findsOneWidget,
+        );
         expect(find.text('SAFETY'), findsOneWidget);
         expect(find.text('MEETINGS & LEARNING'), findsOneWidget);
         expect(find.text('OPERATIONS'), findsNothing);
@@ -440,7 +468,7 @@ void main() {
   });
 
   group('AppShell header', () {
-    testWidgets('shows the JVA Safety wordmark', (tester) async {
+    testWidgets('shows the ALMASAFETY wordmark', (tester) async {
       tester.view.physicalSize = const Size(1600, 900);
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.reset);
@@ -448,74 +476,49 @@ void main() {
       await tester.pumpWidget(wrap(role: AppRole.admin));
       await tester.pumpAndSettle();
 
-      expect(find.text('JVA Safety'), findsWidgets);
+      expect(find.text('ALMASAFETY'), findsWidgets);
     });
   });
 
-  group('AppShell sign-out', () {
-    testWidgets(
-      'a Sign Out action is always available in the app bar, and tapping '
-      "it calls the session's signOut — the only way out of a signed-in "
-      'session anywhere in the normal shell',
-      (tester) async {
-        tester.view.physicalSize = const Size(1600, 900);
+  group('AppShell top bar', () {
+    for (final size in [const Size(1600, 900), const Size(800, 900)]) {
+      testWidgets('at ${size.width.toInt()}px it carries no Appearance or '
+          'Sign Out — those live in Settings', (tester) async {
+        tester.view.physicalSize = size;
         tester.view.devicePixelRatio = 1.0;
         addTearDown(tester.view.reset);
-        late _FakeSession session;
 
-        await tester.pumpWidget(
-          wrap(role: AppRole.worker, onSessionCreated: (s) => session = s),
+        await tester.pumpWidget(wrap(role: AppRole.worker));
+        await tester.pumpAndSettle();
+
+        expect(find.byTooltip('Sign Out'), findsNothing);
+        expect(find.byTooltip('Appearance'), findsNothing);
+      });
+    }
+
+    for (final role in [
+      AppRole.admin,
+      AppRole.siteManager,
+      AppRole.foreman,
+      AppRole.worker,
+    ]) {
+      testWidgets('${role.name}: Settings is the last menu entry', (
+        tester,
+      ) async {
+        tester.view.physicalSize = const Size(1600, 2400);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+
+        await tester.pumpWidget(wrap(role: role));
+        await tester.pumpAndSettle();
+        final settings = find.text('Settings');
+        await tester.scrollUntilVisible(
+          settings,
+          200,
+          scrollable: find.byType(Scrollable).first,
         );
-        await tester.pumpAndSettle();
-
-        expect(find.byTooltip('Sign Out'), findsOneWidget);
-        expect(session.signOutCalled, isFalse);
-
-        await tester.tap(find.byTooltip('Sign Out'));
-        await tester.pumpAndSettle();
-
-        expect(session.signOutCalled, isTrue);
-      },
-    );
-  });
-
-  group('AppShell appearance action', () {
-    testWidgets('an Appearance action is always available, offers System/Light/'
-        'Dark, and selecting one updates the ThemeController the app '
-        "reads its themeMode from — this is the in-app override that "
-        "exists precisely because a device's own OS/browser dark-mode "
-        'setting is not always reachable per-app (see ThemeController)', (
-      tester,
-    ) async {
-      tester.view.physicalSize = const Size(1600, 900);
-      tester.view.devicePixelRatio = 1.0;
-      addTearDown(tester.view.reset);
-
-      await tester.pumpWidget(wrap(role: AppRole.worker));
-      await tester.pumpAndSettle();
-
-      expect(find.byTooltip('Appearance'), findsOneWidget);
-
-      await tester.tap(find.byTooltip('Appearance'));
-      await tester.pumpAndSettle();
-
-      expect(find.text('System'), findsOneWidget);
-      expect(find.text('Light'), findsOneWidget);
-      expect(find.text('Dark'), findsOneWidget);
-
-      // PopupMenuButton's own entrance/exit transition can leave a
-      // transient overlay above the item's hit-test point on the exact
-      // frame this tap lands — a known, harmless quirk of this widget in
-      // tests (the tap still reaches the correct item; see the assertion
-      // below), not a real ambiguity about what's on screen.
-      await tester.tap(find.text('Dark'), warnIfMissed: false);
-      await tester.pumpAndSettle();
-
-      final controller = Provider.of<ThemeController>(
-        tester.element(find.byTooltip('Appearance')),
-        listen: false,
-      );
-      expect(controller.mode, ThemeMode.dark);
-    });
+        expect(settings, findsOneWidget);
+      });
+    }
   });
 }

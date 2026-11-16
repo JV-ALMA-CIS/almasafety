@@ -26,6 +26,7 @@ import '../domain/safety_alert_severity.dart';
 import '../domain/safety_alert_status.dart';
 import '../../authentication/domain/app_role.dart';
 import '../../daily_safety_meetings/data/daily_safety_meeting_repository.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// The Safety Alerts screen.
 ///
@@ -648,7 +649,7 @@ class _SafetyAlertFormDialogState extends State<_SafetyAlertFormDialog> {
   Widget build(BuildContext context) {
     final color = _severityColor(_severity);
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Safety Alert')),
       body: ListView(
         padding: const EdgeInsets.all(AppSpacing.md),
         children: [
@@ -814,18 +815,28 @@ class _SeverityOption extends StatelessWidget {
               children: [
                 Icon(_severityIcon(severity), color: foreground ?? color),
                 const SizedBox(width: AppSpacing.sm),
+                // Label left, hint right — or the hint on its own line
+                // when both don't fit.
                 Expanded(
-                  child: Text(
-                    severity.label,
-                    style: AppTextStyles.bodyLarge.copyWith(
-                      color: foreground,
-                      fontWeight: FontWeight.w700,
-                    ),
+                  child: Wrap(
+                    alignment: WrapAlignment.spaceBetween,
+                    spacing: AppSpacing.sm,
+                    children: [
+                      Text(
+                        severity.label,
+                        style: AppTextStyles.bodyLarge.copyWith(
+                          color: foreground,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      Text(
+                        _severityHint(severity),
+                        style: AppTextStyles.bodyMedium.copyWith(
+                          color: foreground,
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-                Text(
-                  _severityHint(severity),
-                  style: AppTextStyles.bodyMedium.copyWith(color: foreground),
                 ),
               ],
             ),

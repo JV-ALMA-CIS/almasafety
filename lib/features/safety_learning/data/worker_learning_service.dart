@@ -1,9 +1,12 @@
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_core/firebase_core.dart';
 import '../../../core/errors/app_exception.dart';
+import '../../../core/services/callable_errors.dart';
 import '../../organizations/data/organization_admin_service.dart';
 import '../domain/complete_learning_result.dart';
 import '../domain/knowledge_check_question.dart';
+import '../domain/knowledge_check_result.dart';
+import '../domain/lesson_quiz.dart';
 import '../domain/submitted_answer.dart';
 import '../domain/todays_safety_readiness.dart';
 import '../domain/worker_learning_record.dart';
@@ -122,6 +125,77 @@ class WorkerLearningService {
         .toList(growable: false);
   }
 
+  /// This lesson's quiz for the caller — the questions (never the answers),
+  /// whether the lesson is required of them and whether its quiz is part of
+  /// that requirement. Available for any active lesson, so an optional
+  /// video's quiz can be practised (see [practiceKnowledgeCheck]).
+  ///
+  /// A server from before that change refuses a lesson that is not
+  /// required of the caller with [_outdatedQuizRefusal]; that is reported
+  /// as [ServerUpdateRequiredException] — the learner is allowed, the
+  /// server is just old.
+  Future<LessonQuiz> getLessonQuiz({
+    required String organizationId,
+    required String learningId,
+  }) async {
+    try {
+      final result = await _call<Map<Object?, Object?>>(
+        'getKnowledgeCheckQuestions',
+        {'organizationId': organizationId, 'learningId': learningId},
+      );
+      return LessonQuiz.fromMap(result);
+    } on DataException catch (e) {
+      throw quizLoadError(e);
+    }
+  }
+
+  /// [error] from loading a quiz, or [ServerUpdateRequiredException] when it
+  /// is an older server's refusal of a lesson not required of the caller.
+  static AppException quizLoadError(DataException error) {
+    final cause = error.cause;
+    if (cause is FirebaseFunctionsException &&
+        cause.code == 'failed-precondition' &&
+        cause.message == _outdatedQuizRefusal) {
+      return ServerUpdateRequiredException(
+        "This quiz can't open yet because the server needs the latest "
+        "update. This isn't a problem with your account — ask your "
+        'administrator to deploy the update.',
+        cause: cause,
+      );
+    }
+    return error;
+  }
+
+  /// What `getKnowledgeCheckQuestions` said, before general learning
+  /// existed, for a lesson not required of the caller. The current server
+  /// never sends it from that function.
+  static const _outdatedQuizRefusal =
+      'That learning item is not currently required of you.';
+
+  /// Grades a practice attempt at an OPTIONAL lesson's quiz. Nothing is
+  /// recorded — optional learning is never tracked; a required lesson's
+  /// quiz goes through [completeLearning].
+  Future<KnowledgeCheckResult> practiceKnowledgeCheck({
+    required String organizationId,
+    required String learningId,
+    required List<SubmittedAnswer> selectedAnswers,
+  }) async {
+    final result = await _call<Map<Object?, Object?>>(
+      'practiceKnowledgeCheck',
+      {
+        'organizationId': organizationId,
+        'learningId': learningId,
+        'selectedAnswers': [for (final a in selectedAnswers) a.toMap()],
+      },
+      feature: 'Practice quizzes',
+    );
+    final raw = result['knowledgeCheckResult'];
+    if (raw is! Map) {
+      throw const DataException('The quiz result could not be read.');
+    }
+    return KnowledgeCheckResult.fromMap(raw.cast());
+  }
+
   /// A reviewer's (Admin/Site Manager/Foreman) view of the learning-progress
   /// records for [workerUids] within [organizationId] —
   /// [SafetyComplianceRepository.buildSiteCompliance]'s completion-status
@@ -172,6 +246,8 @@ class WorkerLearningService {
             completedAt: completedAtRaw == null
                 ? null
                 : DateTime.tryParse(completedAtRaw),
+            // Video progress only — quiz results are never sent here.
+            contentCompletedFlag: map['contentCompleted'] == true,
           );
         })
         .toList(growable: false);
@@ -192,12 +268,22 @@ class WorkerLearningService {
     return TodaysSafetyReadiness.fromMap(result);
   }
 
-  Future<T> _call<T>(String name, [Map<String, Object?>? data]) async {
+  /// [feature] names a recently added server function, so a server without
+  /// it is reported as needing an update — see [missingServerFunction].
+  Future<T> _call<T>(
+    String name,
+    Map<String, Object?>? data, {
+    String? feature,
+  }) async {
     try {
       final callable = _require().httpsCallable(name);
       final result = await callable.call<T>(data);
       return result.data;
     } on FirebaseFunctionsException catch (e) {
+      if (feature != null) {
+        final outdated = missingServerFunction(e, feature);
+        if (outdated != null) throw outdated;
+      }
       throw OrganizationAdminService.mapCallableError(e);
     }
   }

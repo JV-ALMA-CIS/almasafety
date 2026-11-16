@@ -26,6 +26,7 @@ class WorkerComplianceRow {
     required this.requiredLearning,
     required this.completedLearning,
     required this.completedAtByLearningId,
+    this.quizOutstandingIds = const {},
   });
 
   final String workerUid;
@@ -62,6 +63,11 @@ class WorkerComplianceRow {
   /// Completion timestamps for [completedLearning], by learning id — absent
   /// for an item with no record or without a recorded `completedAt`.
   final Map<String, DateTime> completedAtByLearningId;
+
+  /// Outstanding items whose content step (the video) is done and only a
+  /// mandatory quiz remains — from the record's video progress, never its
+  /// quiz answers or score.
+  final Set<String> quizOutstandingIds;
 
   int get requiredCount => requiredLearning.length;
   int get completedCount => completedLearning.length;

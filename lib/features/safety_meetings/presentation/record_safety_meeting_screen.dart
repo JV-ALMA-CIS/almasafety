@@ -17,6 +17,7 @@ import '../../organizations/presentation/report_site_picker.dart';
 import '../data/safety_meeting_service.dart';
 import '../domain/safety_meeting.dart';
 import 'safety_meeting_style.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// Loads the organization's people for the attendee list. Injected in
 /// tests.
@@ -184,7 +185,7 @@ class _RecordSafetyMeetingScreenState extends State<RecordSafetyMeetingScreen> {
     );
 
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Record Meeting')),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(
           AppSpacing.md,

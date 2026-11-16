@@ -30,6 +30,7 @@ import '../../pre_start_checks/presentation/pre_start_visuals.dart';
 import '../../../core/widgets/choice_list.dart';
 import '../../../core/widgets/color_choice_chips.dart';
 import '../../organizations/presentation/site_select_list.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// Lists the safety requirements in one organization and lets an authorized
 /// admin create or edit one, including which [SafetyLearning] items it
@@ -620,6 +621,27 @@ class _SafetyRequirementFormDialogState
     ),
   };
 
+  /// Lessons whose quiz is OPTIONAL under this requirement. Tracked as the
+  /// exception because a quiz is mandatory unless switched off — the only
+  /// behaviour before this setting existed, so a newly ticked lesson (and
+  /// every older requirement) keeps it mandatory.
+  late final Set<String> _quizOptionalLearningIds = {
+    ...?widget.existing?.requiredLearningIds.where(
+      (id) => !widget.existing!.quizRequiredFor(id),
+    ),
+  };
+
+  /// Active lessons, plus any already on this requirement even if since
+  /// deactivated — an inactive lesson is never offered to be newly made
+  /// required (the server refuses it too), but one already listed still
+  /// shows, ticked, so saving doesn't silently drop it.
+  List<SafetyLearning> get _offeredLearningItems => [
+    for (final item in widget.learningItems)
+      if (item.status == OrganizationRecordStatus.active ||
+          (widget.existing?.requiredLearningIds.contains(item.id) ?? false))
+        item,
+  ];
+
   late _RequirementScopeKind _scopeKind = widget.existing?.projectId != null
       ? _RequirementScopeKind.project
       : widget.existing?.siteId != null
@@ -699,6 +721,7 @@ class _SafetyRequirementFormDialogState
                   id: RequirementLearningSetting(
                     gatesAttendance: _gatingLearningIds.contains(id),
                     requiredBeforeWork: _preWorkLearningIds.contains(id),
+                    quizRequired: !_quizOptionalLearningIds.contains(id),
                   ),
               },
               projectId: _scopeKind == _RequirementScopeKind.project
@@ -717,7 +740,7 @@ class _SafetyRequirementFormDialogState
       ),
     ];
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Requirement')),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(AppSpacing.md),
@@ -984,7 +1007,7 @@ class _SafetyRequirementFormDialogState
                               style: AppTextStyles.bodyMedium,
                             ),
                           ),
-                          if (widget.learningItems.isEmpty)
+                          if (_offeredLearningItems.isEmpty)
                             const Padding(
                               padding: EdgeInsets.symmetric(
                                 vertical: AppSpacing.sm,
@@ -995,11 +1018,15 @@ class _SafetyRequirementFormDialogState
                               ),
                             ),
                           for (final (index, item)
-                              in widget.learningItems.indexed) ...[
+                              in _offeredLearningItems.indexed) ...[
                             ChoiceTile(
                               multi: true,
                               title: item.title,
-                              subtitle: item.type.label,
+                              subtitle:
+                                  item.status == OrganizationRecordStatus.active
+                                  ? item.type.label
+                                  : '${item.type.label} · inactive — not '
+                                        'required while inactive',
                               icon: Icons.school,
                               color: choicePaletteColor(index),
                               selected: _selectedLearningIds.contains(item.id),
@@ -1010,6 +1037,7 @@ class _SafetyRequirementFormDialogState
                                   } else {
                                     _gatingLearningIds.remove(item.id);
                                     _preWorkLearningIds.remove(item.id);
+                                    _quizOptionalLearningIds.remove(item.id);
                                   }
                                 });
                               },
@@ -1061,6 +1089,30 @@ class _SafetyRequirementFormDialogState
                                           _preWorkLearningIds.add(item.id);
                                         } else {
                                           _preWorkLearningIds.remove(item.id);
+                                        }
+                                      }),
+                                    ),
+                                    SwitchListTile(
+                                      key: Key('quiz-required-${item.id}'),
+                                      dense: true,
+                                      contentPadding: EdgeInsets.zero,
+                                      value: !_quizOptionalLearningIds.contains(
+                                        item.id,
+                                      ),
+                                      title: const Text('Quiz required'),
+                                      subtitle: const Text(
+                                        'If this lesson has a quiz, it must be '
+                                        'passed to complete the lesson. Off: '
+                                        'the quiz is optional — watching the '
+                                        'video is enough.',
+                                      ),
+                                      onChanged: (on) => setState(() {
+                                        if (on) {
+                                          _quizOptionalLearningIds.remove(
+                                            item.id,
+                                          );
+                                        } else {
+                                          _quizOptionalLearningIds.add(item.id);
                                         }
                                       }),
                                     ),

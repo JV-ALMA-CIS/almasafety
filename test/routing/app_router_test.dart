@@ -1,5 +1,10 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:jva_safety/core/services/session_controller.dart';
+import 'package:jva_safety/core/widgets/placeholder_screen.dart';
+import 'package:jva_safety/features/safety_learning/presentation/safety_learning_library_screen.dart';
+import 'package:jva_safety/features/safety_videos/presentation/safety_videos_screen.dart';
 import 'package:jva_safety/routing/app_router.dart';
 import 'package:jva_safety/routing/app_routes.dart';
 
@@ -16,6 +21,7 @@ const _protectedRoutes = [
   AppRoutes.sites,
   AppRoutes.activities,
   AppRoutes.safetyLearning,
+  AppRoutes.safetyVideos,
   AppRoutes.safetyMeetingPoints,
   AppRoutes.dailySafetyMeetings,
   AppRoutes.hazards,
@@ -92,7 +98,88 @@ const _deniedStatuses = [
   AuthStatus.loadingProfile,
 ];
 
+/// Builds the screen [path] renders, with [extra], without running the
+/// whole app (whose shell talks to live Firebase).
+Future<Widget> buildRoute(
+  WidgetTester tester,
+  String path, {
+  Object? extra,
+}) async {
+  final router = buildAppRouter(SessionController());
+  addTearDown(router.dispose);
+  GoRoute? findRoute(List<RouteBase> routes) {
+    for (final route in routes) {
+      if (route is GoRoute && route.path == path) return route;
+      final nested = findRoute(route.routes);
+      if (nested != null) return nested;
+    }
+    return null;
+  }
+
+  final route = findRoute(router.configuration.routes)!;
+  late Widget built;
+  await tester.pumpWidget(
+    MaterialApp(
+      home: Builder(
+        builder: (context) {
+          built = route.builder!(
+            context,
+            GoRouterState(
+              router.configuration,
+              uri: Uri.parse(path),
+              matchedLocation: path,
+              fullPath: path,
+              pathParameters: const {},
+              extra: extra,
+              pageKey: const ValueKey('test'),
+            ),
+          );
+          return const SizedBox.shrink();
+        },
+      ),
+    ),
+  );
+  return built;
+}
+
 void main() {
+  group('Safety Videos route', () {
+    testWidgets('builds the Safety Videos screen, not the placeholder', (
+      tester,
+    ) async {
+      final built = await buildRoute(tester, AppRoutes.safetyVideos);
+      expect(built, isA<SafetyVideosScreen>());
+      expect(built, isNot(isA<PlaceholderScreen>()));
+    });
+
+    test('a Site Manager is turned away from the full library route, even '
+        'with every Site Manager authority — they author videos from Safety '
+        'Videos instead', () {
+      expect(
+        authRedirect(
+          AuthStatus.authenticated,
+          AppRoutes.manageSafetyLearning,
+          canReviewPendingAccounts: true,
+          canManageOrgContent: true,
+        ),
+        AppRoutes.dashboard,
+      );
+      // Safety Videos itself stays open to every active role.
+      expect(
+        authRedirect(AuthStatus.authenticated, AppRoutes.safetyVideos),
+        isNull,
+      );
+    });
+
+    testWidgets('the library route still builds the library screen', (
+      tester,
+    ) async {
+      final built = await buildRoute(tester, AppRoutes.manageSafetyLearning);
+      final library = built as SafetyLearningLibraryScreen;
+      expect(library.organizationId, isNull);
+    });
+  });
+
   group('authRedirect (unauthenticated user)', () {
     test('every operational route redirects to /login', () {
       for (final route in _allOperationalRoutes) {

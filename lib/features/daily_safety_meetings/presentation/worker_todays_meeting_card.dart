@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../core/utils/meeting_date.dart';
 import '../../../core/widgets/live_stream_builder.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
@@ -51,13 +52,6 @@ class WorkerTodaysMeetingCard extends StatefulWidget {
 }
 
 class _WorkerTodaysMeetingCardState extends State<WorkerTodaysMeetingCard> {
-  static String _today() {
-    final now = DateTime.now();
-    final month = now.month.toString().padLeft(2, '0');
-    final day = now.day.toString().padLeft(2, '0');
-    return '${now.year}-$month-$day';
-  }
-
   @override
   Widget build(BuildContext context) {
     if (widget.siteIds.isEmpty) {
@@ -66,7 +60,7 @@ class _WorkerTodaysMeetingCardState extends State<WorkerTodaysMeetingCard> {
       );
     }
 
-    final today = _today();
+    final today = meetingDate();
     return LiveStreamBuilder<List<List<DailySafetyMeeting>>>(
       streamKey: today,
       stream: () => _combined(today),

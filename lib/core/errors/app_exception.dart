@@ -40,3 +40,10 @@ class SavedOfflineException extends AppException {
         'automatically when the connection comes back.',
   ]);
 }
+
+/// The deployed server is older than this app: a server function the app
+/// relies on is missing, or still behaves the old way. Not a permission
+/// problem — the fix is deploying the latest server code.
+class ServerUpdateRequiredException extends AppException {
+  const ServerUpdateRequiredException(super.message, {super.cause});
+}

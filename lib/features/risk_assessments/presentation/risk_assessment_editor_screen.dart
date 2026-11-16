@@ -16,6 +16,7 @@ import '../data/risk_assessment_service.dart';
 import '../domain/aha_text.dart';
 import '../domain/risk_assessment.dart';
 import 'risk_assessment_style.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// Loads one site's activities. Injected in tests.
 typedef SiteActivitiesLoader =
@@ -337,7 +338,7 @@ class _RiskAssessmentEditorScreenState
     const color = AppColors.riskAssessments;
 
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('AHA Editor')),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(
           AppSpacing.md,

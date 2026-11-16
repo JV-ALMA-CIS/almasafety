@@ -132,6 +132,22 @@
  * was never actually recorded as covered. `removeMeetingPointNote` remains
  * `inProgress`-only.
  *
+ * THE FOREMAN'S OWN POINTS
+ *
+ * `saveMeetingForemanPoint`/`removeMeetingForemanPoint` manage points the
+ * Foreman types themself — a title, an optional "what was discussed" note
+ * and an optional link to one of the meeting's activities — at
+ * `daily_safety_meetings/{id}/foreman_points/{pointId}`. They belong to
+ * that meeting only and never reach the Safety Meeting Point library (only
+ * a Site Manager or Admin adds library points). A meeting can be completed
+ * with library points, the Foreman's own points, or both.
+ *
+ * The meeting's `foremanPointCount` is kept in step in the same
+ * transaction, so lists can show the total without reading the points.
+ * `pointId` is chosen by the app, so a point saved with no signal and sent
+ * twice is only stored once. Adding is allowed after completion (like
+ * concerns and evidence); editing and removing are `inProgress`-only.
+ *
  * EVIDENCE
  *
  * `addMeetingEvidence`/`removeMeetingEvidence` manage supporting proof (a
@@ -245,6 +261,9 @@ import {
 } from "./pre_start_check_callable";
 import {MeetingHint, outstandingNeededToday} from "./daily_learning_plan";
 import {todaysMeetingDate} from "./worker_learning_callable";
+import {changedFields, meetingAuditEntry} from "./meeting_audit";
+import {changeConcerns} from "./meeting_concern_count";
+import {suggestMeetingPoints} from "./meeting_point_suggestions";
 
 /**
  * The single refusal returned for every authorization failure. Mirrors
@@ -474,13 +493,16 @@ async function requireActiveMeetingPoints(
  * Loads the target meeting, confirms it belongs to [organizationId], and
  * confirms the caller is its own foreman. Returns the stored data.
  *
+ * Exported so `corrective_action_callable.ts` can authorize a corrective
+ * action raised from a meeting with this exact check.
+ *
  * @param {string} organizationId the organization the action targets.
  * @param {string} id the meeting's id.
  * @param {string} callerUid the caller's own uid.
  * @return {Promise<FirebaseFirestore.DocumentData>} the meeting's stored
  * data.
  */
-async function requireOwnMeeting(
+export async function requireOwnMeeting(
   organizationId: string,
   id: string,
   callerUid: string
@@ -582,6 +604,13 @@ async function requireForemanLearningComplete(
  * before ever discovering, at the very end, that they are blocked — the
  * refusal now comes before the workspace even opens, naming exactly what
  * is outstanding.
+ *
+ * SUGGESTION SNAPSHOT: the meeting points suggested for these activities
+ * (see `meeting_point_suggestions.ts`) are stored once, here, as
+ * `suggestedPointIds` and `suggestionReasons` (point id -> reasons). No
+ * other callable ever writes them, so accepting, removing or adding points
+ * later changes only `meetingPointIds`. The start is also written to
+ * `audit_logs` in the same batch.
  */
 export const createDailySafetyMeeting = onCall(async (request) => {
   const organizationId = requireString(request, "organizationId");
@@ -600,13 +629,41 @@ export const createDailySafetyMeeting = onCall(async (request) => {
     activityIds,
   });
 
-  const now = new Date();
-  const date = now.toISOString().slice(0, 10);
+  const date = todaysMeetingDate();
 
-  const ref = getFirestore()
+  // The suggestions as they stood when the meeting started — never
+  // changed afterward, so the record always shows what was suggested next
+  // to what the Foreman actually kept (`meetingPointIds`).
+  const suggestions = await suggestMeetingPoints(
+    organizationId,
+    siteId,
+    activityIds
+  );
+  const suggestedPointIds = suggestions.map((s) => s.pointId);
+  const suggestionReasons = Object.fromEntries(
+    suggestions.map((s) => [s.pointId, s.reasons])
+  );
+
+  const db = getFirestore();
+  const ref = db
     .collection(`organizations/${organizationId}/daily_safety_meetings`)
     .doc();
-  await ref.set({
+  const audit = meetingAuditEntry({
+    organizationId,
+    meetingId: ref.id,
+    actorUid: foremanId,
+    action: "meeting.created",
+    metadata: {
+      projectId,
+      siteId,
+      date,
+      activityIds,
+      meetingPointIds,
+      suggestedPointIds,
+    },
+  });
+  const batch = db.batch();
+  batch.set(ref, {
     organizationId,
     projectId,
     siteId,
@@ -616,18 +673,48 @@ export const createDailySafetyMeeting = onCall(async (request) => {
     foremanId,
     activityIds,
     meetingPointIds,
+    suggestedPointIds,
+    suggestionReasons,
     status: "inProgress",
     concerns: [],
+    concernCount: 0,
     correctiveActionIds: [],
     createdAt: FieldValue.serverTimestamp(),
     completedAt: null,
   });
+  batch.set(audit.ref, audit.data);
+  await batch.commit();
 
   // A worker who answered STOP on their Pre-Start Check before this
   // meeting existed had nowhere to raise it; it becomes a concern now.
   await attachPendingPreStartStops(organizationId, siteId, date, ref.id);
 
   return {id: ref.id, organizationId, projectId, siteId};
+});
+
+/**
+ * The meeting points to suggest before today's meeting at one of the
+ * caller's own sites, best first, each with the reasons it is suggested —
+ * the same rules `createDailySafetyMeeting` stores as its snapshot (see
+ * `meeting_point_suggestions.ts`). Read-only.
+ *
+ * AUTHORIZATION: `requireActiveForeman` for the named site, like
+ * `getSiteCrewReadiness`. Every `activityIds` entry must be an active
+ * activity at that site.
+ */
+export const getMeetingPointSuggestions = onCall(async (request) => {
+  const organizationId = requireString(request, "organizationId");
+  const siteId = requireString(request, "siteId");
+  await requireActiveForeman(request, organizationId, siteId);
+  const activityIds = stringArray(request, "activityIds");
+  await requireActivitiesAtSite(organizationId, siteId, activityIds);
+
+  const suggestions = await suggestMeetingPoints(
+    organizationId,
+    siteId,
+    activityIds
+  );
+  return {organizationId, siteId, suggestions};
 });
 
 /**
@@ -759,16 +846,41 @@ export const updateDailySafetyMeeting = onCall(async (request) => {
     await requireActiveMeetingPoints(organizationId, meetingPointIds);
   }
 
-  await getFirestore()
-    .doc(`organizations/${organizationId}/daily_safety_meetings/${id}`)
-    .update({
-      ...(activityIds !== null ? {activityIds} : {}),
-      ...(meetingPointIds !== null ? {meetingPointIds} : {}),
-      ...(concerns !== null ? {concerns} : {}),
-      ...(ahasCovered !== null ?
-        {ahaIds: ahasCovered.map((a) => a.id), ahasCovered} :
-        {}),
+  const update: Record<string, unknown> = {
+    ...(activityIds !== null ? {activityIds} : {}),
+    ...(meetingPointIds !== null ? {meetingPointIds} : {}),
+    ...(concerns !== null ? {concerns} : {}),
+    ...(ahasCovered !== null ?
+      {ahaIds: ahasCovered.map((a) => a.id), ahasCovered} :
+      {}),
+  };
+  // Nothing recognised to change (only unknown fields were sent).
+  if (Object.keys(update).length === 0) return {id, organizationId};
+
+  // The audit entry names only what changed; `ahasCovered` is left out as
+  // it only repeats `ahaIds` with names. An update that changes nothing
+  // writes no entry.
+  const audited = {...update};
+  delete audited.ahasCovered;
+  const changes = changedFields(meeting, audited);
+
+  const db = getFirestore();
+  const batch = db.batch();
+  batch.update(
+    db.doc(`organizations/${organizationId}/daily_safety_meetings/${id}`),
+    update
+  );
+  if (Object.keys(changes.after).length > 0) {
+    const audit = meetingAuditEntry({
+      organizationId,
+      meetingId: id,
+      actorUid: foremanId,
+      action: "meeting.updated",
+      metadata: changes,
     });
+    batch.set(audit.ref, audit.data);
+  }
+  await batch.commit();
 
   return {id, organizationId};
 });
@@ -802,7 +914,18 @@ export const completeDailySafetyMeeting = onCall(async (request) => {
   const activityIds = (meeting.activityIds as string[] | undefined) ?? [];
   const meetingPointIds =
     (meeting.meetingPointIds as string[] | undefined) ?? [];
-  if (activityIds.length === 0 || meetingPointIds.length === 0) {
+  // A point the Foreman typed counts the same as a library point.
+  const foremanPointCount = (await getFirestore()
+    .collection(
+      `organizations/${organizationId}/daily_safety_meetings/${id}` +
+        "/foreman_points"
+    )
+    .count()
+    .get()).data().count;
+  if (
+    activityIds.length === 0 ||
+    meetingPointIds.length + foremanPointCount === 0
+  ) {
     throw new HttpsError(
       "failed-precondition",
       "At least one activity and one meeting point must be recorded before " +
@@ -835,15 +958,33 @@ export const completeDailySafetyMeeting = onCall(async (request) => {
   const {crewOutcome, crewOutcomeNote} = optionalCrewOutcome(request);
 
   const now = FieldValue.serverTimestamp();
-  await getFirestore()
-    .doc(`organizations/${organizationId}/daily_safety_meetings/${id}`)
-    .update({
+  const db = getFirestore();
+  const audit = meetingAuditEntry({
+    organizationId,
+    meetingId: id,
+    actorUid: foremanId,
+    action: "meeting.completed",
+    metadata: {
+      crewOutcome,
+      activityIds,
+      meetingPointIds,
+      foremanPointCount,
+      ahaIds: (meeting.ahaIds as string[] | undefined) ?? [],
+    },
+  });
+  const batch = db.batch();
+  batch.update(
+    db.doc(`organizations/${organizationId}/daily_safety_meetings/${id}`),
+    {
       status: "completed",
       endTime: now,
       completedAt: now,
       crewOutcome,
       crewOutcomeNote,
-    });
+    }
+  );
+  batch.set(audit.ref, audit.data);
+  await batch.commit();
 
   if (crewOutcome === "stop") {
     const managers = await siteManagersOf(organizationId);
@@ -1055,22 +1196,45 @@ export const recordMeetingAttendance = onCall(async (request) => {
     briefedLearningTitles = outstanding;
   }
 
-  await getFirestore()
-    .doc(
-      `organizations/${organizationId}/daily_safety_meetings/${meetingId}` +
-        `/attendance/${workerId}`
-    )
-    .set({
-      meetingId,
-      organizationId,
-      siteId,
+  const db = getFirestore();
+  const attendanceRef = db.doc(
+    `organizations/${organizationId}/daily_safety_meetings/${meetingId}` +
+      `/attendance/${workerId}`
+  );
+  const previous = (await attendanceRef.get()).data();
+  const audit = meetingAuditEntry({
+    organizationId,
+    meetingId,
+    actorUid: foremanId,
+    action: "meeting.attendanceRecorded",
+    metadata: {
       workerId,
-      status: statusValue,
-      briefedInPerson: briefedLearningTitles.length > 0,
-      briefedLearningTitles,
-      recordedAt: FieldValue.serverTimestamp(),
-      recordedBy: foremanId,
-    });
+      before: previous ?
+        {
+          status: previous.status ?? null,
+          briefedInPerson: previous.briefedInPerson === true,
+        } :
+        null,
+      after: {
+        status: statusValue,
+        briefedInPerson: briefedLearningTitles.length > 0,
+      },
+    },
+  });
+  const batch = db.batch();
+  batch.set(attendanceRef, {
+    meetingId,
+    organizationId,
+    siteId,
+    workerId,
+    status: statusValue,
+    briefedInPerson: briefedLearningTitles.length > 0,
+    briefedLearningTitles,
+    recordedAt: FieldValue.serverTimestamp(),
+    recordedBy: foremanId,
+  });
+  batch.set(audit.ref, audit.data);
+  await batch.commit();
 
   return {
     organizationId,
@@ -1321,18 +1485,13 @@ function requireConcernCategory(request: CallableRequest): ConcernCategory {
  * `removeMeetingConcern` refuses past that point, with no exception for the
  * meeting's own foreman.
  *
- * Exported so `corrective_action_callable.ts` can import this exact
- * implementation instead of maintaining its own (behaviorally identical)
- * copy — mirrors `requireOrganizationScopedManager`'s own "define once,
- * export, import elsewhere" shape in `site_assignment_callable.ts`.
- *
  * @param {string} organizationId the organization the action targets.
  * @param {string} meetingId the meeting's id.
  * @param {string} callerUid the caller's own uid.
  * @return {Promise<FirebaseFirestore.DocumentData>} the meeting's stored
  * data.
  */
-export async function requireInProgressOwnMeeting(
+async function requireInProgressOwnMeeting(
   organizationId: string,
   meetingId: string,
   callerUid: string
@@ -1420,15 +1579,29 @@ export const addMeetingConcern = onCall(async (request) => {
         "/concerns"
     )
     .doc();
-  await ref.set({
-    meetingId,
+  const audit = meetingAuditEntry({
     organizationId,
-    siteId: meeting.siteId,
-    description,
-    category,
-    reportedBy: foremanId,
-    status: "open",
-    createdAt: FieldValue.serverTimestamp(),
+    meetingId,
+    actorUid: foremanId,
+    action: "meeting.concernAdded",
+    metadata: {
+      concernId: ref.id,
+      category,
+      afterCompletion: meeting.status !== "inProgress",
+    },
+  });
+  await changeConcerns(organizationId, meetingId, 1, (transaction) => {
+    transaction.set(ref, {
+      meetingId,
+      organizationId,
+      siteId: meeting.siteId,
+      description,
+      category,
+      reportedBy: foremanId,
+      status: "open",
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    transaction.set(audit.ref, audit.data);
   });
 
   return {id: ref.id, organizationId, meetingId};
@@ -1474,7 +1647,28 @@ export const updateMeetingConcern = onCall(async (request) => {
     update.category = requireConcernCategory(request);
   }
 
-  await ref.update(update);
+  // The description is free text and stays out of the audit entry (see
+  // `meeting_audit.ts`); only whether it changed is recorded.
+  const before = (await ref.get()).data() ?? {};
+  const audit = meetingAuditEntry({
+    organizationId,
+    meetingId,
+    actorUid: foremanId,
+    action: "meeting.concernUpdated",
+    metadata: {
+      concernId,
+      descriptionChanged: update.description !== undefined &&
+        update.description !== before.description,
+      ...(update.category !== undefined ?
+        {before: {category: before.category ?? null},
+          after: {category: update.category}} :
+        {}),
+    },
+  });
+  const batch = getFirestore().batch();
+  batch.update(ref, update);
+  batch.set(audit.ref, audit.data);
+  await batch.commit();
 
   return {id: concernId, organizationId, meetingId};
 });
@@ -1500,7 +1694,18 @@ export const removeMeetingConcern = onCall(async (request) => {
     concernId
   );
 
-  await ref.delete();
+  const removed = (await ref.get()).data() ?? {};
+  const audit = meetingAuditEntry({
+    organizationId,
+    meetingId,
+    actorUid: foremanId,
+    action: "meeting.concernRemoved",
+    metadata: {concernId, category: removed.category ?? null},
+  });
+  await changeConcerns(organizationId, meetingId, -1, (transaction) => {
+    transaction.delete(ref);
+    transaction.set(audit.ref, audit.data);
+  });
 
   return {id: concernId, organizationId, meetingId};
 });
@@ -1616,6 +1821,203 @@ export const removeMeetingPointNote = onCall(async (request) => {
   await ref.delete();
 
   return {meetingId, meetingPointId, organizationId};
+});
+
+/** Longest title a Foreman's own point may have — kept short. */
+export const FOREMAN_POINT_TITLE_MAX = 120;
+
+/** Longest "what was discussed" note, matching point notes in the app. */
+export const FOREMAN_POINT_NOTE_MAX = 500;
+
+/**
+ * Reads the app-chosen `pointId` — letters and digits only, the shape of a
+ * Firestore auto-id, so it can never name another path.
+ *
+ * @param {CallableRequest} request the incoming callable request.
+ * @return {string} the validated id.
+ */
+function requirePointId(request: CallableRequest): string {
+  const pointId = requireString(request, "pointId");
+  if (!/^[A-Za-z0-9]{8,40}$/.test(pointId)) {
+    throw new HttpsError("invalid-argument", "pointId is not valid.");
+  }
+  return pointId;
+}
+
+/**
+ * Reads a free-text argument and refuses it when longer than [max].
+ *
+ * @param {string | undefined} value the trimmed value, if any.
+ * @param {string} label how the field is named in the refusal.
+ * @param {number} max the longest allowed length.
+ * @return {string | undefined} the value, unchanged.
+ */
+function requireMaxLength(
+  value: string | undefined,
+  label: string,
+  max: number
+): string | undefined {
+  if (value !== undefined && value.length > max) {
+    throw new HttpsError(
+      "invalid-argument",
+      `${label} must be ${max} characters or fewer.`
+    );
+  }
+  return value;
+}
+
+/**
+ * Adds or edits one of the Foreman's own points on their meeting, at
+ * `daily_safety_meetings/{id}/foreman_points/{pointId}` — see this file's
+ * header note on THE FOREMAN'S OWN POINTS.
+ *
+ * - A new `pointId` adds the point, on an in-progress OR completed meeting.
+ * - An existing `pointId` with exactly the stored values is a no-op success:
+ *   the same point sent again after a dropped signal.
+ * - An existing `pointId` with different values edits it, `inProgress`-only.
+ *
+ * `activityId`, when given, must be one of the meeting's own activities.
+ */
+export const saveMeetingForemanPoint = onCall(async (request) => {
+  const organizationId = requireString(request, "organizationId");
+  const meetingId = requireString(request, "meetingId");
+  const pointId = requirePointId(request);
+  const title = requireMaxLength(
+    requireString(request, "title"),
+    "The point",
+    FOREMAN_POINT_TITLE_MAX
+  ) as string;
+  const note = requireMaxLength(
+    optionalString(request, "note"),
+    "What was discussed",
+    FOREMAN_POINT_NOTE_MAX
+  ) ?? null;
+  const activityId = optionalString(request, "activityId") ?? null;
+
+  const foremanId = request.auth?.uid;
+  if (!foremanId) throw denied();
+
+  const meeting = await requireOwnMeeting(organizationId, meetingId, foremanId);
+  const db = getFirestore();
+  const meetingRef = db.doc(
+    `organizations/${organizationId}/daily_safety_meetings/${meetingId}`
+  );
+  const ref = meetingRef.collection("foreman_points").doc(pointId);
+  const afterCompletion = meeting.status !== "inProgress";
+
+  await db.runTransaction(async (transaction) => {
+    const existing = (await transaction.get(ref)).data();
+    if (
+      existing &&
+      existing.title === title &&
+      (existing.note ?? null) === note &&
+      (existing.activityId ?? null) === activityId
+    ) {
+      return;
+    }
+    if (existing && afterCompletion) {
+      throw new HttpsError(
+        "failed-precondition",
+        "That meeting has already been completed."
+      );
+    }
+    // Checked only when the link changes, so an edit to the title or note
+    // still saves after the linked activity was taken off the meeting.
+    if (
+      activityId !== null &&
+      activityId !== (existing?.activityId ?? null)
+    ) {
+      const activityIds: unknown = meeting.activityIds;
+      if (!Array.isArray(activityIds) || !activityIds.includes(activityId)) {
+        throw new HttpsError(
+          "failed-precondition",
+          "That activity is not on this meeting."
+        );
+      }
+    }
+
+    const now = FieldValue.serverTimestamp();
+    if (existing) {
+      transaction.update(ref, {title, note, activityId, updatedAt: now});
+    } else {
+      transaction.set(ref, {
+        meetingId,
+        organizationId,
+        siteId: meeting.siteId,
+        title,
+        note,
+        activityId,
+        recordedBy: foremanId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      transaction.update(meetingRef, {
+        foremanPointCount: FieldValue.increment(1),
+      });
+    }
+    // The title and note are free text and stay out of the audit entry
+    // (see `meeting_audit.ts`); only what changed is recorded.
+    const audit = meetingAuditEntry({
+      organizationId,
+      meetingId,
+      actorUid: foremanId,
+      action: existing ?
+        "meeting.foremanPointUpdated" :
+        "meeting.foremanPointAdded",
+      metadata: existing ?
+        {
+          pointId,
+          titleChanged: existing.title !== title,
+          noteChanged: (existing.note ?? null) !== note,
+          ...changedFields({activityId: existing.activityId ?? null},
+            {activityId}),
+        } :
+        {pointId, activityId, hasNote: note !== null, afterCompletion},
+    });
+    transaction.set(audit.ref, audit.data);
+  });
+
+  return {id: pointId, organizationId, meetingId};
+});
+
+/**
+ * Removes one of the Foreman's own points from an in-progress meeting.
+ * Succeeds when the point is already gone — a removal sent again after a
+ * dropped signal.
+ */
+export const removeMeetingForemanPoint = onCall(async (request) => {
+  const organizationId = requireString(request, "organizationId");
+  const meetingId = requireString(request, "meetingId");
+  const pointId = requirePointId(request);
+
+  const foremanId = request.auth?.uid;
+  if (!foremanId) throw denied();
+
+  await requireInProgressOwnMeeting(organizationId, meetingId, foremanId);
+  const db = getFirestore();
+  const meetingRef = db.doc(
+    `organizations/${organizationId}/daily_safety_meetings/${meetingId}`
+  );
+  const ref = meetingRef.collection("foreman_points").doc(pointId);
+
+  await db.runTransaction(async (transaction) => {
+    const existing = (await transaction.get(ref)).data();
+    if (!existing) return;
+    const audit = meetingAuditEntry({
+      organizationId,
+      meetingId,
+      actorUid: foremanId,
+      action: "meeting.foremanPointRemoved",
+      metadata: {pointId, activityId: existing.activityId ?? null},
+    });
+    transaction.delete(ref);
+    transaction.update(meetingRef, {
+      foremanPointCount: FieldValue.increment(-1),
+    });
+    transaction.set(audit.ref, audit.data);
+  });
+
+  return {id: pointId, organizationId, meetingId};
 });
 
 const EVIDENCE_TYPES = [

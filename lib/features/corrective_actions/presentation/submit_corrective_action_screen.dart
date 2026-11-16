@@ -13,6 +13,7 @@ import '../../authentication/presentation/auth_error_banner.dart';
 import '../data/corrective_action_service.dart';
 import '../domain/corrective_action.dart';
 import '../domain/corrective_action_evidence.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// Where the assignee finishes their corrective action: says what was
 /// done, attaches the evidence the action asks for, and submits it for a
@@ -143,7 +144,7 @@ class _SubmitCorrectiveActionScreenState
   Widget build(BuildContext context) {
     final action = widget.action;
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Submit Action')),
       body: ListView(
         padding: const EdgeInsets.all(AppSpacing.md),
         children: [

@@ -21,6 +21,7 @@ import '../domain/incident_enums.dart';
 import '../../organizations/data/site_repository.dart';
 import '../../organizations/presentation/report_site_picker.dart';
 import 'incident_style.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// The worker-facing "Report an Incident" flow — something that ACTUALLY
 /// happened. A Site Manager/Admin may report at any site of the
@@ -238,7 +239,10 @@ class _ReportIncidentScreenState extends State<ReportIncidentScreen> {
     } else {
       body = _buildForm(organizationId: organizationId, siteIds: siteIds);
     }
-    return Scaffold(appBar: AppBar(), body: body);
+    return Scaffold(
+      appBar: AppBar(title: const MobileTitle('Report an Incident')),
+      body: body,
+    );
   }
 
   Widget _buildForm({

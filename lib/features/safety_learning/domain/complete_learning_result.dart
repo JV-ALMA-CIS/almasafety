@@ -13,10 +13,18 @@ class CompleteLearningResult {
   const CompleteLearningResult({
     required this.status,
     this.knowledgeCheckResult,
+    this.contentCompleted = false,
+    this.quizOutstanding = false,
   });
 
   final WorkerLearningStatus status;
   final KnowledgeCheckResult? knowledgeCheckResult;
+
+  /// The content step (video watched) is recorded.
+  final bool contentCompleted;
+
+  /// A mandatory quiz still has to be passed before the item is complete.
+  final bool quizOutstanding;
 
   factory CompleteLearningResult.fromMap(Map<Object?, Object?> data) {
     final status =
@@ -25,6 +33,10 @@ class CompleteLearningResult {
     final rawResult = data['knowledgeCheckResult'];
     return CompleteLearningResult(
       status: status,
+      contentCompleted:
+          data['contentCompleted'] == true ||
+          status == WorkerLearningStatus.completed,
+      quizOutstanding: data['quizOutstanding'] == true,
       knowledgeCheckResult: rawResult is Map
           ? KnowledgeCheckResult.fromMap(rawResult.cast())
           : null,

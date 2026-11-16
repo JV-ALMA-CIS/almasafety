@@ -20,6 +20,7 @@ import '../data/safety_meeting_service.dart';
 import '../domain/safety_meeting.dart';
 import 'record_safety_meeting_screen.dart';
 import 'safety_meeting_style.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// The "Weekly & Monthly Meetings" page — the Safety Plan's weekly employee
 /// safety meeting (Thursday 08:00) and monthly supervisory safety meeting
@@ -368,7 +369,7 @@ class SafetyMeetingDetailScreen extends StatelessWidget {
     ]..sort();
     final color = meeting.kind.color;
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Meeting Details')),
       body: ListView(
         padding: const EdgeInsets.all(AppSpacing.md),
         children: [

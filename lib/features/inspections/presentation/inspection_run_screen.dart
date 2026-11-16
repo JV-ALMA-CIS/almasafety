@@ -15,6 +15,7 @@ import '../data/inspection_repository.dart';
 import '../data/inspection_service.dart';
 import '../domain/inspection.dart';
 import 'inspection_style.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// Carrying out an inspection: every checklist item, grouped by section,
 /// answered ✅ OK / ❌ Not OK / N/A with one tap. "Not OK" asks what is
@@ -237,7 +238,7 @@ class _InspectionRunScreenState extends State<InspectionRunScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Inspection')),
       body: LiveStreamBuilder<Inspection?>(
         streamKey: widget.inspectionId,
         stream: () => widget.repository.watchInspection(widget.inspectionId),

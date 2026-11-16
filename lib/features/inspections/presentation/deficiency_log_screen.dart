@@ -19,6 +19,7 @@ import '../../corrective_actions/presentation/report_progress.dart';
 import '../../hazards/data/hazard_repository.dart';
 import '../../hazards/domain/hazard.dart';
 import '../../hazards/domain/hazard_status.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// The Safety Plan's DEFICIENCY LOG (Section 7c): every deficiency found by
 /// an inspection, with the five things the plan asks for — date identified,
@@ -144,7 +145,7 @@ class _DeficiencyLogScreenState extends State<DeficiencyLogScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Deficiency Log')),
       body: LiveStreamBuilder<List<Hazard>>(
         streamKey: widget.organizationId,
         stream: () => _hazards.watchForOrganization(),

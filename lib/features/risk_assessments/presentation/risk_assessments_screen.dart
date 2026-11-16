@@ -24,6 +24,7 @@ import '../domain/risk_assessment.dart';
 import '../domain/standard_ahas.dart';
 import 'risk_assessment_editor_screen.dart';
 import 'risk_assessment_style.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// The "Risk Assessments (AHA)" page — the Safety Plan's Activity Hazard
 /// Analyses (Section 10): one per phase / feature of work.
@@ -388,7 +389,7 @@ class _ChooseStartScreenState extends State<_ChooseStartScreen> {
         ),
     ];
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Prepare an AHA')),
       body: ListView(
         padding: const EdgeInsets.all(AppSpacing.md),
         children: [
@@ -615,7 +616,7 @@ class _RiskAssessmentDetailScreenState
         role == AppRole.siteManager;
 
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('AHA Details')),
       body: LiveStreamBuilder<RiskAssessment?>(
         streamKey: _id,
         stream: () => widget.repository.watch(_id),

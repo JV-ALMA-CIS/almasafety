@@ -8,6 +8,7 @@ import '../../../core/widgets/color_choice_chips.dart';
 import '../../../core/widgets/feature_header.dart';
 import '../../../core/widgets/person_picker.dart';
 import '../../authentication/domain/organization_user.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 class CorrectiveActionFormResult {
   const CorrectiveActionFormResult({
@@ -132,7 +133,7 @@ class _CorrectiveActionFormScreenState
       ),
     ];
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Corrective Action')),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(AppSpacing.md),

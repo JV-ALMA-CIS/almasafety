@@ -17,7 +17,11 @@
  * This suite proves the CURRENT, simpler contract: any signed-in user may
  * read/write under `organizations/{organizationId}/...`; every other path
  * and an unauthenticated caller are refused; a >25MB upload is refused; a
- * delete (no `request.resource`) still succeeds.
+ * delete (no `request.resource`) still succeeds — EXCEPT the Safety
+ * Learning library folder (`.../safety_learning/{uploadId}/{fileName}`),
+ * which no client may write (files are published server-side by
+ * `publishLearningUpload`), and each author's own staging folder
+ * (`learning_uploads/{uid}/...`), which only that user can use.
  *
  * Requires the Storage emulator. Run:
  *
@@ -209,5 +213,166 @@ describe("Daily Safety Meeting evidence upload path (regression)", () => {
 
     await assertSucceeds(uploadBytes(fileRef, SOME_BYTES));
     await assertSucceeds(getBytes(fileRef));
+  });
+});
+
+describe("Safety Learning library files (published server-side only)", () => {
+  // A fresh upload id per test — `clearStorage()` does not reliably remove
+  // nested files between tests.
+  let uploadCounter = 0;
+  let uploadId;
+  beforeEach(() => {
+    uploadCounter += 1;
+    uploadId = `${Date.now()}-${uploadCounter}`;
+  });
+  const asVideo = {contentType: "video/mp4"};
+  const libraryPath = () =>
+    `organizations/${ORG_A}/safety_learning/${uploadId}/ladder.mp4`;
+  const stagingPath = (uid) =>
+    `learning_uploads/${uid}/${uploadId}/ladder.mp4`;
+
+  /** What `publishLearningUpload` does with the Admin SDK. */
+  async function publishAsServer() {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await uploadBytes(
+        ref(context.storage(), libraryPath()),
+        SOME_BYTES,
+        asVideo
+      );
+    });
+  }
+
+  test("no client may create a library file directly — not even the " +
+    "people allowed to author videos", async () => {
+    for (const uid of ["admin-a", "site-manager-a", "worker-b"]) {
+      await assertFails(
+        uploadBytes(ref(storageFor(uid), libraryPath()), SOME_BYTES, asVideo)
+      );
+    }
+  });
+
+  test("a published library file can be read by any signed-in user, not " +
+    "an anonymous one", async () => {
+    await publishAsServer();
+    await assertSucceeds(getBytes(ref(storageFor("worker-b"), libraryPath())));
+    await assertFails(getBytes(ref(anonymousStorage(), libraryPath())));
+  });
+
+  test("a published library file cannot be overwritten or deleted by any " +
+    "client", async () => {
+    await publishAsServer();
+    for (const uid of ["admin-a", "worker-b"]) {
+      await assertFails(
+        uploadBytes(ref(storageFor(uid), libraryPath()),
+          new Uint8Array([9, 9]), asVideo)
+      );
+      await assertFails(deleteObject(ref(storageFor(uid), libraryPath())));
+    }
+    const bytes = await getBytes(ref(storageFor("admin-a"), libraryPath()));
+    expect(new Uint8Array(bytes)).toEqual(SOME_BYTES);
+  });
+
+  test("an author can stage an upload in their OWN folder, read it back " +
+    "and delete it", async () => {
+    const fileRef = ref(storageFor("site-manager-a"),
+      stagingPath("site-manager-a"));
+    await assertSucceeds(uploadBytes(fileRef, SOME_BYTES, asVideo));
+    await assertSucceeds(getBytes(fileRef));
+    await assertSucceeds(deleteObject(fileRef));
+  });
+
+  test("nobody else can stage into, read or delete someone's staging " +
+    "folder", async () => {
+    await assertSucceeds(
+      uploadBytes(ref(storageFor("site-manager-a"),
+        stagingPath("site-manager-a")), SOME_BYTES, asVideo)
+    );
+    const asOther = ref(storageFor("worker-b"), stagingPath("site-manager-a"));
+    await assertFails(getBytes(asOther));
+    await assertFails(deleteObject(asOther));
+    await assertFails(
+      uploadBytes(
+        ref(storageFor("worker-b"),
+          `learning_uploads/site-manager-a/${uploadId}-x/other.mp4`),
+        SOME_BYTES,
+        asVideo
+      )
+    );
+    await assertFails(
+      uploadBytes(ref(anonymousStorage(), stagingPath("anon")), SOME_BYTES,
+        asVideo)
+    );
+  });
+
+  test("a staged file cannot be overwritten", async () => {
+    const fileRef = ref(storageFor("site-manager-a"),
+      stagingPath("site-manager-a"));
+    await assertSucceeds(uploadBytes(fileRef, SOME_BYTES, asVideo));
+    await assertFails(uploadBytes(fileRef, new Uint8Array([7]), asVideo));
+  });
+
+  test("staging accepts the library's file types only", async () => {
+    const storage = storageFor("admin-a");
+    for (const [name, contentType] of [
+      ["handbook.pdf", "application/pdf"],
+      ["slides.pptx", "application/vnd.openxmlformats-officedocument." +
+        "presentationml.presentation"],
+      ["sheet.xls", "application/vnd.ms-excel"],
+      ["guide.png", "image/png"],
+      ["clip.mov", "video/quicktime"],
+    ]) {
+      await assertSucceeds(
+        uploadBytes(
+          ref(storage, `learning_uploads/admin-a/${uploadId}/${name}`),
+          SOME_BYTES,
+          {contentType}
+        )
+      );
+    }
+    for (const [name, contentType] of [
+      ["page.html", "text/html"],
+      ["script.js", "application/javascript"],
+      ["blob.bin", "application/octet-stream"],
+    ]) {
+      await assertFails(
+        uploadBytes(
+          ref(storage, `learning_uploads/admin-a/${uploadId}/${name}`),
+          SOME_BYTES,
+          {contentType}
+        )
+      );
+    }
+  });
+
+  test("a staged file of 25MB or more is refused", async () => {
+    await assertFails(
+      uploadBytes(ref(storageFor("admin-a"), stagingPath("admin-a")),
+        new Uint8Array(25 * 1024 * 1024), asVideo)
+    );
+  });
+
+  test("staging paths outside {uid}/{uploadId}/{fileName} are refused",
+    async () => {
+      const storage = storageFor("admin-a");
+      for (const filePath of [
+        "learning_uploads/admin-a/ladder.mp4",
+        `learning_uploads/admin-a/${uploadId}/nested/ladder.mp4`,
+      ]) {
+        await assertFails(
+          uploadBytes(ref(storage, filePath), SOME_BYTES, asVideo)
+        );
+      }
+    });
+
+  test("other organization folders still allow rewrites and deletes " +
+    "(regression: e.g. the offline outbox re-uploading)", async () => {
+    const storage = storageFor("worker-a");
+    const fileRef = ref(
+      storage,
+      `organizations/${ORG_A}/corrective_actions/action-1/1_photo.jpg`
+    );
+    await assertSucceeds(uploadBytes(fileRef, SOME_BYTES));
+    await assertSucceeds(uploadBytes(fileRef, new Uint8Array([5])));
+    await assertSucceeds(deleteObject(fileRef));
   });
 });

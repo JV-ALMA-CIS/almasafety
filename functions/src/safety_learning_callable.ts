@@ -11,11 +11,17 @@
  * WHAT AUTHORIZES A CALLER
  *
  * `createSafetyLearning`/`updateSafetyLearning` and the knowledge-check
- * question callables use `requireAdmin` (imported from
- * `organization_callable.ts`): `admin` only. The Safety Learning LIBRARY
- * (the reusable content catalog: videos, documents, courses, guides, and
- * their knowledge checks) is a platform-level, company-wide responsibility
- * deliberately NOT delegated to `siteManager` (PROJECT_CONTEXT.md §4, §12).
+ * question callables use `requireLibraryAuthor` (below): an `admin` may
+ * author every learning type; a `siteManager` of THIS organization (the
+ * existing `requireOrganizationScopedManager` check) may author VIDEO items
+ * only — create, edit, activate/deactivate, and their knowledge checks —
+ * for the whole organization, not just their own sites, and whoever
+ * created the item. Everything else in the Safety Learning LIBRARY
+ * (documents, courses, guides, knowledge-check items) stays a platform-
+ * level, `admin`-only responsibility (PROJECT_CONTEXT.md §4, §12). The
+ * video-only limit is enforced here on every call, against the STORED
+ * item's type, never the client's word: a Site Manager can neither create
+ * a non-video item, nor edit one, nor turn a video into another type.
  * This is content management, not worker progress — see
  * `worker_learning_callable.ts` for the separate, worker-facing
  * authorization model used by `startLearning`/`completeLearning`.
@@ -62,14 +68,15 @@
  * (`worker_learning_callable.ts`), which strips `correctOptionId` from every
  * question before the response is built — never merely omits it from a type.
  *
- * `admin` only, same as every other callable in this file — see
- * `requireLearningItemExists`/`requireAdmin` above. Each question is
+ * Authorized like the items themselves — `admin`, or a `siteManager` of
+ * this organization for a VIDEO item's questions only; see
+ * `requireLibraryAuthor`/`requireAuthorableItem` below. Each question is
  * multiple-choice: 2-6 options, exactly one of which is correct
  * (`correctOptionId` must match one of `options[].id`). `SafetyLearning`
  * itself gains `passingScorePercent` (0-100) — see
  * `optionalPassingScorePercent` — meaningful only once at least one question
  * exists for that item; see `worker_learning_callable.ts`'s
- * `resolveKnowledgeCheckGate` doc comment for the "zero questions -> no
+ * `completeLearning` doc comment for the "zero questions -> no
  * gate" rule this enables.
  */
 
@@ -78,10 +85,87 @@ import {HttpsError, onCall} from "firebase-functions/v2/https";
 import {
   isRecordStatus,
   RecordStatus,
-  requireAdmin,
   requireOrganizationScopedManager,
 } from "./organization_callable";
 import type {CallableRequest} from "firebase-functions/v2/https";
+import {countQuestions, requireActiveWorker} from "./worker_learning_callable";
+
+/**
+ * Who may author learning items in [organizationId], and how far.
+ *
+ * Reuses `requireOrganizationScopedManager` — `admin` (any organization)
+ * or an active `siteManager` of THIS organization, re-read from the
+ * caller's own trusted profile and membership, never from the request —
+ * then re-reads the caller's profile to tell the two apart: only a
+ * platform `admin` may author every learning type.
+ *
+ * @param {CallableRequest} request the incoming callable request.
+ * @param {string} organizationId the organization the action targets.
+ * @return {Promise<{uid: string, videoOnly: boolean}>} the caller's uid,
+ * and whether they are limited to video items.
+ */
+export async function requireLibraryAuthor(
+  request: CallableRequest,
+  organizationId: string
+): Promise<{uid: string; videoOnly: boolean}> {
+  const uid = await requireOrganizationScopedManager(request, organizationId);
+  const profile = (await getFirestore().doc(`users/${uid}`).get()).data();
+  return {uid, videoOnly: profile?.platformRole !== "admin"};
+}
+
+/**
+ * The refusal for a Site Manager acting on a non-video item.
+ *
+ * @return {HttpsError} a `permission-denied` error.
+ */
+function videoOnlyDenied(): HttpsError {
+  return new HttpsError(
+    "permission-denied",
+    "You do not have permission to manage this learning item. Site " +
+      "Managers can manage video learning items only."
+  );
+}
+
+/**
+ * Loads `safety_learning/{learningId}` and, for a video-only author,
+ * refuses it unless its STORED type is `video`. Missing items are
+ * `not-found`, as before.
+ *
+ * @param {string} organizationId the organization the item belongs to.
+ * @param {string} learningId the learning item's id.
+ * @param {boolean} videoOnly whether the caller may only touch videos.
+ * @return {Promise<void>} resolves when the caller may act on the item.
+ */
+async function requireAuthorableItem(
+  organizationId: string,
+  learningId: string,
+  videoOnly: boolean
+): Promise<void> {
+  const snapshot = await getFirestore()
+    .doc(`organizations/${organizationId}/safety_learning/${learningId}`)
+    .get();
+  if (!snapshot.exists) {
+    throw new HttpsError(
+      "not-found",
+      "That safety learning item no longer exists."
+    );
+  }
+  if (videoOnly && snapshot.data()?.type !== "video") throw videoOnlyDenied();
+  if (snapshot.data()?.deletion?.pending) throw beingDeleted();
+}
+
+/**
+ * The refusal for changing an item that is part-way through deletion
+ * (`learning_delete_callable.ts`): it is finished, never revived half-way.
+ *
+ * @return {HttpsError} a `failed-precondition` error.
+ */
+function beingDeleted(): HttpsError {
+  return new HttpsError(
+    "failed-precondition",
+    "This item is being deleted. Choose Delete again to finish it."
+  );
+}
 
 /** 2-6 options per multiple-choice knowledge-check question. */
 const MIN_OPTIONS = 2;
@@ -187,7 +271,7 @@ function optionalMinimumWatchSeconds(
  * Reads and validates the optional `passingScorePercent` argument — an
  * integer 0-100, or null/absent meaning "no knowledge-check gate" (the same
  * effect as configuring zero questions — see
- * `resolveKnowledgeCheckGate`'s doc comment in `worker_learning_callable.ts`).
+ * `completeLearning`'s doc comment in `worker_learning_callable.ts`).
  *
  * @param {CallableRequest} request the incoming callable request.
  * @return {number | null} the validated value, or null.
@@ -328,24 +412,39 @@ function optionalStringArray(
 
 /**
  * Validates that every id in [learningIds] refers to an existing
- * `SafetyLearning` document within [organizationId]. Fetched fresh, never
- * trusted from the request payload alone — mirrors `createSite`'s
- * multi-doc-fetch validation style.
+ * `SafetyLearning` document within [organizationId], and that every id NOT
+ * already on the requirement ([alreadyListed]) is ACTIVE — an inactive
+ * lesson is never newly made mandatory, while a requirement that already
+ * lists one (since deactivated) can still be saved unchanged; the resolver
+ * ignores inactive lessons either way. Fetched fresh, never trusted from
+ * the request payload alone — mirrors `createSite`'s multi-doc-fetch
+ * validation style.
  *
+ * READ INSIDE THE REQUIREMENT'S OWN TRANSACTION ([tx]). A transaction
+ * holds what it read until it commits, so this conflicts with a deletion
+ * (`learning_delete_callable.ts`), whose mark and delete steps WRITE the
+ * same item documents: either the requirement commits first (and the
+ * deletion's re-checks see it and refuse/undo), or it reads the item after
+ * the deletion marked or removed it and is refused here. A requirement can
+ * therefore never newly list an item being deleted or already deleted.
+ *
+ * @param {FirebaseFirestore.Transaction} tx the requirement's transaction.
  * @param {string} organizationId the organization the requirement belongs
  * to.
  * @param {string[]} learningIds the ids to validate.
+ * @param {Set<string>} alreadyListed ids the requirement already had.
  * @return {Promise<void>} resolves when every id is confirmed to exist.
  */
 async function requireLearningItemsExist(
+  tx: FirebaseFirestore.Transaction,
   organizationId: string,
-  learningIds: string[]
+  learningIds: string[],
+  alreadyListed: Set<string> = new Set()
 ): Promise<void> {
-  const snapshots = await Promise.all(
-    learningIds.map((id) =>
+  const snapshots = await tx.getAll(
+    ...learningIds.map((id) =>
       getFirestore()
         .doc(`organizations/${organizationId}/safety_learning/${id}`)
-        .get()
     )
   );
   const missing = snapshots
@@ -358,6 +457,28 @@ async function requireLearningItemsExist(
         missing.map(({id}) => id).join(", ")
     );
   }
+  const beingDeleted = snapshots
+    .map((snapshot, index) => ({snapshot, id: learningIds[index]}))
+    .filter(({snapshot, id}) =>
+      !alreadyListed.has(id) && snapshot.data()?.deletion?.pending);
+  if (beingDeleted.length > 0) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Learning items being deleted cannot be made required: " +
+        beingDeleted.map(({id}) => id).join(", ")
+    );
+  }
+  const newlyInactive = snapshots
+    .map((snapshot, index) => ({snapshot, id: learningIds[index]}))
+    .filter(({snapshot, id}) =>
+      !alreadyListed.has(id) && snapshot.data()?.status !== "active");
+  if (newlyInactive.length > 0) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Inactive learning items cannot be made required: " +
+        newlyInactive.map(({id}) => id).join(", ")
+    );
+  }
 }
 
 /**
@@ -365,9 +486,13 @@ async function requireLearningItemsExist(
  */
 export const createSafetyLearning = onCall(async (request) => {
   const organizationId = requireString(request, "organizationId");
-  const actorUid = await requireAdmin(request);
+  const {uid: actorUid, videoOnly} = await requireLibraryAuthor(
+    request,
+    organizationId
+  );
   const title = requireString(request, "title");
   const type = requireLearningType(request);
+  if (videoOnly && type !== "video") throw videoOnlyDenied();
   const contentReference = requireString(request, "contentReference");
   const description = optionalString(request, "description");
   const status = targetStatus(request);
@@ -399,9 +524,38 @@ export const createSafetyLearning = onCall(async (request) => {
  * Updates a safety learning item's editable fields. `organizationId` is
  * immutable.
  */
+/**
+ * The names of the ACTIVE Safety Requirements in [organizationId] whose
+ * `requiredLearningIds` list [learningId]. Read from the authoritative
+ * requirement documents; a failed read throws, so a caller can never
+ * mistake "could not check" for "none".
+ *
+ * @param {string} organizationId the organization.
+ * @param {string} learningId the learning item.
+ * @return {Promise<string[]>} the requirement names (ids when unnamed).
+ */
+async function activeRequirementsListing(
+  organizationId: string,
+  learningId: string
+): Promise<string[]> {
+  const snapshot = await getFirestore()
+    .collection(`organizations/${organizationId}/safety_requirements`)
+    .where("requiredLearningIds", "array-contains", learningId)
+    .get();
+  return snapshot.docs
+    .filter((doc) => doc.data().status === "active")
+    .map((doc) => {
+      const name = doc.data().name;
+      return typeof name === "string" && name.trim() ? name.trim() : doc.id;
+    });
+}
+
 export const updateSafetyLearning = onCall(async (request) => {
   const organizationId = requireString(request, "organizationId");
-  const actorUid = await requireAdmin(request);
+  const {uid: actorUid, videoOnly} = await requireLibraryAuthor(
+    request,
+    organizationId
+  );
   const id = requireString(request, "id");
   const title = optionalString(request, "title");
   const type = optionalLearningType(request);
@@ -434,6 +588,29 @@ export const updateSafetyLearning = onCall(async (request) => {
       "not-found",
       "That safety learning item no longer exists."
     );
+  }
+  // A Site Manager may only touch an item that IS a video (as stored) and
+  // must leave it one.
+  if (
+    videoOnly &&
+    (snapshot.data()?.type !== "video" || (type !== null && type !== "video"))
+  ) {
+    throw videoOnlyDenied();
+  }
+  if (snapshot.data()?.deletion?.pending) throw beingDeleted();
+  // A video still listed by an ACTIVE Safety Requirement cannot be
+  // deactivated: the requirement would silently stop requiring it. Those
+  // requirements are updated first. Inactive requirements do not block.
+  if (status === "inactive" && snapshot.data()?.type === "video") {
+    const usedBy = await activeRequirementsListing(organizationId, id);
+    if (usedBy.length > 0) {
+      throw new HttpsError(
+        "failed-precondition",
+        "This video is required by active Safety Requirements: " +
+          `${usedBy.join(", ")}. Remove it from those requirements (or ` +
+          "deactivate them) before deactivating the video."
+      );
+    }
   }
 
   await ref.update({
@@ -605,12 +782,20 @@ function booleanOrDefault(
 interface LearningSetting {
   gatesAttendance: boolean;
   requiredBeforeWork: boolean;
+  /**
+   * Whether the lesson's quiz (when it has one) must be passed to complete
+   * it under this requirement. Optional: absent means mandatory — the only
+   * behaviour before this setting existed — so older clients and stored
+   * requirements are unaffected.
+   */
+  quizRequired?: boolean;
 }
 
 /**
  * Reads and validates the optional `learningSettings` argument: an object
  * keyed by learning id, each value `{gatesAttendance, requiredBeforeWork}`
- * with BOTH booleans present and no other fields. Returns null when absent.
+ * with BOTH booleans present, plus an optional boolean `quizRequired`, and
+ * no other fields. Returns null when absent.
  * Coverage against the requirement's own lesson list is checked separately
  * — see `requireCompleteLearningSettings`.
  *
@@ -644,7 +829,11 @@ function optionalLearningSettings(
     }
     const entry = raw as Record<string, unknown>;
     for (const key of Object.keys(entry)) {
-      if (key !== "gatesAttendance" && key !== "requiredBeforeWork") {
+      if (
+        key !== "gatesAttendance" &&
+        key !== "requiredBeforeWork" &&
+        key !== "quizRequired"
+      ) {
         throw new HttpsError(
           "invalid-argument",
           `learningSettings.${learningId}.${key} is not a recognised setting.`
@@ -661,9 +850,21 @@ function optionalLearningSettings(
           "requiredBeforeWork as booleans."
       );
     }
+    if (
+      entry.quizRequired !== undefined &&
+      typeof entry.quizRequired !== "boolean"
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        `learningSettings.${learningId}.quizRequired must be a boolean.`
+      );
+    }
     settings[learningId] = {
       gatesAttendance: entry.gatesAttendance,
       requiredBeforeWork: entry.requiredBeforeWork,
+      ...(typeof entry.quizRequired === "boolean" ?
+        {quizRequired: entry.quizRequired} :
+        {}),
     };
   }
   return settings;
@@ -729,6 +930,11 @@ function reconcileStoredLearningSettings(
     reconciled[id] = {
       gatesAttendance: entry?.gatesAttendance === true,
       requiredBeforeWork: entry?.requiredBeforeWork === true,
+      // Kept when set; a newly added lesson leaves it unset (= mandatory,
+      // the existing default).
+      ...(typeof entry?.quizRequired === "boolean" ?
+        {quizRequired: entry.quizRequired} :
+        {}),
     };
   }
   return reconciled;
@@ -773,31 +979,35 @@ export const createSafetyRequirement = onCall(async (request) => {
   const {projectId, siteId, activityId} =
     await optionalScope(request, organizationId);
 
-  if (requiredLearningIds.length > 0) {
-    await requireLearningItemsExist(organizationId, requiredLearningIds);
-  }
-
-  const ref = getFirestore()
+  const db = getFirestore();
+  const ref = db
     .collection(`organizations/${organizationId}/safety_requirements`)
     .doc();
-  await ref.set({
-    organizationId,
-    name,
-    category,
-    risk,
-    ...(description !== null ? {description} : {}),
-    requiredLearningIds,
-    status,
-    gatesAttendance,
-    requiredBeforeWork,
-    ...(learningSettings !== null ? {learningSettings} : {}),
-    ...(projectId !== null ? {projectId} : {}),
-    ...(siteId !== null ? {siteId} : {}),
-    ...(activityId !== null ? {activityId} : {}),
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-    createdBy: actorUid,
-    updatedBy: actorUid,
+  // Validate the listed items and write in ONE transaction — see
+  // `requireLearningItemsExist` for why this cannot race a deletion.
+  await db.runTransaction(async (tx) => {
+    if (requiredLearningIds.length > 0) {
+      await requireLearningItemsExist(tx, organizationId, requiredLearningIds);
+    }
+    tx.set(ref, {
+      organizationId,
+      name,
+      category,
+      risk,
+      ...(description !== null ? {description} : {}),
+      requiredLearningIds,
+      status,
+      gatesAttendance,
+      requiredBeforeWork,
+      ...(learningSettings !== null ? {learningSettings} : {}),
+      ...(projectId !== null ? {projectId} : {}),
+      ...(siteId !== null ? {siteId} : {}),
+      ...(activityId !== null ? {activityId} : {}),
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+      createdBy: actorUid,
+      updatedBy: actorUid,
+    });
   });
 
   return {id: ref.id, organizationId};
@@ -865,63 +1075,77 @@ export const updateSafetyRequirement = onCall(async (request) => {
     await optionalScope(request, organizationId) :
     null;
 
-  const ref = getFirestore().doc(
+  const db = getFirestore();
+  const ref = db.doc(
     `organizations/${organizationId}/safety_requirements/${id}`
   );
-  const snapshot = await ref.get();
-  if (!snapshot.exists) {
-    throw new HttpsError(
-      "not-found",
-      "That safety requirement no longer exists."
-    );
-  }
+  // Read, validate the listed items and write in ONE transaction — see
+  // `requireLearningItemsExist` for why this cannot race a deletion.
+  await db.runTransaction(async (tx) => {
+    const snapshot = await tx.get(ref);
+    if (!snapshot.exists) {
+      throw new HttpsError(
+        "not-found",
+        "That safety requirement no longer exists."
+      );
+    }
 
-  if (requiredLearningIds !== null && requiredLearningIds.length > 0) {
-    await requireLearningItemsExist(organizationId, requiredLearningIds);
-  }
+    const stored = snapshot.data() ?? {};
+    if (requiredLearningIds !== null && requiredLearningIds.length > 0) {
+      await requireLearningItemsExist(
+        tx,
+        organizationId,
+        requiredLearningIds,
+        new Set(
+          Array.isArray(stored.requiredLearningIds) ?
+            stored.requiredLearningIds :
+            []
+        )
+      );
+    }
 
-  const stored = snapshot.data() ?? {};
-  const effectiveLearningIds: string[] = requiredLearningIds ??
+    const effectiveLearningIds: string[] = requiredLearningIds ??
     (Array.isArray(stored.requiredLearningIds) ?
       stored.requiredLearningIds.filter(
         (value: unknown): value is string => typeof value === "string"
       ) :
       []);
-  let learningSettings: Record<string, LearningSetting> | null = null;
-  if (suppliedLearningSettings !== null) {
-    requireCompleteLearningSettings(
-      suppliedLearningSettings,
-      effectiveLearningIds
-    );
-    learningSettings = suppliedLearningSettings;
-  } else if (requiredLearningIds !== null) {
-    learningSettings = reconcileStoredLearningSettings(
-      stored.learningSettings,
-      requiredLearningIds
-    );
-  }
+    let learningSettings: Record<string, LearningSetting> | null = null;
+    if (suppliedLearningSettings !== null) {
+      requireCompleteLearningSettings(
+        suppliedLearningSettings,
+        effectiveLearningIds
+      );
+      learningSettings = suppliedLearningSettings;
+    } else if (requiredLearningIds !== null) {
+      learningSettings = reconcileStoredLearningSettings(
+        stored.learningSettings,
+        requiredLearningIds
+      );
+    }
 
-  await ref.update({
-    ...(name !== null ? {name} : {}),
-    ...(category !== null ? {category} : {}),
-    ...(risk !== null ? {risk} : {}),
-    ...(description !== null ? {description} : {}),
-    ...(requiredLearningIds !== null ? {requiredLearningIds} : {}),
-    ...(status !== null ? {status} : {}),
-    ...(gatesAttendance !== null ? {gatesAttendance} : {}),
-    ...(requiredBeforeWork !== null ? {requiredBeforeWork} : {}),
-    ...(learningSettings !== null ? {learningSettings} : {}),
-    ...(scope !== null ? {
-      projectId: scope.projectId !== null ?
-        scope.projectId :
-        FieldValue.delete(),
-      siteId: scope.siteId !== null ? scope.siteId : FieldValue.delete(),
-      activityId: scope.activityId !== null ?
-        scope.activityId :
-        FieldValue.delete(),
-    } : {}),
-    updatedAt: FieldValue.serverTimestamp(),
-    updatedBy: actorUid,
+    tx.update(ref, {
+      ...(name !== null ? {name} : {}),
+      ...(category !== null ? {category} : {}),
+      ...(risk !== null ? {risk} : {}),
+      ...(description !== null ? {description} : {}),
+      ...(requiredLearningIds !== null ? {requiredLearningIds} : {}),
+      ...(status !== null ? {status} : {}),
+      ...(gatesAttendance !== null ? {gatesAttendance} : {}),
+      ...(requiredBeforeWork !== null ? {requiredBeforeWork} : {}),
+      ...(learningSettings !== null ? {learningSettings} : {}),
+      ...(scope !== null ? {
+        projectId: scope.projectId !== null ?
+          scope.projectId :
+          FieldValue.delete(),
+        siteId: scope.siteId !== null ? scope.siteId : FieldValue.delete(),
+        activityId: scope.activityId !== null ?
+          scope.activityId :
+          FieldValue.delete(),
+      } : {}),
+      updatedAt: FieldValue.serverTimestamp(),
+      updatedBy: actorUid,
+    });
   });
 
   return {id, organizationId};
@@ -1004,38 +1228,16 @@ function requireCorrectOptionId(
 }
 
 /**
- * Confirms `safety_learning/{learningId}` exists within [organizationId] —
- * fetched fresh, never trusted from the request payload alone.
- *
- * @param {string} organizationId the organization the item belongs to.
- * @param {string} learningId the learning item's id.
- * @return {Promise<void>} resolves when the item is confirmed to exist.
- */
-async function requireLearningItemExists(
-  organizationId: string,
-  learningId: string
-): Promise<void> {
-  const snapshot = await getFirestore()
-    .doc(`organizations/${organizationId}/safety_learning/${learningId}`)
-    .get();
-  if (!snapshot.exists) {
-    throw new HttpsError(
-      "not-found",
-      "That safety learning item no longer exists."
-    );
-  }
-}
-
-/**
- * Adds a multiple-choice knowledge-check question to `learningId`. `admin`
- * only — see this file's header note ("KNOWLEDGE CHECK QUESTIONS").
+ * Adds a multiple-choice knowledge-check question to `learningId`. `admin`,
+ * or a `siteManager` for a video — see this file's header note ("KNOWLEDGE
+ * CHECK QUESTIONS").
  * `correctOptionId` is stored here and here alone; it is never returned to
  * a worker-facing read path (see `getKnowledgeCheckQuestions` in
  * `worker_learning_callable.ts`).
  */
 export const addKnowledgeCheckQuestion = onCall(async (request) => {
   const organizationId = requireString(request, "organizationId");
-  await requireAdmin(request);
+  const {videoOnly} = await requireLibraryAuthor(request, organizationId);
   const learningId = requireString(request, "learningId");
   const prompt = requireString(request, "prompt");
   const order = (request.data ?? {}).order;
@@ -1045,7 +1247,7 @@ export const addKnowledgeCheckQuestion = onCall(async (request) => {
   const options = requireOptions(request);
   const correctOptionId = requireCorrectOptionId(request, options);
 
-  await requireLearningItemExists(organizationId, learningId);
+  await requireAuthorableItem(organizationId, learningId, videoOnly);
 
   const ref = getFirestore()
     .collection(
@@ -1066,18 +1268,23 @@ export const addKnowledgeCheckQuestion = onCall(async (request) => {
 });
 
 /**
- * Updates an existing knowledge-check question's editable fields. `admin`
- * only. Every field is required on update (unlike `updateSafetyLearning`'s
- * partial-update style) — a question's shape must always stay internally
- * consistent (`correctOptionId` must always match one of the CURRENT
+ * Updates an existing knowledge-check question's editable fields. `admin`,
+ * or a `siteManager` for a video. Every field is required on update
+ * (unlike `updateSafetyLearning`'s partial-update style) — a question's
+ * shape must always stay internally consistent (`correctOptionId` must
+ * always match one of the CURRENT
  * `options`), so a partial update that changed `options` without also
  * re-validating `correctOptionId` against the new set could silently leave
  * a question with no valid correct answer.
  */
 export const updateKnowledgeCheckQuestion = onCall(async (request) => {
   const organizationId = requireString(request, "organizationId");
-  await requireAdmin(request);
+  const {videoOnly} = await requireLibraryAuthor(request, organizationId);
   const learningId = requireString(request, "learningId");
+  // An Admin's behaviour is unchanged; a Site Manager only for a video.
+  if (videoOnly) {
+    await requireAuthorableItem(organizationId, learningId, videoOnly);
+  }
   const questionId = requireString(request, "questionId");
   const prompt = requireString(request, "prompt");
   const order = (request.data ?? {}).order;
@@ -1108,7 +1315,8 @@ export const updateKnowledgeCheckQuestion = onCall(async (request) => {
 });
 
 /**
- * Removes a knowledge-check question. `admin` only. Unlike every other
+ * Removes a knowledge-check question. `admin`, or a `siteManager` for a
+ * video. Unlike every other
  * record type in this codebase (which prefer an inactive/active status over
  * deletion), a question has no historical-reference concern the way a
  * `SafetyLearning` item or `SafetyRequirement` does — nothing else in this
@@ -1119,8 +1327,12 @@ export const updateKnowledgeCheckQuestion = onCall(async (request) => {
  */
 export const removeKnowledgeCheckQuestion = onCall(async (request) => {
   const organizationId = requireString(request, "organizationId");
-  await requireAdmin(request);
+  const {videoOnly} = await requireLibraryAuthor(request, organizationId);
   const learningId = requireString(request, "learningId");
+  // An Admin's behaviour is unchanged; a Site Manager only for a video.
+  if (videoOnly) {
+    await requireAuthorableItem(organizationId, learningId, videoOnly);
+  }
   const questionId = requireString(request, "questionId");
 
   const ref = getFirestore().doc(
@@ -1140,7 +1352,8 @@ export const removeKnowledgeCheckQuestion = onCall(async (request) => {
  * Lists every knowledge-check question for `learningId`, WITH
  * `correctOptionId` — the admin-authoring counterpart to
  * `getKnowledgeCheckQuestions` (`worker_learning_callable.ts`), which
- * strips it. `admin` only: this is the one callable in this codebase that
+ * strips it. `admin`, or a `siteManager` for a video (they author its
+ * questions): this is the one callable in this codebase that
  * ever returns a question's correct answer, and it does so exactly because
  * `firestore.rules` denies every client (including an Admin's own client
  * SDK) a direct read of this subcollection — an admin editing a question
@@ -1151,8 +1364,12 @@ export const removeKnowledgeCheckQuestion = onCall(async (request) => {
  */
 export const listKnowledgeCheckQuestions = onCall(async (request) => {
   const organizationId = requireString(request, "organizationId");
-  await requireAdmin(request);
+  const {videoOnly} = await requireLibraryAuthor(request, organizationId);
   const learningId = requireString(request, "learningId");
+  // An Admin's behaviour is unchanged; a Site Manager only for a video.
+  if (videoOnly) {
+    await requireAuthorableItem(organizationId, learningId, videoOnly);
+  }
 
   const snapshot = await getFirestore()
     .collection(
@@ -1165,3 +1382,43 @@ export const listKnowledgeCheckQuestions = onCall(async (request) => {
   const questions = snapshot.docs.map((doc) => ({id: doc.id, ...doc.data()}));
   return {organizationId, learningId, questions};
 });
+
+/**
+ * How many knowledge-check questions each VIDEO item in [organizationId]
+ * has — the quiz indicators and counts on Safety Videos. Only counts are
+ * returned, never questions or answers.
+ *
+ * - A video author (`requireLibraryAuthor`) gets every video, inactive
+ *   ones included, for the management page.
+ * - Anyone else must be an active member of the organization (the same
+ *   `requireActiveWorker` check every learner callable uses) and gets ACTIVE
+ *   videos only — the learner library's "has a quiz" indicator, which must
+ *   not depend on a Safety Requirement.
+ */
+export const getVideoQuizSummary = onCall(async (request) => {
+  const organizationId = requireString(request, "organizationId");
+  let activeOnly = false;
+  try {
+    await requireLibraryAuthor(request, organizationId);
+  } catch (error) {
+    if (!(error instanceof HttpsError) || error.code !== "permission-denied") {
+      throw error;
+    }
+    await requireActiveWorker(request, organizationId);
+    activeOnly = true;
+  }
+
+  const videos = await getFirestore()
+    .collection(`organizations/${organizationId}/safety_learning`)
+    .where("type", "==", "video")
+    .get();
+  const ids = videos.docs
+    .filter((doc) => !activeOnly || doc.data().status === "active")
+    .map((doc) => doc.id);
+  const counts = await countQuestions(organizationId, ids);
+  return {
+    organizationId,
+    questionCounts: Object.fromEntries(counts),
+  };
+});
+

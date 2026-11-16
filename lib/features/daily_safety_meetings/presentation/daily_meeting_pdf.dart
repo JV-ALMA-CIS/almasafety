@@ -3,6 +3,13 @@ import 'dart:typed_data';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import '../../../core/reports/pdf_report.dart';
+import '../../../core/utils/meeting_date.dart';
+import '../../corrective_actions/domain/corrective_action.dart';
+import '../domain/daily_safety_meeting.dart';
+import '../domain/meeting_attendance.dart';
+import '../domain/meeting_attendance_status.dart';
+import '../domain/meeting_concern.dart';
+import '../domain/meeting_foreman_point.dart';
 
 /// Everything printed on a daily safety meeting record, gathered by the
 /// screen that prints it (names already resolved).
@@ -13,6 +20,10 @@ class DailyMeetingReport {
     required this.date,
     required this.foremanName,
     required this.status,
+    this.startTime,
+    this.endTime,
+    this.presentCount,
+    this.absentCount,
     this.crewResult,
     this.activities = const [],
     this.points = const [],
@@ -28,6 +39,14 @@ class DailyMeetingReport {
   final String foremanName;
   final String status;
 
+  /// Nairobi clock times, e.g. "06:45". Null when not recorded.
+  final String? startTime;
+  final String? endTime;
+
+  /// Attendance totals. Null when the report was built without them.
+  final int? presentCount;
+  final int? absentCount;
+
   /// e.g. "GO" or "STOP - scaffold not tagged".
   final String? crewResult;
   final List<String> activities;
@@ -38,7 +57,8 @@ class DailyMeetingReport {
   /// e.g. "Removals (revision 2)".
   final List<String> ahasCovered;
 
-  /// (name, attendance status).
+  /// (name, attendance status) — the status names a "briefed in person"
+  /// attendance, e.g. "Present (briefed in person)".
   final List<(String, String)> attendance;
   final List<String> concerns;
   final List<String> correctiveActions;
@@ -98,6 +118,13 @@ Future<Uint8List> buildDailyMeetingPdf({
                 PdfReport.field('Crew result', report.crewResult),
               ],
             ),
+            pw.TableRow(
+              children: [
+                PdfReport.field('Started', report.startTime),
+                PdfReport.field('Finished', report.endTime),
+                PdfReport.field('Attendance', _attendanceTotal(report)),
+              ],
+            ),
           ],
         ),
         heading('WORK COVERED (ACTIVITIES)'),
@@ -153,4 +180,90 @@ Future<Uint8List> buildDailyMeetingPdf({
     ),
   );
   return doc.save();
+}
+
+/// "17 present, 1 absent (18 recorded)", or null without totals.
+String? _attendanceTotal(DailyMeetingReport report) {
+  final present = report.presentCount;
+  final absent = report.absentCount;
+  if (present == null || absent == null) return null;
+  return '$present present, $absent absent (${present + absent} recorded)';
+}
+
+/// Builds the printable record of [meeting] from what was actually
+/// recorded — the same for the Site Manager's summary and the Foreman's own
+/// completed meeting, so the two prints never disagree. Names are resolved
+/// by the caller; anything unresolved falls back to its id.
+DailyMeetingReport dailyMeetingReport({
+  required DailySafetyMeeting meeting,
+  required String siteName,
+  required String projectName,
+  required String foremanName,
+  required Map<String, String> activityNames,
+  required Map<String, String> pointTitles,
+  required Map<String, String> pointNotes,
+  List<MeetingForemanPoint> foremanPoints = const [],
+  required List<MeetingAttendance> attendance,
+  required List<MeetingConcern> concerns,
+  required List<CorrectiveAction> correctiveActions,
+  required String? Function(String uid) nameFor,
+}) {
+  String attendanceLabel(MeetingAttendance record) =>
+      record.briefedInPerson && record.status == MeetingAttendanceStatus.present
+      ? '${record.status.label} (briefed in person)'
+      : record.status.label;
+  final startTime = meeting.startTime;
+  final endTime = meeting.endTime;
+  return DailyMeetingReport(
+    siteName: siteName,
+    projectName: projectName,
+    date: meeting.date,
+    foremanName: foremanName,
+    status: meeting.status.label,
+    startTime: startTime == null ? null : meetingClock(startTime),
+    endTime: endTime == null ? null : meetingClock(endTime),
+    presentCount: attendance
+        .where((a) => a.status == MeetingAttendanceStatus.present)
+        .length,
+    absentCount: attendance
+        .where((a) => a.status == MeetingAttendanceStatus.absent)
+        .length,
+    crewResult: meeting.crewOutcome == null
+        ? null
+        : [meeting.crewOutcome!.label, ?meeting.crewOutcomeNote].join(' - '),
+    activities: [for (final id in meeting.activityIds) activityNames[id] ?? id],
+    points: [
+      for (final id in meeting.meetingPointIds)
+        (pointTitles[id] ?? id, pointNotes[id]),
+      // The Foreman's own points, marked so a reader can tell them from the
+      // library's.
+      for (final point in foremanPoints)
+        (
+          [
+            point.title,
+            '(added by Foreman${switch (activityNames[point.activityId]) {
+              final String name => ', about $name',
+              null => '',
+            }})',
+          ].join(' '),
+          point.note,
+        ),
+    ],
+    ahasCovered: [
+      for (final aha in meeting.ahasCovered)
+        '${aha.featureOfWork} (revision ${aha.revision})',
+    ],
+    attendance: [
+      for (final record in attendance)
+        (nameFor(record.workerId) ?? record.workerId, attendanceLabel(record)),
+    ],
+    concerns: [
+      for (final concern in concerns)
+        '${concern.category.label}: ${concern.description}',
+    ],
+    correctiveActions: [
+      for (final action in correctiveActions)
+        '${action.title} - ${action.status.label}',
+    ],
+  );
 }

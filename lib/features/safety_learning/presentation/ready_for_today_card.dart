@@ -128,6 +128,10 @@ class _ReadinessCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ready = readiness.isReady;
+    // Required learning that is neither "needed today" nor "before work"
+    // (the requirement left both off) — still required, so it is always
+    // counted here rather than hidden behind "You're ready for today".
+    final otherRequired = readiness.additional.length;
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
@@ -137,20 +141,30 @@ class _ReadinessCard extends StatelessWidget {
           children: [
             ReadinessScopeSummary(readiness: readiness),
             const SizedBox(height: AppSpacing.md),
-            if (ready)
-              const Row(
+            if (ready) ...[
+              Row(
                 children: [
-                  Icon(Icons.verified_outlined, color: AppColors.success),
-                  SizedBox(width: AppSpacing.sm),
+                  const Icon(Icons.verified_outlined, color: AppColors.success),
+                  const SizedBox(width: AppSpacing.sm),
                   Expanded(
                     child: Text(
-                      "You're ready for today",
+                      otherRequired == 0
+                          ? "You're ready for today"
+                          : "You're ready for today's meeting and work",
                       style: AppTextStyles.bodyLarge,
                     ),
                   ),
                 ],
-              )
-            else ...[
+              ),
+              if (otherRequired > 0) ...[
+                const SizedBox(height: AppSpacing.sm),
+                _CountRow(
+                  label: 'Other required learning',
+                  count: otherRequired,
+                  color: AppColors.learning,
+                ),
+              ],
+            ] else ...[
               _CountRow(
                 label: 'Needed today',
                 count: readiness.beforeMeeting.length,
@@ -162,11 +176,19 @@ class _ReadinessCard extends StatelessWidget {
                 count: readiness.beforeWork.length,
                 color: AppColors.warning,
               ),
+              if (otherRequired > 0) ...[
+                const SizedBox(height: AppSpacing.xs),
+                _CountRow(
+                  label: 'Other required learning',
+                  count: otherRequired,
+                  color: AppColors.learning,
+                ),
+              ],
             ],
             const SizedBox(height: AppSpacing.md),
             Align(
               alignment: Alignment.centerLeft,
-              child: ready
+              child: ready && otherRequired == 0
                   ? OutlinedButton(
                       onPressed: onContinue,
                       child: const Text("View today's learning"),

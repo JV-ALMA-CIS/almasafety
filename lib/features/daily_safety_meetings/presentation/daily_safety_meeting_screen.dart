@@ -1,4 +1,5 @@
 import '../../../core/offline/outbox.dart';
+import '../../../core/utils/meeting_date.dart';
 import 'dart:async';
 import '../../../core/widgets/photo_capture.dart';
 import '../../corrective_actions/presentation/evidence_requirement_picker.dart';
@@ -44,6 +45,7 @@ import '../data/meeting_attendance_service.dart';
 import '../data/meeting_concern_repository.dart';
 import '../data/meeting_concern_service.dart';
 import '../data/meeting_evidence_repository.dart';
+import '../data/meeting_foreman_point_repository.dart';
 import '../data/meeting_point_note_repository.dart';
 import '../domain/daily_safety_meeting.dart';
 import '../domain/meeting_attendance.dart';
@@ -52,6 +54,7 @@ import '../domain/meeting_concern.dart';
 import '../domain/meeting_concern_category.dart';
 import '../domain/meeting_evidence.dart';
 import '../domain/meeting_evidence_type.dart';
+import '../domain/meeting_foreman_point.dart';
 import '../domain/meeting_point_note.dart';
 import '../../../core/widgets/status_badge.dart';
 import '../../pre_start_checks/presentation/crew_outcome_dialog.dart';
@@ -61,17 +64,18 @@ import '../../risk_assessments/data/risk_assessment_repository.dart';
 import '../../risk_assessments/domain/risk_assessment.dart';
 import '../../risk_assessments/presentation/risk_assessments_screen.dart';
 import '../../organizations/presentation/site_emergency_contacts.dart';
+import '../../organizations/presentation/site_select_list.dart';
 import 'daily_safety_meeting_history_screen.dart';
+import 'daily_meeting_pdf.dart';
+import 'earlier_open_items_panel.dart';
+import '../../../core/reports/pdf_report.dart';
+import '../../../core/reports/print_report_button.dart';
+import '../../../core/reports/report_context.dart';
+import '../../organizations/data/project_repository.dart';
 import 'worker_todays_meeting_card.dart';
 import '../../../core/widgets/color_choice_chips.dart';
 import '../../../core/widgets/person_picker.dart';
-
-String _today() {
-  final now = DateTime.now();
-  final month = now.month.toString().padLeft(2, '0');
-  final day = now.day.toString().padLeft(2, '0');
-  return '${now.year}-$month-$day';
-}
+import '../../../core/widgets/mobile_title.dart';
 
 /// The foreman's Daily Safety Meeting flow for their assigned site, today.
 ///
@@ -84,18 +88,21 @@ String _today() {
 /// Reachable only by an active `foreman` with at least one assigned site
 /// (`profile.siteIds`, granted by `assignWorkerToSite` — see
 /// [SessionController.profile]'s doc comment). A foreman with more than one
-/// assigned site sees the first; multi-site selection is out of scope for
-/// this foundation. This is UX only — `createDailySafetyMeeting` re-verifies
-/// site access server-side regardless.
+/// assigned site picks which one today's meeting is for ([_SitePicker]).
+/// This is UX only — `createDailySafetyMeeting` re-verifies site access
+/// server-side regardless.
 ///
 /// Flow:
 ///  1. Resolve today's meeting for this foreman+site (resume if one already
-///     exists; otherwise this screen starts one, seeded with today's site
-///     activities and the meeting points whose `applicableActivities`
-///     overlap them — the "recommended" set).
+///     exists; otherwise this screen starts one, from today's site
+///     activities and the server's suggested meeting points, each with the
+///     reasons it was suggested — `getMeetingPointSuggestions`). Concerns
+///     and corrective actions still open from earlier are shown alongside
+///     ([EarlierOpenItemsPanel]).
 ///  2. The foreman accepts/removes/adds activities and meeting points.
-///  3. The foreman records concerns as free text.
-///  4. The foreman completes the meeting.
+///  3. The foreman records attendance (adding other workers from the same
+///     site if needed), concerns and corrective actions.
+///  4. The foreman completes the meeting, and can print it afterwards.
 class DailySafetyMeetingScreen extends StatefulWidget {
   const DailySafetyMeetingScreen({
     super.key,
@@ -112,12 +119,14 @@ class DailySafetyMeetingScreen extends StatefulWidget {
     this.correctiveActionService,
     this.correctiveActionRepository,
     this.pointNoteRepositoryBuilder,
+    this.foremanPointRepositoryBuilder,
     this.evidenceRepositoryBuilder,
     this.imagePicker,
     this.workerLearningRepository,
     this.riskAssessmentRepository,
     this.approvalService,
     this.activityAdminService,
+    this.printReport,
   });
 
   /// When given, this screen resumes that SPECIFIC meeting instead of
@@ -166,6 +175,11 @@ class DailySafetyMeetingScreen extends StatefulWidget {
   final MeetingPointNoteRepository Function(String meetingId)?
   pointNoteRepositoryBuilder;
 
+  /// Injected in tests: builds a [MeetingForemanPointRepository] for a
+  /// given meeting id, mirroring [pointNoteRepositoryBuilder].
+  final MeetingForemanPointRepository Function(String meetingId)?
+  foremanPointRepositoryBuilder;
+
   /// Injected in tests: builds a [MeetingEvidenceRepository] for a given
   /// meeting id, mirroring [pointNoteRepositoryBuilder].
   final MeetingEvidenceRepository Function(String meetingId)?
@@ -194,6 +208,9 @@ class DailySafetyMeetingScreen extends StatefulWidget {
   /// [_AttendanceSection] — see [AdminDailySafetyMeetingsScreen]'s matching
   /// `_nameFor` pattern.
   final AccountApprovalService? approvalService;
+
+  /// Injected in tests; defaults to the device's print window.
+  final ReportPrinter? printReport;
 
   @override
   State<DailySafetyMeetingScreen> createState() =>
@@ -232,6 +249,34 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
   String? _errorMessage;
   bool _isSaving = false;
   bool _isStartingMeeting = false;
+
+  /// The site the Foreman picked for today's meeting, when they are
+  /// assigned to more than one — see [_SitePicker]. Null means "the first
+  /// of their sites".
+  String? _selectedSiteId;
+  String? _sitesKey;
+  Future<List<Site>>? _sitesFuture;
+
+  /// The Foreman's own sites, loaded once per set of site ids for the
+  /// [_SitePicker]. A site that cannot be read is left out.
+  Future<List<Site>> _sitesFor(String organizationId, List<String> siteIds) {
+    final key = '$organizationId/${siteIds.join(',')}';
+    if (_sitesKey == key && _sitesFuture != null) return _sitesFuture!;
+    _sitesKey = key;
+    final repository = _siteRepositoryFor(organizationId);
+    return _sitesFuture = Future.wait(
+      siteIds.map(
+        (id) => repository
+            .getById(id)
+            .then<Site?>(
+              (s) => s,
+              onError: (_) {
+                return null;
+              },
+            ),
+      ),
+    ).then((sites) => sites.whereType<Site>().toList());
+  }
 
   DailySafetyMeetingRepository _meetingRepositoryFor(String organizationId) {
     final existing = _meetingRepository;
@@ -333,6 +378,20 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
       return widget.pointNoteRepositoryBuilder!(meetingId);
     }
     return MeetingPointNoteRepository(
+      firestoreService: FirestoreService(),
+      organizationId: organizationId,
+      meetingId: meetingId,
+    );
+  }
+
+  MeetingForemanPointRepository _foremanPointRepositoryFor(
+    String organizationId,
+    String meetingId,
+  ) {
+    if (widget.foremanPointRepositoryBuilder != null) {
+      return widget.foremanPointRepositoryBuilder!(meetingId);
+    }
+    return MeetingForemanPointRepository(
       firestoreService: FirestoreService(),
       organizationId: organizationId,
       meetingId: meetingId,
@@ -496,9 +555,14 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
     final membership = sessionController.activeMembership;
     final organizationId = sessionController.activeOrganizationId;
     final isForeman = membership?.role == AppRole.foreman;
-    final siteId = membership?.siteIds.isNotEmpty == true
-        ? membership!.siteIds.first
-        : null;
+    final siteIds = membership?.siteIds ?? const <String>[];
+    // A Foreman at several sites picks which one today's meeting is for
+    // (see [_SitePicker]); the server re-checks site access either way.
+    final siteId = siteIds.isEmpty
+        ? null
+        : siteIds.contains(_selectedSiteId)
+        ? _selectedSiteId!
+        : siteIds.first;
 
     // A Worker reaching here (via DailySafetyMeetingsRouterScreen's
     // fallthrough — see that screen's doc comment) has no operational
@@ -574,7 +638,7 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
       unawaited(_loadMembers(organizationId));
     }
 
-    final date = _today();
+    final date = meetingDate();
     final resumeMeetingId = widget.resumeMeetingId;
 
     // Resuming a specific past meeting (from history) reads that one
@@ -593,7 +657,7 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
             date: date,
           );
 
-    return LiveStreamBuilder<List<DailySafetyMeeting>>(
+    final content = LiveStreamBuilder<List<DailySafetyMeeting>>(
       streamKey: (organizationId, resumeMeetingId, uid, siteId, date),
       stream: () => meetingStream,
       builder: (context, meetingSnapshot) {
@@ -646,6 +710,10 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
               organizationId,
               existing.id,
             ),
+            foremanPointRepository: _foremanPointRepositoryFor(
+              organizationId,
+              existing.id,
+            ),
             evidenceRepository: _evidenceRepositoryFor(
               organizationId,
               existing.id,
@@ -661,6 +729,11 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
             isSaving: _isSaving,
             errorMessage: _errorMessage,
             onSave: _save,
+            meetingRepository: _meetingRepositoryFor(organizationId),
+            siteRepository: _siteRepositoryFor(organizationId),
+            concernRepositoryFor: (meetingId) =>
+                _concernRepositoryFor(organizationId, meetingId),
+            printReport: widget.printReport,
           );
         }
 
@@ -693,6 +766,100 @@ class _DailySafetyMeetingScreenState extends State<DailySafetyMeetingScreen> {
           isStarting: _isStartingMeeting,
           errorMessage: _errorMessage,
           onStart: _startMeeting,
+          earlierOpenItems: EarlierOpenItemsPanel(
+            siteId: siteId,
+            foremanId: uid,
+            meetingRepository: _meetingRepositoryFor(organizationId),
+            concernRepositoryFor: (meetingId) =>
+                _concernRepositoryFor(organizationId, meetingId),
+            correctiveActionRepository: _correctiveActionRepositoryFor(
+              organizationId,
+            ),
+          ),
+        );
+      },
+    );
+
+    if (resumeMeetingId != null || siteIds.length < 2) return content;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _SitePicker(
+          sitesFuture: _sitesFor(organizationId, siteIds),
+          selectedSiteId: siteId,
+          onChanged: (value) => setState(() {
+            _selectedSiteId = value;
+            _errorMessage = null;
+          }),
+        ),
+        Expanded(child: content),
+      ],
+    );
+  }
+}
+
+/// Which of the Foreman's sites today's meeting is for — shown only to a
+/// Foreman assigned to more than one site. Collapsed, it names the current
+/// site; tapping it opens the coloured site list (the app's [ChoiceList],
+/// never a dropdown) to switch. Switching shows that site's own meeting for
+/// today, or lets them start one there.
+class _SitePicker extends StatefulWidget {
+  const _SitePicker({
+    required this.sitesFuture,
+    required this.selectedSiteId,
+    required this.onChanged,
+  });
+
+  final Future<List<Site>> sitesFuture;
+  final String selectedSiteId;
+  final ValueChanged<String> onChanged;
+
+  @override
+  State<_SitePicker> createState() => _SitePickerState();
+}
+
+class _SitePickerState extends State<_SitePicker> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<Site>>(
+      future: widget.sitesFuture,
+      builder: (context, snapshot) {
+        final sites = snapshot.data ?? const <Site>[];
+        Site? current;
+        for (final site in sites) {
+          if (site.id == widget.selectedSiteId) current = site;
+        }
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.md,
+            AppSpacing.md,
+            AppSpacing.md,
+            0,
+          ),
+          child: _expanded && sites.isNotEmpty
+              ? ChoiceList<String>(
+                  label: 'Which site is this meeting for?',
+                  items: [for (final site in sites) siteChoice(site)],
+                  selected: widget.selectedSiteId,
+                  onChanged: (value) {
+                    setState(() => _expanded = false);
+                    if (value != null && value != widget.selectedSiteId) {
+                      widget.onChanged(value);
+                    }
+                  },
+                )
+              : ChoiceTile(
+                  title: current?.name ?? 'Loading your sites…',
+                  subtitle: 'Your sites: ${sites.length} · tap to change',
+                  icon: Icons.location_on,
+                  color: AppColors.projects,
+                  selected: true,
+                  onTap: sites.isEmpty
+                      ? null
+                      : () => setState(() => _expanded = true),
+                ),
         );
       },
     );
@@ -729,12 +896,17 @@ class _StartMeetingView extends StatefulWidget {
     required this.isStarting,
     required this.errorMessage,
     required this.onStart,
+    required this.earlierOpenItems,
   });
 
   final String organizationId;
   final String siteId;
   final String currentUid;
   final SiteRepository siteRepository;
+
+  /// Concerns and corrective actions still open from earlier — see
+  /// [EarlierOpenItemsPanel].
+  final Widget earlierOpenItems;
 
   /// Resolves and caches today's site activities across rebuilds — see
   /// [_DailySafetyMeetingScreenState._siteActivitiesFor]'s doc comment for
@@ -766,6 +938,35 @@ class _StartMeetingViewState extends State<_StartMeetingView> {
   /// list is never silently carried over — see [_syncSelection].
   final Set<String> _selectedPointIds = {};
   List<String>? _lastCandidateIds;
+
+  String? _suggestionsKey;
+  Future<List<({String pointId, List<String> reasons})>?>? _suggestionsFuture;
+
+  /// The server's suggestions for today's activities, best first with
+  /// reasons (`getMeetingPointSuggestions` — the same rules the meeting
+  /// records as its snapshot when started). Fetched once per set of
+  /// activities. Resolves to null if they cannot be fetched (e.g. no
+  /// signal), and the screen falls back to matching activities only.
+  Future<List<({String pointId, List<String> reasons})>?> _suggestionsFor(
+    List<String> activityIds,
+  ) {
+    final key =
+        '${widget.organizationId}/${widget.siteId}/${activityIds.join(',')}';
+    if (_suggestionsKey == key && _suggestionsFuture != null) {
+      return _suggestionsFuture!;
+    }
+    _suggestionsKey = key;
+    return _suggestionsFuture = widget.meetingService
+        .getMeetingPointSuggestions(
+          organizationId: widget.organizationId,
+          siteId: widget.siteId,
+          activityIds: activityIds,
+        )
+        .then<List<({String pointId, List<String> reasons})>?>(
+          (suggestions) => suggestions,
+          onError: (Object _) => null,
+        );
+  }
 
   /// Keeps [_selectedPointIds] valid as the candidate set loads/changes:
   /// drops any selected id no longer in [candidateIds] (e.g. a point was
@@ -838,155 +1039,197 @@ class _StartMeetingViewState extends State<_StartMeetingView> {
                 .where((a) => a.status.id == 'active')
                 .toList();
 
-            return LiveStreamBuilder<List<SafetyMeetingPoint>>(
-              streamKey: meetingPointRepository,
-              stream: () => meetingPointRepository.watchActive(),
-              builder: (context, pointSnapshot) {
-                final allPoints =
-                    pointSnapshot.data ?? const <SafetyMeetingPoint>[];
-                final activityIds = activities.map((a) => a.id).toSet();
-                final candidates = allPoints.where((point) {
-                  return point.applicableActivities.isEmpty ||
-                      point.applicableActivities.any(activityIds.contains);
-                }).toList();
-                _syncSelection(candidates.map((p) => p.id).toList());
-                final selectedPoints = candidates
-                    .where((p) => _selectedPointIds.contains(p.id))
-                    .toList();
+            final activityIdList = [for (final a in activities) a.id];
+            return FutureBuilder<
+              List<({String pointId, List<String> reasons})>?
+            >(
+              future: activitySnapshot.connectionState == ConnectionState.done
+                  ? _suggestionsFor(activityIdList)
+                  : null,
+              builder: (context, suggestionSnapshot) {
+                final isSuggesting =
+                    suggestionSnapshot.connectionState != ConnectionState.done;
+                final suggestions = suggestionSnapshot.data;
+                return LiveStreamBuilder<List<SafetyMeetingPoint>>(
+                  streamKey: meetingPointRepository,
+                  stream: () => meetingPointRepository.watchActive(),
+                  builder: (context, pointSnapshot) {
+                    final allPoints =
+                        pointSnapshot.data ?? const <SafetyMeetingPoint>[];
+                    final activityIds = activities.map((a) => a.id).toSet();
+                    final pointsById = {for (final p in allPoints) p.id: p};
+                    final reasons = <String, List<String>>{
+                      for (final s in suggestions ?? const [])
+                        s.pointId: s.reasons,
+                    };
+                    // The server's ranked suggestions; or, when they could not
+                    // be fetched, the points matching today's activities.
+                    final candidates = suggestions != null
+                        ? [
+                            for (final s in suggestions)
+                              if (pointsById[s.pointId] != null)
+                                pointsById[s.pointId]!,
+                          ]
+                        : isSuggesting
+                        ? const <SafetyMeetingPoint>[]
+                        : allPoints.where((point) {
+                            return point.applicableActivities.isEmpty ||
+                                point.applicableActivities.any(
+                                  activityIds.contains,
+                                );
+                          }).toList();
+                    _syncSelection(candidates.map((p) => p.id).toList());
+                    final selectedPoints = candidates
+                        .where((p) => _selectedPointIds.contains(p.id))
+                        .toList();
 
-                return _LearningGateBanner(
-                  meetingService: widget.meetingService,
-                  workerLearningRepository: widget.workerLearningRepository,
-                  organizationId: organizationId,
-                  foremanUid: widget.currentUid,
-                  meetingId: null,
-                  siteId: siteId,
-                  activityIds: activities.map((a) => a.id).toList(),
-                  builder: (context, outstandingTitles) {
-                    final isForemanReady =
-                        outstandingTitles != null && outstandingTitles.isEmpty;
-                    return ListView(
-                      // Remembers the scroll position, so ticking a point
-                      // never sends the foreman back to the top.
-                      key: const PageStorageKey('meeting-start'),
-                      padding: const EdgeInsets.all(AppSpacing.md),
-                      children: [
-                        FeatureHeader(
-                          eyebrow: 'Not started yet',
-                          title: "Today's Meeting",
-                          subtitle: site.name,
-                          icon: Icons.groups,
-                          color: AppColors.meetings,
-                          chips: [
-                            FeatureChip(
+                    return _LearningGateBanner(
+                      meetingService: widget.meetingService,
+                      workerLearningRepository: widget.workerLearningRepository,
+                      organizationId: organizationId,
+                      foremanUid: widget.currentUid,
+                      meetingId: null,
+                      siteId: siteId,
+                      activityIds: activities.map((a) => a.id).toList(),
+                      builder: (context, outstandingTitles) {
+                        final isForemanReady =
+                            outstandingTitles != null &&
+                            outstandingTitles.isEmpty;
+                        return ListView(
+                          // Remembers the scroll position, so ticking a point
+                          // never sends the foreman back to the top.
+                          key: const PageStorageKey('meeting-start'),
+                          padding: const EdgeInsets.all(AppSpacing.md),
+                          children: [
+                            FeatureHeader(
+                              eyebrow: 'Not started yet',
+                              title: "Today's Meeting",
+                              subtitle: site.name,
+                              icon: Icons.groups,
+                              color: AppColors.meetings,
+                              chips: [
+                                FeatureChip(
+                                  icon: Icons.handyman,
+                                  label:
+                                      '${activities.length} '
+                                      '${activities.length == 1 ? 'activity' : 'activities'}',
+                                ),
+                                FeatureChip(
+                                  icon: Icons.checklist,
+                                  label:
+                                      '${_selectedPointIds.length} meeting '
+                                      '${_selectedPointIds.length == 1 ? 'point' : 'points'}',
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: AppSpacing.md),
+                            if (errorMessage != null) ...[
+                              AuthErrorBanner(message: errorMessage),
+                              const SizedBox(height: AppSpacing.md),
+                            ],
+                            _ForemanReadinessBanner(
+                              outstandingTitles: outstandingTitles,
+                            ),
+                            const SizedBox(height: AppSpacing.md),
+                            widget.earlierOpenItems,
+                            const SizedBox(height: AppSpacing.md),
+                            FeatureSectionTitle(
+                              title:
+                                  "Today's Activities (${activities.length})",
                               icon: Icons.handyman,
-                              label:
-                                  '${activities.length} '
-                                  '${activities.length == 1 ? 'activity' : 'activities'}',
+                              color: AppColors.projects,
                             ),
-                            FeatureChip(
+                            const SizedBox(height: AppSpacing.sm),
+                            if (activities.isEmpty)
+                              const Text(
+                                'No active activities are recorded at this site.',
+                                style: AppTextStyles.bodyMedium,
+                              ),
+                            for (final activity in activities)
+                              _ActivityChipRow(name: activity.name),
+                            const SizedBox(height: AppSpacing.lg),
+                            FeatureSectionTitle(
+                              title:
+                                  'Safety Meeting Points '
+                                  '(${_selectedPointIds.length}/${candidates.length} '
+                                  'selected)',
                               icon: Icons.checklist,
-                              label:
-                                  '${_selectedPointIds.length} meeting '
-                                  '${_selectedPointIds.length == 1 ? 'point' : 'points'}',
+                              color: AppColors.meetings,
                             ),
+                            const SizedBox(height: AppSpacing.xs),
+                            const Text(
+                              "Suggested for today's work, most relevant first. "
+                              "Check the points you'll actually cover this "
+                              'morning.',
+                              style: AppTextStyles.bodyMedium,
+                            ),
+                            const SizedBox(height: AppSpacing.sm),
+                            if (isSuggesting)
+                              const Padding(
+                                padding: EdgeInsets.all(AppSpacing.sm),
+                                child: Center(
+                                  child: CircularProgressIndicator(),
+                                ),
+                              )
+                            else if (candidates.isEmpty)
+                              const Text(
+                                'No meeting points apply to these activities yet.',
+                                style: AppTextStyles.bodyMedium,
+                              ),
+                            for (final point in candidates)
+                              _ColorCheckTile(
+                                checked: _selectedPointIds.contains(point.id),
+                                emoji: hazardEmojiFor(
+                                  '${point.title} ${point.category}',
+                                ),
+                                title: point.title,
+                                category: point.category,
+                                reasons: reasons[point.id] ?? const [],
+                                onChanged: (checked) => setState(() {
+                                  if (checked) {
+                                    _selectedPointIds.add(point.id);
+                                  } else {
+                                    _selectedPointIds.remove(point.id);
+                                  }
+                                }),
+                              ),
+                            const SizedBox(height: AppSpacing.lg),
+                            ConstrainedBox(
+                              constraints: const BoxConstraints(
+                                minHeight: AppSpacing.minTouchTarget,
+                              ),
+                              child: ElevatedButton.icon(
+                                onPressed:
+                                    isStarting ||
+                                        activities.isEmpty ||
+                                        !isForemanReady
+                                    ? null
+                                    : () => onStart(
+                                        organizationId: organizationId,
+                                        projectId: site.projectId,
+                                        siteId: siteId,
+                                        todaysActivities: activities,
+                                        recommendedPoints: selectedPoints,
+                                      ),
+                                icon: const Icon(Icons.play_arrow_outlined),
+                                label: Text(
+                                  isStarting
+                                      ? 'Starting…'
+                                      : "Start Today's Meeting",
+                                ),
+                              ),
+                            ),
+                            if (activities.isEmpty) ...[
+                              const SizedBox(height: AppSpacing.sm),
+                              const Text(
+                                'At least one active activity is required to start '
+                                'a meeting.',
+                                style: AppTextStyles.bodyMedium,
+                              ),
+                            ],
                           ],
-                        ),
-                        const SizedBox(height: AppSpacing.md),
-                        if (errorMessage != null) ...[
-                          AuthErrorBanner(message: errorMessage),
-                          const SizedBox(height: AppSpacing.md),
-                        ],
-                        _ForemanReadinessBanner(
-                          outstandingTitles: outstandingTitles,
-                        ),
-                        const SizedBox(height: AppSpacing.md),
-                        FeatureSectionTitle(
-                          title: "Today's Activities (${activities.length})",
-                          icon: Icons.handyman,
-                          color: AppColors.projects,
-                        ),
-                        const SizedBox(height: AppSpacing.sm),
-                        if (activities.isEmpty)
-                          const Text(
-                            'No active activities are recorded at this site.',
-                            style: AppTextStyles.bodyMedium,
-                          ),
-                        for (final activity in activities)
-                          _ActivityChipRow(name: activity.name),
-                        const SizedBox(height: AppSpacing.lg),
-                        FeatureSectionTitle(
-                          title:
-                              'Safety Meeting Points '
-                              '(${_selectedPointIds.length}/${candidates.length} '
-                              'selected)',
-                          icon: Icons.checklist,
-                          color: AppColors.meetings,
-                        ),
-                        const SizedBox(height: AppSpacing.xs),
-                        const Text(
-                          "Check the points you'll actually cover this "
-                          "morning — the library covers every activity this "
-                          "site runs, not just today's.",
-                          style: AppTextStyles.bodyMedium,
-                        ),
-                        const SizedBox(height: AppSpacing.sm),
-                        if (candidates.isEmpty)
-                          const Text(
-                            'No meeting points apply to these activities yet.',
-                            style: AppTextStyles.bodyMedium,
-                          ),
-                        for (final point in candidates)
-                          _ColorCheckTile(
-                            checked: _selectedPointIds.contains(point.id),
-                            emoji: hazardEmojiFor(
-                              '${point.title} ${point.category}',
-                            ),
-                            title: point.title,
-                            category: point.category,
-                            onChanged: (checked) => setState(() {
-                              if (checked) {
-                                _selectedPointIds.add(point.id);
-                              } else {
-                                _selectedPointIds.remove(point.id);
-                              }
-                            }),
-                          ),
-                        const SizedBox(height: AppSpacing.lg),
-                        ConstrainedBox(
-                          constraints: const BoxConstraints(
-                            minHeight: AppSpacing.minTouchTarget,
-                          ),
-                          child: ElevatedButton.icon(
-                            onPressed:
-                                isStarting ||
-                                    activities.isEmpty ||
-                                    !isForemanReady
-                                ? null
-                                : () => onStart(
-                                    organizationId: organizationId,
-                                    projectId: site.projectId,
-                                    siteId: siteId,
-                                    todaysActivities: activities,
-                                    recommendedPoints: selectedPoints,
-                                  ),
-                            icon: const Icon(Icons.play_arrow_outlined),
-                            label: Text(
-                              isStarting
-                                  ? 'Starting…'
-                                  : "Start Today's Meeting",
-                            ),
-                          ),
-                        ),
-                        if (activities.isEmpty) ...[
-                          const SizedBox(height: AppSpacing.sm),
-                          const Text(
-                            'At least one active activity is required to start '
-                            'a meeting.',
-                            style: AppTextStyles.bodyMedium,
-                          ),
-                        ],
-                      ],
+                        );
+                      },
                     );
                   },
                 );
@@ -1018,6 +1261,7 @@ class _MeetingWorkspace extends StatefulWidget {
     required this.concernRepository,
     required this.correctiveActionRepository,
     required this.pointNoteRepository,
+    required this.foremanPointRepository,
     required this.evidenceRepository,
     required this.imagePicker,
     required this.workerLearningRepository,
@@ -1026,12 +1270,25 @@ class _MeetingWorkspace extends StatefulWidget {
     required this.isSaving,
     required this.errorMessage,
     required this.onSave,
+    required this.meetingRepository,
+    required this.siteRepository,
+    required this.concernRepositoryFor,
+    this.printReport,
   });
 
   final DailySafetyMeeting meeting;
   final String organizationId;
   final String siteId;
   final String currentUid;
+  final DailySafetyMeetingRepository meetingRepository;
+  final SiteRepository siteRepository;
+
+  /// Reads another meeting's concerns — for [EarlierOpenItemsPanel].
+  final MeetingConcernRepository Function(String meetingId)
+  concernRepositoryFor;
+
+  /// Injected in tests; defaults to the device's print window.
+  final ReportPrinter? printReport;
   final DailySafetyMeetingService meetingService;
   final MeetingAttendanceService attendanceService;
   final MeetingConcernService concernService;
@@ -1046,6 +1303,7 @@ class _MeetingWorkspace extends StatefulWidget {
   final MeetingConcernRepository concernRepository;
   final CorrectiveActionRepository correctiveActionRepository;
   final MeetingPointNoteRepository pointNoteRepository;
+  final MeetingForemanPointRepository foremanPointRepository;
   final MeetingEvidenceRepository evidenceRepository;
   final ImagePicker imagePicker;
   final WorkerLearningRepository workerLearningRepository;
@@ -1063,6 +1321,135 @@ class _MeetingWorkspace extends StatefulWidget {
 }
 
 class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
+  /// Prints the Foreman's own completed meeting — the same record (and the
+  /// same [dailyMeetingReport]) a Site Manager prints from the summary.
+  Future<void> _printMeeting(
+    List<Activity> siteActivities,
+    List<SafetyMeetingPoint> points,
+  ) async {
+    final meeting = widget.meeting;
+    final attendance = await widget.attendanceRepository.watchAll().first;
+    final concerns = await widget.concernRepository.watchAll().first;
+    final actions = await widget.correctiveActionRepository
+        .watchForMeeting(meeting.id)
+        .first;
+    final notes = await widget.pointNoteRepository.watchAll().first;
+    final foremanPoints = await widget.foremanPointRepository.watchAll().first;
+    final organizationName = await organizationNameFor(widget.organizationId);
+    String? siteName;
+    String? projectName;
+    try {
+      siteName = (await widget.siteRepository.getById(meeting.siteId))?.name;
+      projectName = (await ProjectRepository(
+        firestoreService: FirestoreService(),
+        organizationId: widget.organizationId,
+      ).getById(meeting.projectId))?.name;
+    } on Object {
+      // Names are a nicety on the print; ids stand in for them.
+    }
+    String? nameFor(String uid) {
+      for (final member in widget.members) {
+        if (member.uid == uid) return member.name;
+      }
+      return null;
+    }
+
+    await (widget.printReport ?? PdfReport.printDocument)(
+      name:
+          'Daily safety meeting - ${siteName ?? meeting.siteId} - '
+          '${meeting.date}',
+      build: (format) => buildDailyMeetingPdf(
+        organizationName: organizationName,
+        format: format,
+        report: dailyMeetingReport(
+          meeting: meeting,
+          siteName: siteName ?? meeting.siteId,
+          projectName: projectName ?? meeting.projectId,
+          foremanName: nameFor(meeting.foremanId) ?? 'Foreman',
+          activityNames: {for (final a in siteActivities) a.id: a.name},
+          pointTitles: {for (final p in points) p.id: p.title},
+          pointNotes: {for (final n in notes) n.meetingPointId: n.note},
+          foremanPoints: foremanPoints,
+          attendance: attendance,
+          concerns: concerns,
+          correctiveActions: actions,
+          nameFor: nameFor,
+        ),
+      ),
+    );
+  }
+
+  /// Adds (new id) or edits the Foreman's own point. With no signal it is
+  /// saved on this phone and shown straight away, flagged as waiting.
+  Future<void> _saveForemanPoint(String pointId, _ForemanPointFormResult form) {
+    return widget.onSave(
+      () => widget.meetingService.saveMeetingForemanPoint(
+        organizationId: widget.organizationId,
+        meetingId: widget.meeting.id,
+        pointId: pointId,
+        title: form.title,
+        note: form.note,
+        activityId: form.activityId,
+      ),
+    );
+  }
+
+  Future<void> _removeForemanPoint(MeetingForemanPoint point) {
+    return widget.onSave(
+      () => widget.meetingService.removeMeetingForemanPoint(
+        organizationId: widget.organizationId,
+        meetingId: widget.meeting.id,
+        pointId: point.id,
+      ),
+    );
+  }
+
+  /// Opens the form to type a new point ([existing] null) or edit one.
+  /// [activities] are the meeting's own activities, to link it to.
+  Future<void> _openForemanPointForm(
+    List<Activity> activities, {
+    MeetingForemanPoint? existing,
+  }) async {
+    final result = await showDialog<_ForemanPointFormResult>(
+      context: context,
+      builder: (_) =>
+          _ForemanPointFormDialog(activities: activities, existing: existing),
+    );
+    if (result == null || !mounted) return;
+    await _saveForemanPoint(
+      existing?.id ?? DailySafetyMeetingService.newForemanPointId(),
+      result,
+    );
+  }
+
+  /// The Foreman's own points as stored, plus any saved on this phone with
+  /// no signal yet (shown straight away), and the ids still waiting to send.
+  ({List<MeetingForemanPoint> points, Set<String> waitingIds})
+  _foremanPointsWithWaiting(List<MeetingForemanPoint> stored) {
+    bool here(Map<String, Object?> data) =>
+        data['meetingId'] == widget.meeting.id && data['pointId'] is String;
+    final byId = {for (final point in stored) point.id: point};
+    final waitingIds = <String>{};
+    for (final entry in Outbox.instance.pending(
+      'saveMeetingForemanPoint',
+      here,
+    )) {
+      if (entry.data['title'] is! String) continue;
+      final point = MeetingForemanPoint.fromCallableData(entry.data);
+      byId[point.id] = point;
+      waitingIds.add(point.id);
+    }
+    for (final entry in Outbox.instance.pending(
+      'removeMeetingForemanPoint',
+      here,
+    )) {
+      final id = entry.data['pointId']! as String;
+      byId.remove(id);
+      waitingIds.remove(id);
+    }
+    return (points: byId.values.toList(), waitingIds: waitingIds);
+  }
+
   Future<void> _toggleActivity(Activity activity) {
     final ids = {...widget.meeting.activityIds};
     if (!ids.remove(activity.id)) ids.add(activity.id);
@@ -1247,14 +1634,22 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
   /// Asks for the crew's GO / GO corrected / STOP result first; cancelling
   /// that dialog leaves the meeting in progress.
   Future<void> _complete() async {
-    // Attendance marked with no signal has to reach the server first.
+    // Attendance and points saved with no signal have to reach the server
+    // first.
     final outbox = Outbox.instance;
-    bool waitingHere() => outbox
-        .pending(
+    bool waitingHere() =>
+        const [
           'recordMeetingAttendance',
-          (data) => data['meetingId'] == widget.meeting.id,
-        )
-        .isNotEmpty;
+          'saveMeetingForemanPoint',
+          'removeMeetingForemanPoint',
+        ].any(
+          (callable) => outbox
+              .pending(
+                callable,
+                (data) => data['meetingId'] == widget.meeting.id,
+              )
+              .isNotEmpty,
+        );
     if (waitingHere()) await outbox.flush();
     if (waitingHere()) {
       if (!mounted) return;
@@ -1262,8 +1657,8 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
         context: context,
         builder: (context) => AlertDialog(
           content: const Text(
-            'Some attendance is still saved on this phone, waiting for '
-            'signal. Complete the meeting once it has been sent.',
+            'Some of this meeting is still saved on this phone, waiting '
+            'for signal. Complete the meeting once it has been sent.',
           ),
           actions: [
             TextButton(
@@ -1361,6 +1756,19 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
     );
   }
 
+  /// Under an activity: how many of the Foreman's own points are about it.
+  static List<String> _ownPointsAbout(
+    List<MeetingForemanPoint> points,
+    String activityId,
+  ) {
+    final count = points.where((p) => p.activityId == activityId).length;
+    if (count == 0) return const [];
+    return [
+      '$count ${count == 1 ? 'point' : 'points'} of your own '
+          '${count == 1 ? 'is' : 'are'} about this',
+    ];
+  }
+
   /// Prompts before leaving an INCOMPLETE meeting — a foreman closing the
   /// tab, tapping back, or navigating elsewhere mid-toolbox-talk should be
   /// warned, not silently leave a half-recorded meeting stuck `inProgress`
@@ -1394,7 +1802,33 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
   }
 
   Widget _buildWorkspaceBody(BuildContext context) {
+    return LiveStreamBuilder<List<MeetingForemanPoint>>(
+      streamKey: widget.foremanPointRepository,
+      stream: () => widget.foremanPointRepository.watchAll(),
+      builder: (context, foremanPointSnapshot) => ListenableBuilder(
+        listenable: Outbox.instance,
+        builder: (context, _) {
+          final own = _foremanPointsWithWaiting(
+            foremanPointSnapshot.data ?? const <MeetingForemanPoint>[],
+          );
+          return _buildWorkspaceSections(
+            context,
+            foremanPoints: own.points,
+            waitingPointIds: own.waitingIds,
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildWorkspaceSections(
+    BuildContext context, {
+    required List<MeetingForemanPoint> foremanPoints,
+    required Set<String> waitingPointIds,
+  }) {
     final meeting = widget.meeting;
+    // Library points and the Foreman's own count the same.
+    final pointCount = meeting.meetingPointIds.length + foremanPoints.length;
     // Activities/points/attendance freeze hard at completion. Concerns and
     // meeting-point discussion notes are a deliberate exception — a
     // foreman may still ADD (not edit/remove) either after completion; see
@@ -1484,8 +1918,8 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
                         FeatureChip(
                           icon: Icons.checklist,
                           label:
-                              '${meeting.meetingPointIds.length} meeting '
-                              '${meeting.meetingPointIds.length == 1 ? 'point' : 'points'}',
+                              '$pointCount meeting '
+                              '${pointCount == 1 ? 'point' : 'points'}',
                         ),
                         if (meeting.ahaIds.isNotEmpty)
                           FeatureChip(
@@ -1502,6 +1936,23 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
                     const SizedBox(height: AppSpacing.lg),
                     if (widget.errorMessage != null) ...[
                       AuthErrorBanner(message: widget.errorMessage!),
+                      const SizedBox(height: AppSpacing.md),
+                    ],
+                    if (meeting.isCompleted) ...[
+                      PrintReportButton(
+                        onPrint: () => _printMeeting(siteActivities, allPoints),
+                      ),
+                      const SizedBox(height: AppSpacing.md),
+                    ] else ...[
+                      EarlierOpenItemsPanel(
+                        siteId: widget.siteId,
+                        foremanId: widget.currentUid,
+                        currentMeetingId: meeting.id,
+                        meetingRepository: widget.meetingRepository,
+                        concernRepositoryFor: widget.concernRepositoryFor,
+                        correctiveActionRepository:
+                            widget.correctiveActionRepository,
+                      ),
                       const SizedBox(height: AppSpacing.md),
                     ],
                     // Part of every toolbox talk: who to call and where to
@@ -1522,13 +1973,14 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
                         checked: meeting.activityIds.contains(activity.id),
                         emoji: hazardEmojiFor(activity.name),
                         title: activity.name,
+                        reasons: _ownPointsAbout(foremanPoints, activity.id),
                         onChanged: canEdit && !widget.isSaving
                             ? (_) => _toggleActivity(activity)
                             : null,
                       ),
                     const SizedBox(height: AppSpacing.md),
                     FeatureSectionTitle(
-                      title: 'Safety Meeting Points',
+                      title: 'Safety Points Discussed',
                       icon: Icons.checklist,
                       color: AppColors.meetings,
                       trailing: !canEdit
@@ -1599,16 +2051,54 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
                                   );
                                 },
                               ),
-                            if (meeting.meetingPointIds.isEmpty)
-                              const Text(
-                                'No safety meeting points recorded yet. Use '
-                                '"Add Safety Point" above.',
-                                style: AppTextStyles.bodyMedium,
-                              ),
                           ],
                         );
                       },
                     ),
+                    // Points the Foreman typed themself: on this meeting
+                    // only, never the library. Adding still works after
+                    // completion; editing and removing do not.
+                    for (final point in foremanPoints)
+                      _ForemanPointTile(
+                        point: point,
+                        activityName: activityNames[point.activityId],
+                        isWaiting: waitingPointIds.contains(point.id),
+                        canEdit:
+                            canEdit &&
+                            !widget.isSaving &&
+                            !waitingPointIds.contains(point.id),
+                        onEdit: () => _openForemanPointForm([
+                          for (final a in siteActivities)
+                            if (meeting.activityIds.contains(a.id)) a,
+                        ], existing: point),
+                        onRemove: () => _removeForemanPoint(point),
+                      ),
+                    if (pointCount == 0)
+                      const Padding(
+                        padding: EdgeInsets.only(bottom: AppSpacing.sm),
+                        child: Text(
+                          'No safety points recorded yet. Pick one from the '
+                          'library with "Add Safety Point" above, or type '
+                          'your own below.',
+                          style: AppTextStyles.bodyMedium,
+                        ),
+                      ),
+                    if (canAddConcernOrNote)
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(
+                          minHeight: AppSpacing.minTouchTarget,
+                        ),
+                        child: OutlinedButton.icon(
+                          onPressed: widget.isSaving
+                              ? null
+                              : () => _openForemanPointForm([
+                                  for (final a in siteActivities)
+                                    if (meeting.activityIds.contains(a.id)) a,
+                                ]),
+                          icon: const Icon(Icons.edit_note),
+                          label: const Text('Type your own point'),
+                        ),
+                      ),
                     const SizedBox(height: AppSpacing.md),
                     _AhaSection(
                       meeting: meeting,
@@ -1717,7 +2207,7 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
                                   onPressed:
                                       widget.isSaving ||
                                           meeting.activityIds.isEmpty ||
-                                          meeting.meetingPointIds.isEmpty ||
+                                          pointCount == 0 ||
                                           needsAha ||
                                           hasOutstandingLearning
                                       ? null
@@ -1731,8 +2221,7 @@ class _MeetingWorkspaceState extends State<_MeetingWorkspace> {
                         },
                       ),
                     if (canEdit &&
-                        (meeting.activityIds.isEmpty ||
-                            meeting.meetingPointIds.isEmpty)) ...[
+                        (meeting.activityIds.isEmpty || pointCount == 0)) ...[
                       const SizedBox(height: AppSpacing.sm),
                       const Text(
                         'At least one activity and one meeting point must be '
@@ -2040,10 +2529,12 @@ class _ForemanReadinessBanner extends StatelessWidget {
           children: [
             const Icon(Icons.check_circle_outline, color: AppColors.success),
             const SizedBox(width: AppSpacing.sm),
-            Text(
-              'Your safety learning — Ready',
-              style: AppTextStyles.bodyMedium.copyWith(
-                fontWeight: FontWeight.bold,
+            Expanded(
+              child: Text(
+                'Your safety learning — Ready',
+                style: AppTextStyles.bodyMedium.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
           ],
@@ -2338,18 +2829,318 @@ class _MeetingPointTileState extends State<_MeetingPointTile> {
                         ),
                       )
                     : (widget.canEditNote
-                          ? TextButton.icon(
-                              onPressed: widget.isSaving
+                          ? _WhatWasDiscussedPrompt(
+                              onTap: widget.isSaving
                                   ? null
                                   : () => setState(() => _isEditingNote = true),
-                              icon: const Icon(Icons.notes_outlined, size: 16),
-                              label: const Text('Add note'),
                             )
                           : const SizedBox.shrink()),
               ),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// An obvious, tappable "what was discussed" box under a covered point —
+/// so recording what was said is clearly part of the meeting, not hidden.
+class _WhatWasDiscussedPrompt extends StatelessWidget {
+  const _WhatWasDiscussedPrompt({required this.onTap});
+
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: onTap,
+        child: Container(
+          constraints: const BoxConstraints(
+            minHeight: AppSpacing.minTouchTarget,
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: AppColors.meetings.withValues(alpha: 0.45),
+            ),
+          ),
+          child: const Row(
+            children: [
+              Icon(Icons.edit_note, color: AppColors.meetings),
+              SizedBox(width: AppSpacing.xs),
+              Expanded(
+                child: Text(
+                  'Add what was discussed',
+                  style: AppTextStyles.bodyMedium,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// One point the Foreman typed themself: its title, the activity it is
+/// about, and what was discussed. Edit and remove only while the meeting
+/// is in progress.
+class _ForemanPointTile extends StatelessWidget {
+  const _ForemanPointTile({
+    required this.point,
+    required this.activityName,
+    required this.isWaiting,
+    required this.canEdit,
+    required this.onEdit,
+    required this.onRemove,
+  });
+
+  final MeetingForemanPoint point;
+
+  /// The linked activity's name, when it is linked and known.
+  final String? activityName;
+
+  /// Saved on this phone with no signal, not sent yet.
+  final bool isWaiting;
+  final bool canEdit;
+  final VoidCallback onEdit;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    const color = AppColors.secondary;
+    return Card(
+      margin: const EdgeInsets.only(bottom: AppSpacing.sm),
+      color: Color.alphaBlend(
+        color.withValues(alpha: 0.08),
+        Theme.of(context).colorScheme.surface,
+      ),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: color.withValues(alpha: 0.5)),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: canEdit ? onEdit : null,
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.sm),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Text('✍️', style: TextStyle(fontSize: 22)),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      point.title,
+                      style: AppTextStyles.bodyLarge.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    Text(
+                      ['Your own point', ?activityName].join(' · '),
+                      style: AppTextStyles.label,
+                    ),
+                    if (point.note != null) ...[
+                      const SizedBox(height: AppSpacing.xs),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(
+                            Icons.notes_outlined,
+                            size: 16,
+                            color: AppColors.textSecondary,
+                          ),
+                          const SizedBox(width: AppSpacing.xs),
+                          Expanded(
+                            child: Text(
+                              point.note!,
+                              style: AppTextStyles.bodyMedium,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                    if (isWaiting) ...[
+                      const SizedBox(height: AppSpacing.xs),
+                      const Row(
+                        children: [
+                          Icon(Icons.cloud_upload_outlined, size: 16),
+                          SizedBox(width: AppSpacing.xs),
+                          Expanded(
+                            child: Text(
+                              'Saved on this phone — sends when there is '
+                              'signal',
+                              style: AppTextStyles.label,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (canEdit) ...[
+                IconButton(
+                  tooltip: 'Edit',
+                  onPressed: onEdit,
+                  icon: const Icon(Icons.edit_outlined),
+                ),
+                IconButton(
+                  tooltip: 'Remove',
+                  onPressed: onRemove,
+                  icon: const Icon(Icons.close),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// What the Foreman typed in [_ForemanPointFormDialog].
+class _ForemanPointFormResult {
+  const _ForemanPointFormResult({
+    required this.title,
+    required this.note,
+    required this.activityId,
+  });
+
+  final String title;
+  final String? note;
+  final String? activityId;
+}
+
+/// Type a point of your own: a short title, what was discussed, and
+/// (optionally) which of today's activities it was about. Typed in any
+/// language; stored exactly as typed.
+class _ForemanPointFormDialog extends StatefulWidget {
+  const _ForemanPointFormDialog({required this.activities, this.existing});
+
+  /// The meeting's own activities.
+  final List<Activity> activities;
+  final MeetingForemanPoint? existing;
+
+  @override
+  State<_ForemanPointFormDialog> createState() =>
+      _ForemanPointFormDialogState();
+}
+
+class _ForemanPointFormDialogState extends State<_ForemanPointFormDialog> {
+  final _formKey = GlobalKey<FormState>();
+  late final _title = TextEditingController(text: widget.existing?.title);
+  late final _note = TextEditingController(text: widget.existing?.note);
+
+  /// The existing link, kept even when that activity has since been
+  /// unticked — unless the Foreman picks another (or none).
+  late String? _activityId = widget.existing?.activityId;
+
+  @override
+  void dispose() {
+    _title.dispose();
+    _note.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    if (!_formKey.currentState!.validate()) return;
+    final note = _note.text.trim();
+    Navigator.of(context).pop(
+      _ForemanPointFormResult(
+        title: _title.text.trim(),
+        note: note.isEmpty ? null : note,
+        activityId: _activityId,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(
+        widget.existing == null ? 'Type your own point' : 'Edit your point',
+      ),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: Form(
+          key: _formKey,
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              TextFormField(
+                controller: _title,
+                autofocus: widget.existing == null,
+                maxLength: MeetingForemanPoint.titleMaxLength,
+                textCapitalization: TextCapitalization.sentences,
+                decoration: const InputDecoration(
+                  labelText: 'Safety point',
+                  hintText: 'e.g. Wet roof sheets after the rain',
+                ),
+                validator: (value) => (value ?? '').trim().isEmpty
+                    ? 'Type the safety point.'
+                    : null,
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              TextFormField(
+                controller: _note,
+                maxLength: MeetingForemanPoint.noteMaxLength,
+                minLines: 2,
+                maxLines: 5,
+                textCapitalization: TextCapitalization.sentences,
+                decoration: const InputDecoration(
+                  labelText: 'What was discussed (optional)',
+                  hintText:
+                      'e.g. No walking on wet sheets; crew waits until '
+                      'they are dry.',
+                ),
+              ),
+              if (widget.activities.isNotEmpty) ...[
+                const SizedBox(height: AppSpacing.sm),
+                ChoiceList<String>(
+                  label: 'Which activity was it about?',
+                  noneLabel: 'Not about one activity',
+                  items: [
+                    for (final activity in widget.activities)
+                      ChoiceItem(
+                        value: activity.id,
+                        title: activity.name,
+                        badge: hazardEmojiFor(activity.name),
+                        color: AppColors.forLabel(activity.name),
+                      ),
+                  ],
+                  selected: _activityId,
+                  onChanged: (value) => setState(() => _activityId = value),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('Save point')),
+      ],
     );
   }
 }
@@ -2567,12 +3358,16 @@ class _ColorCheckTile extends StatelessWidget {
     required this.title,
     required this.onChanged,
     this.category,
+    this.reasons = const [],
   });
 
   final bool checked;
   final String emoji;
   final String title;
   final String? category;
+
+  /// Why this point was suggested, shown under the category.
+  final List<String> reasons;
   final ValueChanged<bool>? onChanged;
 
   @override
@@ -2585,7 +3380,10 @@ class _ColorCheckTile extends StatelessWidget {
       child: ChoiceTile(
         multi: true,
         title: title,
-        subtitle: category,
+        subtitle: [
+          if (category != null && category!.isNotEmpty) category!,
+          ...reasons,
+        ].join('\n'),
         badge: emoji,
         color: rowColor,
         selected: checked,
@@ -2603,8 +3401,8 @@ class _ColorCheckTile extends StatelessWidget {
 /// (`safety_meeting_points`) is the single source of every point a meeting
 /// can ever reference — see `updateDailySafetyMeeting`'s
 /// `requireActiveMeetingPoints`, which refuses any id not already a real,
-/// active library document. There is deliberately no free-text point here:
-/// doing so would need a backend change this task's scope excludes.
+/// active library document. A point the library does not have is typed
+/// with "Type your own point" instead (see [MeetingForemanPoint]).
 class _MeetingPointPickerDialog extends StatefulWidget {
   const _MeetingPointPickerDialog({required this.candidates});
 
@@ -2757,6 +3555,12 @@ class _AttendanceSectionState extends State<_AttendanceSection> {
   final _searchController = TextEditingController();
   String _search = '';
 
+  /// Workers from the meeting's own site the Foreman added to the roster
+  /// although they are not assigned to today's activities (e.g. moved over
+  /// for the day). Kept on screen until marked; once marked, their
+  /// attendance record keeps them on the roster.
+  final Set<String> _addedWorkerIds = {};
+
   /// Each attendee's outstanding required-learning titles, by uid — see
   /// `MeetingAttendanceService.getMeetingAttendeeLearningStatus`'s doc
   /// comment. Null while loading (never shown as "clear" until resolved);
@@ -2816,16 +3620,10 @@ class _AttendanceSectionState extends State<_AttendanceSection> {
       builder: (context, assignmentSnapshot) {
         final assignmentLists =
             assignmentSnapshot.data ?? const <List<ActivityAssignment>>[];
-        final workerIds = <String>{
+        final assignedWorkerIds = <String>{
           for (final assignments in assignmentLists)
             for (final assignment in assignments) assignment.uid,
-        }..remove(widget.currentUid);
-        final sortedWorkerIds = workerIds.toList()..sort();
-        final filteredWorkerIds = _search.isEmpty
-            ? sortedWorkerIds
-            : sortedWorkerIds
-                  .where((id) => id.toLowerCase().contains(_search))
-                  .toList();
+        };
 
         return LiveStreamBuilder<List<MeetingAttendance>>(
           streamKey: widget.attendanceRepository,
@@ -2860,10 +3658,62 @@ class _AttendanceSectionState extends State<_AttendanceSection> {
                 waitingWorkers.add(workerId);
               }
 
+              // The roster: workers assigned to today's activities, anyone
+              // already marked (including site workers added earlier), and
+              // site workers added on this screen.
+              final workerIds = <String>{
+                ...assignedWorkerIds,
+                ...attendanceByWorker.keys,
+                ..._addedWorkerIds,
+              }..remove(widget.currentUid);
+              final sortedWorkerIds = workerIds.toList()
+                ..sort(
+                  (a, b) => (_nameFor(a) ?? a).toLowerCase().compareTo(
+                    (_nameFor(b) ?? b).toLowerCase(),
+                  ),
+                );
+              final filteredWorkerIds = _search.isEmpty
+                  ? sortedWorkerIds
+                  : sortedWorkerIds
+                        .where(
+                          (id) =>
+                              id.toLowerCase().contains(_search) ||
+                              (_nameFor(id) ?? '').toLowerCase().contains(
+                                _search,
+                              ),
+                        )
+                        .toList();
+              final addButton = widget.canEdit
+                  ? Padding(
+                      padding: const EdgeInsets.only(top: AppSpacing.sm),
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(
+                          minHeight: AppSpacing.minTouchTarget,
+                        ),
+                        child: OutlinedButton.icon(
+                          onPressed: widget.isSaving
+                              ? null
+                              : () => _addSiteWorker(workerIds),
+                          icon: const Icon(Icons.person_add_alt_1),
+                          label: const Text(
+                            'Add another worker from this site',
+                          ),
+                        ),
+                      ),
+                    )
+                  : null;
+
               if (sortedWorkerIds.isEmpty) {
-                return const Text(
-                  'No workers are assigned to this meeting\'s activities yet.',
-                  style: AppTextStyles.bodyMedium,
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'No workers are assigned to this meeting\'s activities '
+                      'yet.',
+                      style: AppTextStyles.bodyMedium,
+                    ),
+                    ?addButton,
+                  ],
                 );
               }
 
@@ -2904,6 +3754,7 @@ class _AttendanceSectionState extends State<_AttendanceSection> {
                         _learningStatus?[workerId] ?? const [],
                       ),
                     ),
+                  ?addButton,
                 ],
               );
             },
@@ -2918,6 +3769,28 @@ class _AttendanceSectionState extends State<_AttendanceSection> {
       if (member.uid == uid) return member.name;
     }
     return null;
+  }
+
+  /// Lets the Foreman add a worker from the meeting's own site who is not
+  /// on the roster yet. Only active workers whose own site list includes
+  /// the meeting's site are offered — `recordMeetingAttendance` checks the
+  /// same server-side, so this is convenience, not the rule.
+  Future<void> _addSiteWorker(Set<String> onRoster) async {
+    final siteId = widget.meeting.siteId;
+    final eligible = [
+      for (final member in widget.members)
+        if (member.role == AppRole.worker &&
+            member.siteIds.contains(siteId) &&
+            member.uid != widget.currentUid &&
+            !onRoster.contains(member.uid))
+          member,
+    ]..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    final picked = await showDialog<String>(
+      context: context,
+      builder: (context) => _SiteWorkerPickerDialog(workers: eligible),
+    );
+    if (picked == null || !mounted) return;
+    setState(() => _addedWorkerIds.add(picked));
   }
 
   /// Confirms, then marks [workerId] present as "Briefed in person": the
@@ -2962,6 +3835,51 @@ class _AttendanceSectionState extends State<_AttendanceSection> {
         .map(widget.activityAssignmentRepository.watchAssignedWorkers)
         .toList();
     return StreamZip(streams);
+  }
+}
+
+/// Picks one worker from the meeting's site to add to the attendance
+/// roster — coloured rows (the app's [ChoiceList]), never a dropdown.
+class _SiteWorkerPickerDialog extends StatelessWidget {
+  const _SiteWorkerPickerDialog({required this.workers});
+
+  final List<OrganizationUser> workers;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Add a worker from this site'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: workers.isEmpty
+            ? const Text(
+                'Every worker at this site is already on the list.',
+                style: AppTextStyles.bodyMedium,
+              )
+            : SingleChildScrollView(
+                child: ChoiceList<String>(
+                  items: [
+                    for (final worker in workers)
+                      ChoiceItem(
+                        value: worker.uid,
+                        title: worker.name,
+                        subtitle: worker.trade,
+                        icon: Icons.person,
+                      ),
+                  ],
+                  selected: null,
+                  searchHint: 'Search workers',
+                  onChanged: (value) => Navigator.of(context).pop(value),
+                ),
+              ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+      ],
+    );
   }
 }
 
@@ -3386,6 +4304,10 @@ class _ConcernsSectionState extends State<_ConcernsSection> {
                   concern: concern,
                   correctiveActionRepository: widget.correctiveActionRepository,
                   canEdit: widget.canEdit,
+                  // A corrective action can be raised from any concern —
+                  // after completion too (`createCorrectiveAction` accepts
+                  // a completed meeting when a concern is named).
+                  canRaiseAction: widget.canAdd,
                   isSaving: widget.isSaving,
                   onEdit: () => _openEditDialog(concern),
                   onRemove: () => widget.onRemove(concern),
@@ -3438,13 +4360,15 @@ class _ConcernsSectionState extends State<_ConcernsSection> {
   }
 }
 
-/// One recorded concern's card: category, description, and — while the
-/// meeting is still editable — large Edit/Remove controls.
+/// One recorded concern's card: category, description, its corrective
+/// actions, a Create Corrective Action button, and — while the meeting is
+/// still editable — large Edit/Remove controls.
 class _ConcernCard extends StatelessWidget {
   const _ConcernCard({
     required this.concern,
     required this.correctiveActionRepository,
     required this.canEdit,
+    required this.canRaiseAction,
     required this.isSaving,
     required this.onEdit,
     required this.onRemove,
@@ -3454,6 +4378,7 @@ class _ConcernCard extends StatelessWidget {
   final MeetingConcern concern;
   final CorrectiveActionRepository correctiveActionRepository;
   final bool canEdit;
+  final bool canRaiseAction;
   final bool isSaving;
   final VoidCallback onEdit;
   final VoidCallback onRemove;
@@ -3535,6 +4460,8 @@ class _ConcernCard extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: AppSpacing.sm),
+            ],
+            if (canRaiseAction)
               ConstrainedBox(
                 constraints: const BoxConstraints(
                   minHeight: AppSpacing.minTouchTarget,
@@ -3545,7 +4472,6 @@ class _ConcernCard extends StatelessWidget {
                   label: const Text('Create Corrective Action'),
                 ),
               ),
-            ],
           ],
         ),
       ),
@@ -3805,7 +4731,7 @@ class _CorrectiveActionFormDialogState
       ),
     ];
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Safety Concern')),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(AppSpacing.md),

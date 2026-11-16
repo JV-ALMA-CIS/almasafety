@@ -31,6 +31,18 @@ class StorageService {
   /// the `organizations/{organizationId}/...` layout enforced by
   /// storage.rules. Callers append their own sub-path, e.g.:
   ///   orgRef(orgId).child('hazards/$hazardId/$fileName')
+  /// The configured Storage bucket name (e.g. `jva-safety.firebasestorage.app`),
+  /// or null before Firebase is initialized. Used to recognise this app's own
+  /// download URLs — see `VideoSource`.
+  String? get bucket => instance?.bucket;
+
   Reference orgRef(String organizationId) =>
       require.ref().child('organizations/$organizationId');
+
+  /// [uid]'s own staging folder for Safety Learning uploads — the only
+  /// place a client may put a library file; `publishLearningUpload` then
+  /// moves it into the organization's library after an author check (see
+  /// `storage.rules`).
+  Reference learningUploadRef(String uid) =>
+      require.ref().child('learning_uploads/$uid');
 }

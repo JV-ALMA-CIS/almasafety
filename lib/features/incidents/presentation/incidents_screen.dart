@@ -37,6 +37,7 @@ import '../domain/incident_enums.dart';
 import '../domain/incident_reporting.dart';
 import 'incident_reporting_section.dart';
 import 'incident_style.dart';
+import '../../../core/widgets/mobile_title.dart';
 
 /// The "Incidents" nav destination ([AppRoutes.incidents]).
 ///
@@ -706,7 +707,7 @@ class _IncidentDetailScreenState extends State<IncidentDetailScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(title: const MobileTitle('Incident Details')),
       body: StreamBuilder<Incident?>(
         stream: _incident,
         builder: (context, snapshot) {

@@ -67,6 +67,23 @@ class CorrectiveActionRepository {
     );
   }
 
+  /// Streams the corrective actions at one site that are not yet completed
+  /// — what a Foreman sees as still open before today's meeting. Filtered
+  /// to "not completed" here rather than in the query, so no composite
+  /// index is needed.
+  Stream<List<CorrectiveAction>> watchOpenForSite(String siteId) {
+    return _repository
+        .watchCollection(
+          queryBuilder: (query) => query.where('siteId', isEqualTo: siteId),
+        )
+        .map(
+          (actions) => [
+            for (final action in actions)
+              if (!action.status.isTerminal) action,
+          ]..sort((a, b) => a.dueDate.compareTo(b.dueDate)),
+        );
+  }
+
   /// Streams every corrective action in this organization, across every
   /// site and meeting — the authorized supervisor/manager's Corrective
   /// Actions list.

@@ -85,7 +85,7 @@ class AccessDeniedScreen extends StatelessWidget {
         return (
           Icons.person_off_outlined,
           'Profile Not Found',
-          'Your sign-in worked, but no JVA Safety profile is linked to this '
+          'Your sign-in worked, but no ALMASAFETY profile is linked to this '
               'account. Contact your Site Manager.',
         );
       case AuthStatus.error:

@@ -82,20 +82,19 @@
  * construction — there is no such field in the request shape this file
  * parses, not merely a check that ignores one if present.
  *
- * A learning item can carry a knowledge-check gate REGARDLESS of its own
- * `type` — including a `video` item, so a video with both
- * `minimumWatchSeconds` and configured questions requires both to pass (see
- * `completeLearning`'s "GATE 1"/"GATE 2" comments) — see
- * `resolveKnowledgeCheckGate`'s "ZERO QUESTIONS -> NO GATE" doc comment for
- * why an item with no questions configured is never gated at all, keeping
- * every pre-existing `knowledgeCheck`-type item (created before this phase,
- * before any question ever existed for it) completable exactly as before.
+ * A learning item can carry a knowledge-check (quiz) REGARDLESS of its own
+ * `type` — including a `video` item. Whether that quiz is MANDATORY is set
+ * per lesson on the Safety Requirements that make it required
+ * (`quizRequired`, unset = mandatory); see `completeLearning`'s doc comment
+ * for the two-part (content, then quiz) flow. An item with no questions
+ * configured has no quiz at all, keeping every pre-existing
+ * `knowledgeCheck`-type item completable exactly as before.
  *
  * A FAILED knowledge check is an EXPECTED, not exceptional, outcome:
  * `completeLearning` does not throw when grading concludes `passed: false`
- * — it returns `{status: <unchanged>, knowledgeCheckResult: {passed: false,
- * score, totalQuestions}}` so the UI can show exactly what was missed, and
- * the record stays `inProgress`/`assigned` so the worker may resubmit. There
+ * — it returns `{status: "inProgress", knowledgeCheckResult: {passed:
+ * false, score, totalQuestions}}` so the UI can show exactly what was
+ * missed, and the record stays open so the worker may resubmit. There
  * is deliberately no retry limit, certificate, or analytics event anywhere
  * in this phase.
  */
@@ -198,7 +197,7 @@ function requireString(request: CallableRequest, field: string): string {
  * @param {string} organizationId the organization the action targets.
  * @return {Promise<string>} the authorized caller's own uid.
  */
-async function requireActiveWorker(
+export async function requireActiveWorker(
   request: CallableRequest,
   organizationId: string
 ): Promise<string> {
@@ -391,6 +390,14 @@ export interface ApplicableLearningIds {
   requiredIds: Set<string>;
   gatingIds: Set<string>;
   preWorkIds: Set<string>;
+  /**
+   * The subset whose knowledge check (quiz), when the item has one, must be
+   * passed to complete it: at least one contributing requirement leaves
+   * `quizRequired` on (unset = on — every quiz gated before this setting
+   * existed). An item required ONLY by requirements that turned it off has
+   * an optional quiz.
+   */
+  quizRequiredIds: Set<string>;
 }
 
 /**
@@ -472,6 +479,7 @@ export async function resolveApplicableRequirementLearningIds(
   const requiredIds = new Set<string>();
   const gatingIds = new Set<string>();
   const preWorkIds = new Set<string>();
+  const quizRequiredIds = new Set<string>();
   for (const doc of requirements.docs) {
     const data = doc.data();
     if (!requirementApplies(data, {...scope, projectIds})) continue;
@@ -480,9 +488,10 @@ export async function resolveApplicableRequirementLearningIds(
       requiredIds.add(lesson.id);
       if (lesson.gates) gatingIds.add(lesson.id);
       if (lesson.preWork) preWorkIds.add(lesson.id);
+      if (lesson.quizRequired) quizRequiredIds.add(lesson.id);
     }
   }
-  return {requiredIds, gatingIds, preWorkIds};
+  return {requiredIds, gatingIds, preWorkIds, quizRequiredIds};
 }
 
 /** One lesson on a requirement, with its per-lesson classification. */
@@ -490,6 +499,8 @@ export interface ClassifiedLesson {
   id: string;
   gates: boolean;
   preWork: boolean;
+  /** Whether this requirement needs the lesson's quiz passed (if any). */
+  quizRequired: boolean;
 }
 
 /**
@@ -517,6 +528,10 @@ export function classifyRequirementLessons(
   // learning. Never derived from `gates` (nor vice versa) — the two are
   // independent administrator choices.
   const requirementPreWork = data.requiredBeforeWork === true;
+  // Missing `quizRequired` means `true`: before this setting existed, any
+  // lesson with knowledge-check questions could only be completed by
+  // passing them, so a legacy requirement keeps exactly that behaviour.
+  const requirementQuizRequired = data.quizRequired !== false;
 
   // PER-LESSON SETTINGS: `learningSettings[learningId]` configures one
   // selected lesson WITHIN this requirement (the requirement->learning
@@ -550,7 +565,10 @@ export function classifyRequirementLessons(
     const preWork = typeof setting.requiredBeforeWork === "boolean" ?
       setting.requiredBeforeWork :
       requirementPreWork;
-    lessons.push({id, gates, preWork});
+    const quizRequired = typeof setting.quizRequired === "boolean" ?
+      setting.quizRequired :
+      requirementQuizRequired;
+    lessons.push({id, gates, preWork, quizRequired});
   }
   return lessons;
 }
@@ -903,6 +921,35 @@ async function fetchStoredQuestions(
 }
 
 /**
+ * How many knowledge-check questions each of [learningIds] has — a count
+ * aggregation per item, never the questions themselves.
+ *
+ * @param {string} organizationId the organization.
+ * @param {string[]} learningIds the learning items.
+ * @return {Promise<Map<string, number>>} question counts by learning id.
+ */
+export async function countQuestions(
+  organizationId: string,
+  learningIds: string[]
+): Promise<Map<string, number>> {
+  const db = getFirestore();
+  const counts = await Promise.all(
+    learningIds.map((id) =>
+      db
+        .collection(
+          `organizations/${organizationId}/safety_learning/${id}` +
+            "/knowledge_check_questions"
+        )
+        .count()
+        .get()
+    )
+  );
+  return new Map(
+    learningIds.map((id, index) => [id, counts[index].data().count])
+  );
+}
+
+/**
  * Grades [answers] against [questions] SERVER-SIDE — the sole source of
  * truth for `score`/`passed`. A `questionId` in [answers] that does not
  * match one of [questions] is silently IGNORED, never counted toward
@@ -948,51 +995,6 @@ function gradeKnowledgeCheck(
     score: correct,
     totalQuestions,
   };
-}
-
-/**
- * Resolves whether `learningId` has an active knowledge-check gate at all,
- * and grades [answers] against it if so.
- *
- * "ZERO QUESTIONS -> NO GATE": a `knowledgeCheck`-type item with no
- * questions configured behaves exactly like any other learning item —
- * `completeLearning` completes it without requiring a submission. This
- * matches the video gate's own "nothing configured, nothing enforced" rule
- * (`minimumWatchSeconds` unset/zero) and keeps every EXISTING
- * `knowledgeCheck` item (created before this phase, with no questions
- * subcollection at all) completable exactly as before, rather than
- * suddenly becoming permanently stuck.
- *
- * @param {string} organizationId the organization the item belongs to.
- * @param {string} learningId the required-learning item's own id.
- * @param {FirebaseFirestore.DocumentData} learning the required-learning
- * item's own stored data (from `resolveRequiredLearning`).
- * @param {SubmittedAnswer[] | null} answers the worker's submission, if any.
- * @return {Promise<KnowledgeCheckResult | null>} the graded result, or null
- * when there is no gate to grade (zero questions configured).
- */
-async function resolveKnowledgeCheckGate(
-  organizationId: string,
-  learningId: string,
-  learning: FirebaseFirestore.DocumentData,
-  answers: SubmittedAnswer[] | null
-): Promise<KnowledgeCheckResult | null> {
-  const questions = await fetchStoredQuestions(organizationId, learningId);
-  if (questions.length === 0) return null;
-
-  if (answers === null) {
-    throw new HttpsError(
-      "invalid-argument",
-      "This learning item has a knowledge check — selectedAnswers is " +
-        "required."
-    );
-  }
-
-  const passingScorePercent =
-    typeof learning.passingScorePercent === "number" ?
-      learning.passingScorePercent :
-      100;
-  return gradeKnowledgeCheck(questions, answers, passingScorePercent);
 }
 
 /**
@@ -1094,21 +1096,93 @@ export const startLearning = onCall(async (request) => {
 });
 
 /**
- * Completes the CALLER'S OWN record for `learningId`.
+ * The caller's own relationship to one learning item — whether it is
+ * required of them and, if so, whether its quiz is part of that
+ * requirement — re-derived server-side from their own scope.
  *
- * The record must already exist and be `assigned` or `inProgress` — a
- * worker cannot fabricate a completion for something never assigned to
- * them, because the required-set check above and the record-exists check
- * here both stand between them and a `completed` document. When the
- * learning item's type is `knowledgeCheck`, a `knowledgeCheckResult` is
- * required; the server validates its shape and stores it, and does not
- * grade it (see `optionalKnowledgeCheckResult`).
+ * @param {string} organizationId the organization.
+ * @param {string} workerUid the caller.
+ * @param {string} learningId the learning item.
+ * @return {Promise<object>} `learning`: the ACTIVE item (null when missing
+ * or inactive); `required`: whether it is required of the caller;
+ * `quizRequired`: whether its quiz is part of that requirement.
+ */
+async function learnerItemContext(
+  organizationId: string,
+  workerUid: string,
+  learningId: string
+): Promise<{
+  learning: FirebaseFirestore.DocumentData | null;
+  required: boolean;
+  quizRequired: boolean;
+}> {
+  const [applicable, items] = await Promise.all([
+    resolveApplicableRequirementLearningIds(
+      organizationId,
+      await learnerScope(organizationId, workerUid)
+    ),
+    resolveLearningItemsById(organizationId, new Set([learningId])),
+  ]);
+  const learning = items.get(learningId) ?? null;
+  const required = learning !== null && applicable.requiredIds.has(learningId);
+  return {
+    learning,
+    required,
+    quizRequired: required && applicable.quizRequiredIds.has(learningId),
+  };
+}
+
+/**
+ * The item's passing threshold — `passingScorePercent`, or 100% when unset
+ * (unchanged from before: no threshold is invented here).
+ *
+ * @param {FirebaseFirestore.DocumentData} learning the learning item.
+ * @return {number} the passing percentage.
+ */
+function passingScoreOf(learning: FirebaseFirestore.DocumentData): number {
+  return typeof learning.passingScorePercent === "number" ?
+    learning.passingScorePercent :
+    100;
+}
+
+/**
+ * Completes the CALLER'S OWN record for `learningId` — in one or two steps.
+ *
+ * A learning item has up to two parts:
+ *
+ * 1. THE CONTENT ("watch the video" / "read the document"). Satisfied when
+ *    the MINIMUM ENGAGEMENT TIME GATE below passes; recorded as
+ *    `contentCompletedAt` (a server timestamp) the first time it does.
+ * 2. THE QUIZ — only when the item has knowledge-check questions. Whether
+ *    it is MANDATORY comes from the Safety Requirements that make the item
+ *    required (`quizRequired`, unset = mandatory, as every quiz was before
+ *    this setting existed); it is never inferred from the item itself.
+ *
+ * The record becomes `completed` only when every mandatory part is done:
+ * - no quiz, or an optional quiz: when the content step passes (an
+ *   optional quiz submitted in the same call is graded and its result
+ *   stored, pass or fail, but never blocks completion);
+ * - a mandatory quiz: when the content step has passed AND a submission
+ *   passes the quiz. Called WITHOUT `selectedAnswers`, this records the
+ *   content step only (`contentCompletedAt`) and returns `quizOutstanding`
+ *   — the "video watched, quiz next" state. A failed quiz leaves the
+ *   record `inProgress` (content step still recorded) for a retry, with
+ *   no retry limit, exactly as before.
+ * Submitting answers with the content step still outstanding runs both
+ * gates in the same call, so a quiz can never complete an item on its own.
+ *
+ * Once `completed`, the record is final. The one exception: an OPTIONAL
+ * quiz may still be taken afterwards — that call only stores the new
+ * `knowledgeCheckResult`; status and `completedAt` never change.
+ *
+ * The item must be ACTIVE and in the caller's currently-required set —
+ * re-derived server-side, never trusted from the request.
  *
  * MINIMUM ENGAGEMENT TIME GATE
  *
  * When the item has a positive `minimumWatchSeconds` — of ANY type, not
- * just `video` — this refuses completion unless at least that many seconds
- * have elapsed, SERVER-SIDE, between `current.startedAt` (a real
+ * just `video` — the content step is refused unless at least that many
+ * seconds have elapsed, SERVER-SIDE, between `current.startedAt` (a real
  * `FieldValue.serverTimestamp()` written by `startLearning`, entirely
  * outside the caller's control) and now. This is deliberately NOT a
  * watch-position/percentage or reading-progress check: nothing in this
@@ -1118,12 +1192,8 @@ export const startLearning = onCall(async (request) => {
  * client-reported position or percentage as proof would be fake security
  * — see `SafetyLearning.minimumWatchSeconds`'s doc comment. Elapsed
  * wall-clock time since a genuine server timestamp is the strongest signal
- * this architecture can honestly enforce: it cannot be satisfied by tapping
- * Complete immediately, and it cannot be forged by a modified client, since
- * `startedAt` was never client-supplied in the first place. A record with
- * no `startedAt` at all (still `assigned` — `startLearning` was never
- * called) is refused outright, since there is then no timestamp to measure
- * elapsed time from.
+ * this architecture can honestly enforce. A record with no `startedAt` at
+ * all (`startLearning` was never called) is refused outright.
  */
 export const completeLearning = onCall(async (request) => {
   const organizationId = requireString(request, "organizationId");
@@ -1131,9 +1201,12 @@ export const completeLearning = onCall(async (request) => {
   const learningId = requireString(request, "learningId");
   const selectedAnswers = optionalSelectedAnswers(request);
 
-  const required = await resolveRequiredLearning(organizationId, workerUid);
-  const learning = required.get(learningId);
-  if (!learning) {
+  const {learning, required, quizRequired} = await learnerItemContext(
+    organizationId,
+    workerUid,
+    learningId
+  );
+  if (!learning || !required) {
     throw new HttpsError(
       "failed-precondition",
       "That learning item is not currently required of you."
@@ -1152,6 +1225,33 @@ export const completeLearning = onCall(async (request) => {
       "That learning item has not been assigned to you yet."
     );
   }
+
+  const questions = await fetchStoredQuestions(organizationId, learningId);
+  const hasQuiz = questions.length > 0;
+  const quizMandatory = hasQuiz && quizRequired;
+  const result = hasQuiz && selectedAnswers !== null ?
+    gradeKnowledgeCheck(questions, selectedAnswers, passingScoreOf(learning)) :
+    null;
+
+  // A completed record is final — except for taking an OPTIONAL quiz
+  // afterwards, which only records its result.
+  if (current.status === "completed") {
+    if (quizMandatory || result === null) {
+      throw new HttpsError(
+        "failed-precondition",
+        "That learning item cannot be completed from its current state."
+      );
+    }
+    await ref.update({knowledgeCheckResult: result});
+    return {
+      organizationId,
+      learningId,
+      status: "completed",
+      contentCompleted: true,
+      quizRequired: false,
+      knowledgeCheckResult: result,
+    };
+  }
   if (current.status !== "assigned" && current.status !== "inProgress") {
     throw new HttpsError(
       "failed-precondition",
@@ -1159,78 +1259,73 @@ export const completeLearning = onCall(async (request) => {
     );
   }
 
-  // GATE 1: minimum engagement time — see this file's header note. Applies
-  // to ANY learning type (not just `video`) with a positive
-  // `minimumWatchSeconds` configured, since the same honest "elapsed
-  // server time since startLearning" signal is equally the strongest thing
-  // this architecture can verify for a document/course/guide as for a
-  // video — there is no type-specific reading/viewing proof available for
-  // any of them. Runs independently of and before the knowledge-check gate
-  // below: an item with BOTH a `minimumWatchSeconds` and configured
-  // questions must satisfy both, and this ordering means a worker who
-  // hasn't waited long enough never even reaches grading.
-  const minimumWatchSeconds = learning.minimumWatchSeconds;
-  if (
-    typeof minimumWatchSeconds === "number" &&
-    minimumWatchSeconds > 0
-  ) {
-    const startedAt = current.startedAt;
-    if (!(startedAt instanceof Timestamp)) {
-      throw new HttpsError(
-        "failed-precondition",
-        "You must start this learning item before completing it."
-      );
-    }
-    const elapsedSeconds = (Date.now() - startedAt.toMillis()) / 1000;
-    if (elapsedSeconds < minimumWatchSeconds) {
-      const remaining = Math.ceil(minimumWatchSeconds - elapsedSeconds);
-      throw new HttpsError(
-        "failed-precondition",
-        `Keep this item open for ${remaining} more ` +
-          `second${remaining === 1 ? "" : "s"} before completing it.`
-      );
+  // PART 1: the content step — see this callable's doc comment.
+  const contentAlreadyDone = current.contentCompletedAt instanceof Timestamp;
+  if (!contentAlreadyDone) {
+    const minimumWatchSeconds = learning.minimumWatchSeconds;
+    if (
+      typeof minimumWatchSeconds === "number" &&
+      minimumWatchSeconds > 0
+    ) {
+      const startedAt = current.startedAt;
+      if (!(startedAt instanceof Timestamp)) {
+        throw new HttpsError(
+          "failed-precondition",
+          "You must start this learning item before completing it."
+        );
+      }
+      const elapsedSeconds = (Date.now() - startedAt.toMillis()) / 1000;
+      if (elapsedSeconds < minimumWatchSeconds) {
+        const remaining = Math.ceil(minimumWatchSeconds - elapsedSeconds);
+        throw new HttpsError(
+          "failed-precondition",
+          `Keep this item open for ${remaining} more ` +
+            `second${remaining === 1 ? "" : "s"} before completing it.`
+        );
+      }
     }
   }
+  const contentStep = contentAlreadyDone ?
+    {} :
+    {contentCompletedAt: FieldValue.serverTimestamp()};
 
-  // GATE 2: knowledge check — applies to ANY learning item (not just
-  // `type === "knowledgeCheck"`) that has at least one question configured;
-  // see `resolveKnowledgeCheckGate`'s "ZERO QUESTIONS -> NO GATE" doc
-  // comment. A video item can carry both gates at once — this is a
-  // deliberate, explicit design decision (a knowledge check attached to a
-  // video), not the original narrower "type === knowledgeCheck only" model.
-  const knowledgeCheckResult = await resolveKnowledgeCheckGate(
-    organizationId,
-    learningId,
-    learning,
-    selectedAnswers
-  );
-
-  // A FAILED knowledge check is an EXPECTED outcome, not an error: the
-  // record stays exactly as it was (still `inProgress`/`assigned`, never
-  // silently advanced) and the graded result is returned to the caller so
-  // the UI can show what was missed — see this file's header note. The
-  // worker may resubmit; there is deliberately no retry limit in this
-  // phase.
-  if (knowledgeCheckResult !== null && !knowledgeCheckResult.passed) {
+  // PART 2: a mandatory quiz not yet passed keeps the record open.
+  if (quizMandatory && (result === null || !result.passed)) {
+    await ref.update({
+      status: "inProgress",
+      ...contentStep,
+      ...(current.startedAt instanceof Timestamp ?
+        {} :
+        {startedAt: FieldValue.serverTimestamp()}),
+    });
     return {
       organizationId,
       learningId,
-      status: current.status,
-      knowledgeCheckResult,
+      status: "inProgress",
+      contentCompleted: true,
+      quizRequired: true,
+      quizOutstanding: true,
+      // A FAILED attempt is an expected outcome, not an error: it is
+      // returned so the learner can see what they scored, and is not
+      // stored — the record keeps its last passing result, if any.
+      ...(result !== null ? {knowledgeCheckResult: result} : {}),
     };
   }
 
   await ref.update({
     status: "completed",
     completedAt: FieldValue.serverTimestamp(),
-    ...(knowledgeCheckResult !== null ? {knowledgeCheckResult} : {}),
+    ...contentStep,
+    ...(result !== null ? {knowledgeCheckResult: result} : {}),
   });
 
   return {
     organizationId,
     learningId,
     status: "completed",
-    ...(knowledgeCheckResult !== null ? {knowledgeCheckResult} : {}),
+    contentCompleted: true,
+    quizRequired: quizMandatory,
+    ...(result !== null ? {knowledgeCheckResult: result} : {}),
   };
 });
 
@@ -1239,25 +1334,31 @@ export const completeLearning = onCall(async (request) => {
  * — `correctOptionId` is stripped from every question before this response
  * is built (see `WorkerFacingQuestion`'s doc comment: there is no field in
  * that type to accidentally serialize, not merely an omitted one at
- * runtime). The caller must still be the item's own required-learning
- * context — the same `resolveRequiredLearning` check every other callable
- * in this file uses — so a worker cannot probe questions for content
- * unrelated to their own work.
+ * runtime) — plus whether the item is `required` of the caller and whether
+ * its quiz is `quizRequired` for them.
+ *
+ * Available for any ACTIVE item in the caller's organization (the item
+ * itself is readable by every member already), so an OPTIONAL video's quiz
+ * can be practised (`practiceKnowledgeCheck`). Only a required item's quiz
+ * is ever recorded — through `completeLearning`.
  *
  * Returns an empty `questions` array when none are configured — this is
- * not an error; see `resolveKnowledgeCheckGate`'s "ZERO QUESTIONS -> NO
- * GATE" rule.
+ * not an error; see `completeLearning`'s doc comment.
  */
 export const getKnowledgeCheckQuestions = onCall(async (request) => {
   const organizationId = requireString(request, "organizationId");
   const workerUid = await requireActiveWorker(request, organizationId);
   const learningId = requireString(request, "learningId");
 
-  const required = await resolveRequiredLearning(organizationId, workerUid);
-  if (!required.has(learningId)) {
+  const {learning, required, quizRequired} = await learnerItemContext(
+    organizationId,
+    workerUid,
+    learningId
+  );
+  if (!learning) {
     throw new HttpsError(
-      "failed-precondition",
-      "That learning item is not currently required of you."
+      "not-found",
+      "That learning item is not available."
     );
   }
 
@@ -1269,7 +1370,68 @@ export const getKnowledgeCheckQuestions = onCall(async (request) => {
     order: question.order,
   }));
 
-  return {organizationId, learningId, questions: workerFacing};
+  return {
+    organizationId,
+    learningId,
+    required,
+    quizRequired: quizRequired && workerFacing.length > 0,
+    questions: workerFacing,
+  };
+});
+
+/**
+ * Grades a PRACTICE attempt at an active item's quiz — for learning that
+ * is not required of the caller (an optional library video). Nothing is
+ * written: optional viewing is never tracked, and a practice score never
+ * counts as training. The answer key never leaves the server; only the
+ * score is returned.
+ *
+ * A required item's quiz goes through `completeLearning` instead, so it is
+ * refused here — a practice run must not be mistaken for the real one.
+ */
+export const practiceKnowledgeCheck = onCall(async (request) => {
+  const organizationId = requireString(request, "organizationId");
+  const workerUid = await requireActiveWorker(request, organizationId);
+  const learningId = requireString(request, "learningId");
+  const selectedAnswers = optionalSelectedAnswers(request);
+  if (selectedAnswers === null) {
+    throw new HttpsError("invalid-argument", "selectedAnswers is required.");
+  }
+
+  const {learning, required} = await learnerItemContext(
+    organizationId,
+    workerUid,
+    learningId
+  );
+  if (!learning) {
+    throw new HttpsError(
+      "not-found",
+      "That learning item is not available."
+    );
+  }
+  if (required) {
+    throw new HttpsError(
+      "failed-precondition",
+      "This quiz is part of your required training — take it from the " +
+        "lesson to have it recorded."
+    );
+  }
+  const questions = await fetchStoredQuestions(organizationId, learningId);
+  if (questions.length === 0) {
+    throw new HttpsError(
+      "failed-precondition",
+      "This learning item has no quiz."
+    );
+  }
+  return {
+    organizationId,
+    learningId,
+    knowledgeCheckResult: gradeKnowledgeCheck(
+      questions,
+      selectedAnswers,
+      passingScoreOf(learning)
+    ),
+  };
 });
 
 /**
@@ -1285,6 +1447,12 @@ interface ReadinessItem {
   type: string | null;
   status: "notStarted" | "assigned" | "inProgress";
   canStart: boolean;
+  /** How many quiz questions the item has (0 = no quiz). */
+  questionCount: number;
+  /** Whether that quiz must be passed to complete the item. */
+  quizRequired: boolean;
+  /** Whether the content step (watching the video) is already recorded. */
+  contentCompleted: boolean;
 }
 
 /** An id/name pair used to label today's scope for the worker. */
@@ -1294,13 +1462,30 @@ interface NamedRef {
 }
 
 /**
- * Today's date as `createDailySafetyMeeting` stores it — the server's UTC
- * `YYYY-MM-DD` — so a lookup here always matches the stored `date` field.
+ * The time zone that decides which calendar day a meeting (and a Pre-Start
+ * Check, and a learning plan) belongs to. Every site is in Kenya; the app's
+ * `meetingDate()` (`lib/core/utils/meeting_date.dart`) uses the same zone
+ * so both sides always agree on "today".
+ */
+export const MEETING_TIME_ZONE = "Africa/Nairobi";
+
+/**
+ * Today's date as `createDailySafetyMeeting` stores it — the
+ * `YYYY-MM-DD` calendar day in [MEETING_TIME_ZONE] — so a lookup here
+ * always matches the stored `date` field. Meetings created before this
+ * used the UTC day; those stored dates are left exactly as they are.
  *
+ * @param {Date} now the instant to resolve (defaults to now).
  * @return {string} today's date.
  */
-export function todaysMeetingDate(): string {
-  return new Date().toISOString().slice(0, 10);
+export function todaysMeetingDate(now: Date = new Date()): string {
+  // en-CA formats a date as YYYY-MM-DD.
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: MEETING_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
 }
 
 /**
@@ -1529,9 +1714,15 @@ export const getMyTodaysSafetyReadiness = onCall(async (request) => {
     )
   );
   const statusById = new Map<string, unknown>();
+  const contentDoneIds = new Set<string>();
   records.forEach((snapshot, index) => {
-    statusById.set(activeIds[index], snapshot.data()?.status);
+    const data = snapshot.data();
+    statusById.set(activeIds[index], data?.status);
+    if (data?.contentCompletedAt instanceof Timestamp) {
+      contentDoneIds.add(activeIds[index]);
+    }
   });
+  const questionCounts = await countQuestions(organizationId, activeIds);
 
   const toItems = (ids: string[]): ReadinessItem[] => {
     const items: ReadinessItem[] = [];
@@ -1548,6 +1739,10 @@ export const getMyTodaysSafetyReadiness = onCall(async (request) => {
           status :
           "notStarted",
         canStart: overall.requiredIds.has(id),
+        questionCount: questionCounts.get(id) ?? 0,
+        quizRequired:
+          overall.quizRequiredIds.has(id) && (questionCounts.get(id) ?? 0) > 0,
+        contentCompleted: contentDoneIds.has(id),
       });
     }
     return items.sort((a, b) => a.title.localeCompare(b.title));
@@ -1595,6 +1790,13 @@ interface CrewLearningRecordRow {
   learningId: string;
   status: string;
   completedAt: string | null;
+  /**
+   * Whether the content step (the video) is done — so a reviewer can tell
+   * "watched, quiz outstanding" from "not started". Quiz answers and scores
+   * are deliberately NOT included: a reviewer sees progress, not a
+   * worker's private attempt.
+   */
+  contentCompleted: boolean;
 }
 
 /**
@@ -1770,6 +1972,9 @@ export const getCrewLearningRecords = onCall(async (request) => {
           completedAt instanceof Timestamp ?
             completedAt.toDate().toISOString() :
             null,
+        contentCompleted:
+          data.contentCompletedAt instanceof Timestamp ||
+          status === "completed",
       });
     }
   }

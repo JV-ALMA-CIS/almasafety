@@ -27,6 +27,7 @@ let addKnowledgeCheckQuestion;
 let updateKnowledgeCheckQuestion;
 let removeKnowledgeCheckQuestion;
 let listKnowledgeCheckQuestions;
+let getVideoQuizSummary;
 
 beforeAll(() => {
   process.env.GCLOUD_PROJECT = PROJECT_ID;
@@ -46,6 +47,7 @@ beforeAll(() => {
     updateKnowledgeCheckQuestion,
     removeKnowledgeCheckQuestion,
     listKnowledgeCheckQuestions,
+    getVideoQuizSummary,
   } = require("../lib/safety_learning_callable"));
 });
 
@@ -1482,3 +1484,671 @@ describe("knowledge-check question CRUD", () => {
     ).rejects.toThrow(/permission/);
   });
 });
+
+describe("Site Manager video authoring (organization-wide, videos only)",
+  () => {
+    async function seedItem(id, type, overrides = {}) {
+      await db.doc(`organizations/${ORG_A}/safety_learning/${id}`).set({
+        organizationId: ORG_A,
+        title: `Item ${id}`,
+        type,
+        contentReference: type === "video" ?
+          "https://www.youtube.com/watch?v=jfKfPfyJRdk" :
+          "https://example.com/handbook.pdf",
+        status: "active",
+        createdBy: "admin-1",
+        updatedBy: "admin-1",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        ...overrides,
+      });
+    }
+
+    async function seedSiteManager(uid = "sm-1", organizationId = ORG_A) {
+      await seedProfile(uid);
+      // Assigned to one site only: video authority is organization-wide.
+      await seedMembership(uid, organizationId, "siteManager", ["site-1"]);
+    }
+
+    const newVideo = {
+      organizationId: ORG_A,
+      title: "Ladder Safety",
+      type: "video",
+      contentReference: "https://www.youtube.com/watch?v=jfKfPfyJRdk",
+    };
+
+    test("a Site Manager creates a video item", async () => {
+      await seedSiteManager();
+
+      const result = await createSafetyLearning.run(
+        callRequest("sm-1", newVideo)
+      );
+
+      const item = await getLearning(ORG_A, result.id);
+      expect(item.type).toBe("video");
+      expect(item.title).toBe("Ladder Safety");
+      expect(item.status).toBe("active");
+      expect(item.createdBy).toBe("sm-1");
+    });
+
+    test("a Site Manager cannot create any other learning type", async () => {
+      await seedSiteManager();
+      for (const type of
+        ["document", "course", "visualGuide", "knowledgeCheck"]) {
+        await expect(
+          createSafetyLearning.run(callRequest("sm-1", {...newVideo, type}))
+        ).rejects.toThrow(/permission/);
+      }
+    });
+
+    test("a Site Manager edits and deactivates a video someone else " +
+      "created, without touching training history", async () => {
+      await seedSiteManager();
+      await seedItem("v1", "video");
+      const recordPath =
+        `organizations/${ORG_A}/worker_learning_records/worker-1_v1`;
+      await db.doc(recordPath).set({
+        workerUid: "worker-1",
+        organizationId: ORG_A,
+        learningId: "v1",
+        status: "completed",
+        knowledgeCheckResult: {passed: true, score: 3, totalQuestions: 3},
+      });
+
+      await updateSafetyLearning.run(
+        callRequest("sm-1", {
+          organizationId: ORG_A,
+          id: "v1",
+          title: "Renamed",
+          status: "inactive",
+        })
+      );
+
+      const item = await getLearning(ORG_A, "v1");
+      expect(item.title).toBe("Renamed");
+      expect(item.status).toBe("inactive");
+      expect(item.createdBy).toBe("admin-1");
+      expect(item.updatedBy).toBe("sm-1");
+      const record = (await db.doc(recordPath).get()).data();
+      expect(record.status).toBe("completed");
+      expect(record.knowledgeCheckResult.passed).toBe(true);
+
+      // ...and can reactivate it.
+      await updateSafetyLearning.run(
+        callRequest("sm-1", {
+          organizationId: ORG_A,
+          id: "v1",
+          status: "active",
+        })
+      );
+      expect((await getLearning(ORG_A, "v1")).status).toBe("active");
+    });
+
+    test("a Site Manager cannot edit a non-video item, even by claiming " +
+      "it is a video", async () => {
+      await seedSiteManager();
+      await seedItem("d1", "document");
+
+      for (const data of [
+        {title: "Changed"},
+        {status: "inactive"},
+        {type: "video", contentReference: newVideo.contentReference},
+      ]) {
+        await expect(
+          updateSafetyLearning.run(
+            callRequest("sm-1", {organizationId: ORG_A, id: "d1", ...data})
+          )
+        ).rejects.toThrow(/permission/);
+      }
+      const item = await getLearning(ORG_A, "d1");
+      expect(item.type).toBe("document");
+      expect(item.title).toBe("Item d1");
+      expect(item.status).toBe("active");
+    });
+
+    test("a Site Manager cannot turn a video into another type", async () => {
+      await seedSiteManager();
+      await seedItem("v1", "video");
+
+      await expect(
+        updateSafetyLearning.run(
+          callRequest("sm-1", {
+            organizationId: ORG_A,
+            id: "v1",
+            type: "document",
+          })
+        )
+      ).rejects.toThrow(/permission/);
+      expect((await getLearning(ORG_A, "v1")).type).toBe("video");
+    });
+
+    test("a Site Manager of a DIFFERENT organization cannot author here",
+      async () => {
+        await seedSiteManager("sm-2", "org-beta");
+        await seedItem("v1", "video");
+
+        await expect(
+          createSafetyLearning.run(callRequest("sm-2", newVideo))
+        ).rejects.toThrow(/permission/);
+        await expect(
+          updateSafetyLearning.run(
+            callRequest("sm-2", {
+              organizationId: ORG_A,
+              id: "v1",
+              status: "inactive",
+            })
+          )
+        ).rejects.toThrow(/permission/);
+        expect((await getLearning(ORG_A, "v1")).status).toBe("active");
+      });
+
+    test("a suspended Site Manager membership cannot author", async () => {
+      await seedSiteManager();
+      await db.doc(`users/sm-1/memberships/${ORG_A}`).update({
+        status: "suspended",
+      });
+
+      await expect(
+        createSafetyLearning.run(callRequest("sm-1", newVideo))
+      ).rejects.toThrow(/permission/);
+    });
+
+    test("Foremen and Workers cannot create or edit videos", async () => {
+      await seedItem("v1", "video");
+      for (const role of ["foreman", "worker"]) {
+        await seedProfile(`${role}-1`);
+        await seedMembership(`${role}-1`, ORG_A, role, ["site-1"]);
+        await expect(
+          createSafetyLearning.run(callRequest(`${role}-1`, newVideo))
+        ).rejects.toThrow(/permission/);
+        await expect(
+          updateSafetyLearning.run(
+            callRequest(`${role}-1`, {
+              organizationId: ORG_A,
+              id: "v1",
+              title: "Changed",
+            })
+          )
+        ).rejects.toThrow(/permission/);
+      }
+      expect((await getLearning(ORG_A, "v1")).title).toBe("Item v1");
+    });
+
+    test("an Admin still creates and edits every learning type", async () => {
+      await seedAdmin("admin-1");
+      const result = await createSafetyLearning.run(
+        callRequest("admin-1", {
+          organizationId: ORG_A,
+          title: "PPE Handbook",
+          type: "document",
+          contentReference: "https://example.com/handbook.pdf",
+        })
+      );
+      await updateSafetyLearning.run(
+        callRequest("admin-1", {
+          organizationId: ORG_A,
+          id: result.id,
+          status: "inactive",
+        })
+      );
+      expect((await getLearning(ORG_A, result.id)).status).toBe("inactive");
+    });
+
+    describe("knowledge checks", () => {
+      const options = [
+        {id: "a", text: "Option A"},
+        {id: "b", text: "Option B"},
+      ];
+
+      test("a Site Manager adds, lists, edits and removes questions on a " +
+        "video", async () => {
+        await seedSiteManager();
+        await seedItem("v1", "video");
+
+        const added = await addKnowledgeCheckQuestion.run(
+          callRequest("sm-1", {
+            organizationId: ORG_A,
+            learningId: "v1",
+            prompt: "Q1",
+            options,
+            correctOptionId: "a",
+            order: 0,
+          })
+        );
+        const listed = await listKnowledgeCheckQuestions.run(
+          callRequest("sm-1", {organizationId: ORG_A, learningId: "v1"})
+        );
+        expect(listed.questions).toHaveLength(1);
+        expect(listed.questions[0].correctOptionId).toBe("a");
+
+        await updateKnowledgeCheckQuestion.run(
+          callRequest("sm-1", {
+            organizationId: ORG_A,
+            learningId: "v1",
+            questionId: added.id,
+            prompt: "Q1 edited",
+            options,
+            correctOptionId: "b",
+            order: 0,
+          })
+        );
+        await removeKnowledgeCheckQuestion.run(
+          callRequest("sm-1", {
+            organizationId: ORG_A,
+            learningId: "v1",
+            questionId: added.id,
+          })
+        );
+        const after = await listKnowledgeCheckQuestions.run(
+          callRequest("sm-1", {organizationId: ORG_A, learningId: "v1"})
+        );
+        expect(after.questions).toHaveLength(0);
+      });
+
+      test("a Site Manager cannot touch a non-video item's questions",
+        async () => {
+          await seedSiteManager();
+          await seedAdmin("admin-1");
+          await seedItem("d1", "document");
+          const existing = await addKnowledgeCheckQuestion.run(
+            callRequest("admin-1", {
+              organizationId: ORG_A,
+              learningId: "d1",
+              prompt: "Q",
+              options,
+              correctOptionId: "a",
+              order: 0,
+            })
+          );
+
+          const asSiteManager = (data) => callRequest("sm-1", {
+            organizationId: ORG_A,
+            learningId: "d1",
+            ...data,
+          });
+          const attempts = [
+            () => addKnowledgeCheckQuestion.run(asSiteManager({
+              prompt: "Q2", options, correctOptionId: "a", order: 1,
+            })),
+            () => listKnowledgeCheckQuestions.run(asSiteManager({})),
+            () => updateKnowledgeCheckQuestion.run(asSiteManager({
+              questionId: existing.id,
+              prompt: "Hijacked",
+              options,
+              correctOptionId: "b",
+              order: 0,
+            })),
+            () => removeKnowledgeCheckQuestion.run(asSiteManager({
+              questionId: existing.id,
+            })),
+          ];
+          for (const attempt of attempts) {
+            await expect(attempt()).rejects.toThrow(/permission/);
+          }
+          const stored = await db
+            .doc(`organizations/${ORG_A}/safety_learning/d1/` +
+              `knowledge_check_questions/${existing.id}`)
+            .get();
+          expect(stored.data().prompt).toBe("Q");
+        });
+
+      test("a Foreman cannot add a question to a video", async () => {
+        await seedProfile("foreman-1");
+        await seedMembership("foreman-1", ORG_A, "foreman", ["site-1"]);
+        await seedItem("v1", "video");
+
+        await expect(
+          addKnowledgeCheckQuestion.run(
+            callRequest("foreman-1", {
+              organizationId: ORG_A,
+              learningId: "v1",
+              prompt: "Q",
+              options,
+              correctOptionId: "a",
+              order: 0,
+            })
+          )
+        ).rejects.toThrow(/permission/);
+      });
+    });
+  });
+
+describe("per-lesson quizRequired on requirements", () => {
+  const base = {
+    organizationId: ORG_A,
+    name: "Ladder Safety",
+    category: "Height",
+    risk: "high",
+  };
+  const off = {gatesAttendance: false, requiredBeforeWork: false};
+
+  async function seedVideo(id) {
+    await db.doc(`organizations/${ORG_A}/safety_learning/${id}`).set({
+      organizationId: ORG_A,
+      title: `Video ${id}`,
+      type: "video",
+      contentReference: "https://www.youtube.com/watch?v=jfKfPfyJRdk",
+      status: "active",
+    });
+  }
+
+  test("stores quizRequired per lesson; omitting it stays valid (legacy)",
+    async () => {
+      await seedAdmin("admin-1");
+      await seedVideo("v1");
+      await seedVideo("v2");
+      const created = await createSafetyRequirement.run(
+        callRequest("admin-1", {
+          ...base,
+          requiredLearningIds: ["v1", "v2"],
+          learningSettings: {v1: {...off, quizRequired: false}, v2: off},
+        })
+      );
+      const stored = await getRequirement(ORG_A, created.id);
+      expect(stored.learningSettings).toEqual({
+        v1: {...off, quizRequired: false},
+        v2: off,
+      });
+    });
+
+  test("a Site Manager can set it too", async () => {
+    await seedProfile("sm-1");
+    await seedMembership("sm-1", ORG_A, "siteManager");
+    await seedVideo("v1");
+    const created = await createSafetyRequirement.run(
+      callRequest("sm-1", {
+        ...base,
+        requiredLearningIds: ["v1"],
+        learningSettings: {v1: {...off, quizRequired: true}},
+      })
+    );
+    expect((await getRequirement(ORG_A, created.id)).learningSettings.v1
+      .quizRequired).toBe(true);
+  });
+
+  test("rejects a non-boolean quizRequired", async () => {
+    await seedAdmin("admin-1");
+    await seedVideo("v1");
+    await expect(
+      createSafetyRequirement.run(
+        callRequest("admin-1", {
+          ...base,
+          requiredLearningIds: ["v1"],
+          learningSettings: {v1: {...off, quizRequired: "yes"}},
+        })
+      )
+    ).rejects.toThrow(/quizRequired must be a boolean/);
+  });
+
+  test("changing the lesson list keeps an existing quizRequired and leaves " +
+    "new lessons unset (mandatory by default)", async () => {
+    await seedAdmin("admin-1");
+    await seedVideo("v1");
+    await seedVideo("v2");
+    const created = await createSafetyRequirement.run(
+      callRequest("admin-1", {
+        ...base,
+        requiredLearningIds: ["v1"],
+        learningSettings: {v1: {...off, quizRequired: false}},
+      })
+    );
+    await updateSafetyRequirement.run(
+      callRequest("admin-1", {
+        organizationId: ORG_A,
+        id: created.id,
+        requiredLearningIds: ["v1", "v2"],
+      })
+    );
+    const stored = await getRequirement(ORG_A, created.id);
+    expect(stored.learningSettings.v1.quizRequired).toBe(false);
+    expect(stored.learningSettings.v2.quizRequired).toBeUndefined();
+  });
+});
+
+describe("inactive lessons are never newly made required", () => {
+  const base = {
+    organizationId: ORG_A,
+    name: "Ladder Safety",
+    category: "Height",
+    risk: "high",
+  };
+
+  async function seedVideo(id, status) {
+    await db.doc(`organizations/${ORG_A}/safety_learning/${id}`).set({
+      organizationId: ORG_A,
+      title: id,
+      type: "video",
+      contentReference: "https://www.youtube.com/watch?v=jfKfPfyJRdk",
+      status,
+    });
+  }
+
+  test("creating a requirement with an inactive video is refused",
+    async () => {
+      await seedAdmin("admin-1");
+      await seedVideo("v1", "inactive");
+      await expect(
+        createSafetyRequirement.run(
+          callRequest("admin-1", {...base, requiredLearningIds: ["v1"]})
+        )
+      ).rejects.toThrow(/Inactive learning items cannot be made required/);
+    });
+
+  test("a requirement already listing a since-deactivated video still " +
+    "saves; adding another inactive one is refused", async () => {
+    await seedAdmin("admin-1");
+    await seedVideo("v1", "active");
+    await seedVideo("v2", "inactive");
+    const created = await createSafetyRequirement.run(
+      callRequest("admin-1", {...base, requiredLearningIds: ["v1"]})
+    );
+    await db.doc(`organizations/${ORG_A}/safety_learning/v1`)
+      .update({status: "inactive"});
+
+    await updateSafetyRequirement.run(
+      callRequest("admin-1", {
+        organizationId: ORG_A,
+        id: created.id,
+        name: "Renamed",
+        requiredLearningIds: ["v1"],
+      })
+    );
+    expect((await getRequirement(ORG_A, created.id)).name).toBe("Renamed");
+
+    await expect(
+      updateSafetyRequirement.run(
+        callRequest("admin-1", {
+          organizationId: ORG_A,
+          id: created.id,
+          requiredLearningIds: ["v1", "v2"],
+        })
+      )
+    ).rejects.toThrow(/Inactive learning items cannot be made required: v2/);
+  });
+});
+
+describe("getVideoQuizSummary", () => {
+  async function seedItem(id, type, questions = 0, status = "active") {
+    await db.doc(`organizations/${ORG_A}/safety_learning/${id}`).set({
+      organizationId: ORG_A,
+      title: id,
+      type,
+      contentReference: "https://www.youtube.com/watch?v=jfKfPfyJRdk",
+      status,
+    });
+    for (let i = 0; i < questions; i++) {
+      await db.doc(`organizations/${ORG_A}/safety_learning/${id}` +
+        `/knowledge_check_questions/q${i}`).set({
+        prompt: "Q",
+        options: [{id: "a", text: "A"}, {id: "b", text: "B"}],
+        correctOptionId: "a",
+        order: i,
+      });
+    }
+  }
+
+  test("returns question counts for every video, nothing else", async () => {
+    await seedProfile("sm-1");
+    await seedMembership("sm-1", ORG_A, "siteManager");
+    await seedItem("v1", "video", 2);
+    await seedItem("v2", "video", 0);
+    await seedItem("d1", "document", 3);
+
+    const result = await getVideoQuizSummary.run(
+      callRequest("sm-1", {organizationId: ORG_A})
+    );
+    expect(result.questionCounts).toEqual({v1: 2, v2: 0});
+    expect(JSON.stringify(result)).not.toContain("correctOptionId");
+  });
+
+  test("an author also sees inactive videos", async () => {
+    await seedProfile("sm-1");
+    await seedMembership("sm-1", ORG_A, "siteManager");
+    await seedItem("v1", "video", 1);
+    await seedItem("old", "video", 2, "inactive");
+    const result = await getVideoQuizSummary.run(
+      callRequest("sm-1", {organizationId: ORG_A})
+    );
+    expect(result.questionCounts).toEqual({v1: 1, old: 2});
+  });
+
+  test("Workers and Foremen get counts for ACTIVE videos only — no " +
+    "requirement needed, no questions or answers", async () => {
+    await seedItem("v1", "video", 2);
+    await seedItem("v2", "video", 0);
+    await seedItem("old", "video", 3, "inactive");
+    await seedItem("d1", "document", 1);
+    for (const role of ["worker", "foreman"]) {
+      await seedProfile(`${role}-1`);
+      await seedMembership(`${role}-1`, ORG_A, role);
+      const result = await getVideoQuizSummary.run(
+        callRequest(`${role}-1`, {organizationId: ORG_A})
+      );
+      expect(result.questionCounts).toEqual({v1: 2, v2: 0});
+      expect(JSON.stringify(result)).not.toContain("correctOptionId");
+      expect(JSON.stringify(result)).not.toContain("prompt");
+    }
+  });
+
+  test("another organization, a suspended account or a suspended " +
+    "membership is refused", async () => {
+    await seedItem("v1", "video", 1);
+    await seedProfile("outsider");
+    await seedMembership("outsider", "org-beta", "worker");
+    await seedProfile("suspended", {accountStatus: "suspended"});
+    await seedMembership("suspended", ORG_A, "worker");
+    await seedProfile("member-off");
+    await seedMembership("member-off", ORG_A, "worker");
+    await db.doc(`users/member-off/memberships/${ORG_A}`)
+      .update({status: "suspended"});
+    for (const uid of ["outsider", "suspended", "member-off", null]) {
+      await expect(
+        getVideoQuizSummary.run(callRequest(uid, {organizationId: ORG_A}))
+      ).rejects.toThrow(/permission|sign in|authenticated/i);
+    }
+  });
+});
+
+describe("deactivating a video listed by Safety Requirements", () => {
+  async function seedVideo(id, type = "video") {
+    await db.doc(`organizations/${ORG_A}/safety_learning/${id}`).set({
+      organizationId: ORG_A,
+      title: id,
+      type,
+      contentReference: "https://www.youtube.com/watch?v=jfKfPfyJRdk",
+      status: "active",
+    });
+  }
+
+  async function seedReq(id, ids, status = "active", name = `Req ${id}`) {
+    await db.doc(`organizations/${ORG_A}/safety_requirements/${id}`).set({
+      organizationId: ORG_A,
+      name,
+      category: "General",
+      risk: "low",
+      requiredLearningIds: ids,
+      status,
+    });
+  }
+
+  const deactivate = (uid, id) => updateSafetyLearning.run(
+    callRequest(uid, {organizationId: ORG_A, id, status: "inactive"})
+  );
+
+  beforeEach(async () => {
+    await seedProfile("sm-1");
+    await seedMembership("sm-1", ORG_A, "siteManager");
+  });
+
+  test("refused while an ACTIVE requirement lists it — names the " +
+    "requirement and leaves the video active", async () => {
+    await seedVideo("v1");
+    await seedReq("r1", ["v1", "other"], "active", "Working at Height");
+    await expect(deactivate("sm-1", "v1"))
+      .rejects.toThrow(/Working at Height/);
+    expect((await getLearning(ORG_A, "v1")).status).toBe("active");
+  });
+
+  test("an Admin is refused the same way", async () => {
+    await seedAdmin("admin-1");
+    await seedVideo("v1");
+    await seedReq("r1", ["v1"]);
+    await expect(deactivate("admin-1", "v1"))
+      .rejects.toThrow(/required by active Safety Requirements/);
+  });
+
+  test("an INACTIVE requirement does not block it", async () => {
+    await seedVideo("v1");
+    await seedReq("r1", ["v1"], "inactive");
+    await deactivate("sm-1", "v1");
+    expect((await getLearning(ORG_A, "v1")).status).toBe("inactive");
+  });
+
+  test("allowed when no requirement lists it; reactivating is always " +
+    "allowed", async () => {
+    await seedVideo("v1");
+    await seedReq("r1", ["other"]);
+    await deactivate("sm-1", "v1");
+    expect((await getLearning(ORG_A, "v1")).status).toBe("inactive");
+    await updateSafetyLearning.run(
+      callRequest("sm-1", {organizationId: ORG_A, id: "v1", status: "active"})
+    );
+    expect((await getLearning(ORG_A, "v1")).status).toBe("active");
+  });
+
+  test("another organization's requirement never blocks it", async () => {
+    await seedVideo("v1");
+    await db.doc("organizations/org-beta/safety_requirements/r1").set({
+      organizationId: "org-beta",
+      name: "Elsewhere",
+      requiredLearningIds: ["v1"],
+      status: "active",
+    });
+    await deactivate("sm-1", "v1");
+    expect((await getLearning(ORG_A, "v1")).status).toBe("inactive");
+  });
+
+  test("other edits to a required video still work", async () => {
+    await seedVideo("v1");
+    await seedReq("r1", ["v1"]);
+    await updateSafetyLearning.run(
+      callRequest("sm-1", {organizationId: ORG_A, id: "v1", title: "New"})
+    );
+    expect((await getLearning(ORG_A, "v1")).title).toBe("New");
+  });
+
+  test("existing records and requirement are untouched by a refusal",
+    async () => {
+      await seedVideo("v1");
+      await seedReq("r1", ["v1"]);
+      await db.doc(`organizations/${ORG_A}/worker_learning_records/w_v1`)
+        .set({workerUid: "w", learningId: "v1", status: "completed"});
+      await expect(deactivate("sm-1", "v1")).rejects.toThrow();
+      expect((await getRequirement(ORG_A, "r1")).requiredLearningIds)
+        .toEqual(["v1"]);
+      const record = await db
+        .doc(`organizations/${ORG_A}/worker_learning_records/w_v1`).get();
+      expect(record.data().status).toBe("completed");
+    });
+});
+

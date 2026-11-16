@@ -4,6 +4,7 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
+import '../config/firebase_target.dart';
 
 /// Whether this device can show push notifications, and whether the person
 /// has allowed them.
@@ -43,6 +44,9 @@ class PushNotificationService {
 
   FirebaseMessaging? get _instance {
     if (_messaging != null) return _messaging;
+    // No push against the emulators: messaging is not emulated, and a
+    // test run must never register with the real project.
+    if (FirebaseTarget.useEmulators) return null;
     if (Firebase.apps.isEmpty) return null;
     return FirebaseMessaging.instance;
   }
